@@ -14,7 +14,10 @@ pub struct ProfileConfig {
 #[serde(untagged)]
 pub enum RepoMapping {
     String(String),
-    Object { repo: String, profile: Option<String> },
+    Object {
+        repo: String,
+        profile: Option<String>,
+    },
 }
 
 #[allow(dead_code)]
@@ -26,14 +29,6 @@ impl RepoMapping {
         }
     }
 }
-
-// #[allow(dead_code)]
-// pub fn profile(&self) -> Option<&str> {
-//     match self {
-//         RepoMapping::String(_) => None,
-//         RepoMapping::Object { profile, .. } => profile.as_deref(),
-//     }
-// }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -61,8 +56,8 @@ pub fn get_default_config_path() -> anyhow::Result<PathBuf> {
 }
 
 pub fn get_default_thoughts_repo() -> anyhow::Result<PathBuf> {
-    let home_dir = dirs::home_dir()
-        .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+    let home_dir =
+        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
     Ok(home_dir.join("thoughts"))
 }
 
@@ -72,8 +67,7 @@ pub fn expand_path(path: &str) -> PathBuf {
 }
 
 pub fn get_current_repo_path() -> anyhow::Result<PathBuf> {
-    std::env::current_dir()
-        .map_err(|e| anyhow::anyhow!("Could not get current directory: {}", e))
+    std::env::current_dir().map_err(|e| anyhow::anyhow!("Could not get current directory: {}", e))
 }
 
 pub fn get_repo_name_from_path(path: &Path) -> String {

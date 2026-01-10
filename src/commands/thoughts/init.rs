@@ -50,17 +50,15 @@ pub fn init(
         println!();
 
         let default_repo = get_default_thoughts_repo()?.display().to_string();
-        let thoughts_repo: String = Input::with_theme(&theme)
+        let mut thoughts_repo: String = Input::with_theme(&theme)
             .with_prompt("Thoughts repository location")
             .default(default_repo.clone())
             .allow_empty(true)
             .interact()?;
 
-        let thoughts_repo = if thoughts_repo.is_empty() {
-            default_repo
-        } else {
-            thoughts_repo
-        };
+        if thoughts_repo.is_empty() {
+            thoughts_repo = default_repo;
+        }
 
         println!();
         let repos_dir: String = Input::with_theme(&theme)
@@ -281,7 +279,7 @@ pub fn init(
         .insert(current_repo.display().to_string(), mapping);
 
     // Save config
-    let config_dir = config_path.parent().unwrap();
+    let config_dir = config_path.parent().expect("config_path parent");
     fs::create_dir_all(config_dir)?;
     let content = serde_json::json!({ "thoughts": config });
     fs::write(&config_path, serde_json::to_string_pretty(&content)?)?;
