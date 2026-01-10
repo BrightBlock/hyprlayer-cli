@@ -13,8 +13,30 @@ A standalone Rust CLI for managing developer thoughts and notes, compatible with
 
 ## Installation
 
+### Option 1: Install from release (recommended)
+
 ```bash
-cd cli
+# Run the installer (rustup-style)
+curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/BrightBlock/hyprlayer-cli/v1.0.0/install.sh | sh
+```
+
+This will:
+- Download the latest binary for your OS and architecture
+- Install it to `~/.hyprlayer/bin/`
+- Add it to your PATH automatically
+- Detect your shell (bash, zsh, fish) and provide setup instructions
+
+### Option 2: Install with cargo
+
+```bash
+cargo install --git https://github.com/BrightBlock/hyprlayer-cli.git
+```
+
+### Option 3: Install from source
+
+```bash
+git clone https://github.com/BrightBlock/hyprlayer-cli.git
+cd hyprlayer-cli
 cargo install --path .
 ```
 
@@ -157,3 +179,14 @@ cargo build
 cargo test
 cargo run -- init
 ```
+
+### Build Release Binaries
+
+```bash
+cargo build --release
+```
+
+The release binaries will be created in `target/release/` with architecture-specific names:
+- `hyprlayer-x86_64-unknown-linux-gnu` (Linux x86_64)
+- `hyprlayer-aarch64-unknown-linux-gnu` (Linux ARM64)
+- `hyprlayer-x86_64-apple-darwin` (macOS x86_64)
