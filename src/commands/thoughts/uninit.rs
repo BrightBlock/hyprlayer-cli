@@ -1,20 +1,11 @@
 use anyhow::Result;
-use clap::Parser;
 use colored::Colorize;
 use std::fs;
 
-use crate::config::{expand_path, get_current_repo_path, get_default_config_path, ConfigFile};
+use crate::cli::args::ConfigArgs;
+use crate::config::{ConfigFile, expand_path, get_current_repo_path, get_default_config_path};
 
-#[derive(Parser, Debug)]
-pub struct UninitOptions {
-    #[arg(long, help = "Force removal even if not in configuration")]
-    pub force: bool,
-
-    #[arg(long, help = "Path to config file")]
-    pub config_file: Option<String>,
-}
-
-pub fn uninit(options: UninitOptions) -> Result<()> {
+pub fn uninit(force: bool, config: ConfigArgs) -> Result<()> {
     let current_repo = get_current_repo_path()?;
     let thoughts_dir = current_repo.join("thoughts");
 
@@ -25,7 +16,7 @@ pub fn uninit(options: UninitOptions) -> Result<()> {
     }
 
     // Load config
-    let config_path = options
+    let config_path = config
         .config_file
         .as_ref()
         .map(|p| expand_path(p))
@@ -45,12 +36,15 @@ pub fn uninit(options: UninitOptions) -> Result<()> {
                     None::<String>, // TODO: extract profile from mapping
                     Some(config.thoughts_repo.clone()),
                 )
-            } else if !options.force {
+            } else if !force {
                 println!(
                     "{}",
                     "Error: This repository is not in the thoughts configuration.".red()
                 );
-                println!("{}", "Use --force to remove the thoughts directory anyway.".yellow());
+                println!(
+                    "{}",
+                    "Use --force to remove the thoughts directory anyway.".yellow()
+                );
                 return Ok(());
             } else {
                 (None, None, Some(config.thoughts_repo.clone()))
@@ -59,12 +53,12 @@ pub fn uninit(options: UninitOptions) -> Result<()> {
             (None, None, None)
         }
     } else {
-        if !options.force {
+        if !force {
+            println!("{}", "Error: No thoughts configuration found.".red());
             println!(
                 "{}",
-                "Error: No thoughts configuration found.".red()
+                "Use --force to remove the thoughts directory anyway.".yellow()
             );
-            println!("{}", "Use --force to remove the thoughts directory anyway.".yellow());
             return Ok(());
         }
         (None, None, None)
@@ -116,7 +110,10 @@ pub fn uninit(options: UninitOptions) -> Result<()> {
     // Provide info about what was done
     if let (Some(name), Some(repo)) = (mapped_name, thoughts_repo) {
         println!();
-        println!("{}", "Note: Your thoughts content remains safe in:".bright_black());
+        println!(
+            "{}",
+            "Note: Your thoughts content remains safe in:".bright_black()
+        );
         println!("  {}", format!("{}/repos/{}", repo, name).bright_black());
         if let Some(profile) = profile_name {
             println!("  {}", format!("(profile: {})", profile).bright_black());

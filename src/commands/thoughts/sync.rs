@@ -1,21 +1,12 @@
 use anyhow::{Context, Result};
-use clap::Parser;
 use colored::Colorize;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::config::{expand_path, get_current_repo_path, get_default_config_path, ConfigFile};
+use crate::cli::args::ConfigArgs;
+use crate::config::{ConfigFile, expand_path, get_current_repo_path, get_default_config_path};
 use crate::git_ops::GitRepo;
-
-#[derive(Parser, Debug)]
-pub struct SyncOptions {
-    #[arg(short, long, help = "Commit message for sync")]
-    pub message: Option<String>,
-
-    #[arg(long, help = "Path to config file")]
-    pub config_file: Option<String>,
-}
 
 /// Recursively find all files following symlinks, avoiding cycles
 fn find_files_following_symlinks(
@@ -32,7 +23,8 @@ fn find_files_following_symlinks(
     }
     visited.insert(real_path);
 
-    let entries = fs::read_dir(dir).with_context(|| format!("Failed to read directory {:?}", dir))?;
+    let entries =
+        fs::read_dir(dir).with_context(|| format!("Failed to read directory {:?}", dir))?;
 
     for entry in entries {
         let entry = entry?;
@@ -55,14 +47,16 @@ fn find_files_following_symlinks(
                 if metadata.is_dir() {
                     files.extend(find_files_following_symlinks(&path, base_dir, visited)?);
                 } else if metadata.is_file()
-                    && let Ok(rel_path) = path.strip_prefix(base_dir) {
-                        files.push(rel_path.to_path_buf());
-                    }
+                    && let Ok(rel_path) = path.strip_prefix(base_dir)
+                {
+                    files.push(rel_path.to_path_buf());
+                }
             }
         } else if file_type.is_file()
-            && let Ok(rel_path) = path.strip_prefix(base_dir) {
-                files.push(rel_path.to_path_buf());
-            }
+            && let Ok(rel_path) = path.strip_prefix(base_dir)
+        {
+            files.push(rel_path.to_path_buf());
+        }
     }
 
     Ok(files)
@@ -111,17 +105,21 @@ fn create_search_directory(thoughts_dir: &Path) -> Result<()> {
 
     println!(
         "{}",
-        format!("Created {} hard links in searchable directory", linked_count).bright_black()
+        format!(
+            "Created {} hard links in searchable directory",
+            linked_count
+        )
+        .bright_black()
     );
 
     Ok(())
 }
 
-pub fn sync(options: SyncOptions) -> Result<()> {
+pub fn sync(message: Option<String>, config: ConfigArgs) -> Result<()> {
     println!("{}", "Syncing thoughts...".blue());
 
     // Load config
-    let config_path = options
+    let config_path = config
         .config_file
         .as_ref()
         .map(|p| expand_path(p))
@@ -129,7 +127,7 @@ pub fn sync(options: SyncOptions) -> Result<()> {
 
     if !config_path.exists() {
         return Err(anyhow::anyhow!(
-            "No thoughts configuration found. Run 'hyprlayer thoughts init' first."
+            "No thoughts configuration found. Run 'hyprlayer init' first."
         ));
     }
 
@@ -145,7 +143,7 @@ pub fn sync(options: SyncOptions) -> Result<()> {
 
     if !thoughts_dir.exists() {
         return Err(anyhow::anyhow!(
-            "Thoughts not initialized for this repository. Run 'hyprlayer thoughts init' first."
+            "Thoughts not initialized for this repository. Run 'hyprlayer init' first."
         ));
     }
 
@@ -170,9 +168,12 @@ pub fn sync(options: SyncOptions) -> Result<()> {
 
     // Check if there are changes to commit
     if git_repo.has_changes()? {
-        let commit_message = options
-            .message
-            .unwrap_or_else(|| format!("Sync thoughts - {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S")));
+        let commit_message = message.unwrap_or_else(|| {
+            format!(
+                "Sync thoughts - {}",
+                chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+            )
+        });
 
         git_repo.commit(&commit_message)?;
         println!("{}", "✅ Thoughts synchronized".green());

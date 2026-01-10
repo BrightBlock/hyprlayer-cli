@@ -1,24 +1,18 @@
 use anyhow::Result;
-use clap::Parser;
 use colored::Colorize;
 use std::fs;
 
-use crate::config::{expand_path, get_current_repo_path, get_default_config_path, ConfigFile};
+use crate::cli::args::ConfigArgs;
+use crate::config::{ConfigFile, expand_path, get_current_repo_path, get_default_config_path};
 use crate::git_ops::GitRepo;
 
-#[derive(Parser, Debug)]
-pub struct StatusOptions {
-    #[arg(long, help = "Path to config file")]
-    pub config_file: Option<String>,
-}
-
-pub fn status(options: StatusOptions) -> Result<()> {
+pub fn status(config: ConfigArgs) -> Result<()> {
     println!("{}", "Thoughts Repository Status".blue());
     println!("{}", "=".repeat(50).bright_black());
     println!();
 
     // Load config
-    let config_path = options
+    let config_path = config
         .config_file
         .as_ref()
         .map(|p| expand_path(p))
@@ -26,7 +20,7 @@ pub fn status(options: StatusOptions) -> Result<()> {
 
     if !config_path.exists() {
         return Err(anyhow::anyhow!(
-            "No thoughts configuration found. Run 'hyprlayer thoughts init' first."
+            "No thoughts configuration found. Run 'hyprlayer init' first."
         ));
     }
 
@@ -69,10 +63,7 @@ pub fn status(options: StatusOptions) -> Result<()> {
             println!("  Status: {}", "✗ Not initialized".red());
         }
     } else {
-        println!(
-            "{}",
-            "Current repository not mapped to thoughts".yellow()
-        );
+        println!("{}", "Current repository not mapped to thoughts".yellow());
     }
     println!();
 
@@ -111,7 +102,7 @@ pub fn status(options: StatusOptions) -> Result<()> {
                         println!();
                         println!(
                             "{}",
-                            "Run 'hyprlayer thoughts sync' to commit these changes".bright_black()
+                            "Run 'hyprlayer sync' to commit these changes".bright_black()
                         );
                     }
                     Ok(false) => {
@@ -130,11 +121,7 @@ pub fn status(options: StatusOptions) -> Result<()> {
     } else {
         println!(
             "{}",
-            format!(
-                "Thoughts repository not found at {}",
-                config.thoughts_repo
-            )
-            .red()
+            format!("Thoughts repository not found at {}", config.thoughts_repo).red()
         );
     }
 
