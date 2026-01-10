@@ -24,64 +24,76 @@ cargo install --path .
 
 ```bash
 # Interactive setup
-hyprlayer thoughts init
+hyprlayer init
 
 # Use specific directory
-hyprlayer thoughts init --directory my-project
+hyprlayer init --directory my-project
 
 # Use a profile
-hyprlayer thoughts init --profile work
+hyprlayer init --profile work
+
+# Force reconfiguration
+hyprlayer init --force
 ```
 
 ### Sync Thoughts
 
 ```bash
 # Sync with default message
-hyprlayer thoughts sync
+hyprlayer sync
 
 # Sync with custom message
-hyprlayer thoughts sync --message "Updated documentation"
+hyprlayer sync --message "Updated documentation"
 ```
 
 ### Show Status
 
 ```bash
-hyprlayer thoughts status
+hyprlayer status
 ```
 
 ### Remove Thoughts
 
 ```bash
-hyprlayer thoughts uninit
+hyprlayer uninit
+
+# Force removal
+hyprlayer uninit --force
 ```
 
 ### Configuration
 
 ```bash
 # View configuration
-hyprlayer thoughts config
+hyprlayer config
 
 # Edit configuration
-hyprlayer thoughts config --edit
+hyprlayer config --edit
 
 # Output as JSON
-hyprlayer thoughts config --json
+hyprlayer config --json
+
+# Use custom config file
+hyprlayer config --config-file /path/to/config.json
 ```
 
 ### Profile Management
 
 ```bash
 # Create a new profile
-hyprlayer thoughts profile create work
+hyprlayer profile-create work
 
 # List all profiles
-hyprlayer thoughts profile list
+hyprlayer profile-list
 
 # Show profile details
-hyprlayer thoughts profile show work
+hyprlayer profile-show work
 
 # Delete a profile
-hyprlayer thoughts profile delete work
+hyprlayer profile-delete work
+
+# Create profile with specific settings
+hyprlayer profile-create work --repo ~/thoughts-work --repos-dir repos --global-dir global
 ```
 
 ## Directory Structure
@@ -143,5 +155,5 @@ This CLI is designed to work with:
 ```bash
 cargo build
 cargo test
-cargo run -- thoughts init
+cargo run -- init
 ```
