@@ -28,6 +28,13 @@ impl RepoMapping {
             RepoMapping::Object { repo, .. } => repo,
         }
     }
+
+    pub fn profile(&self) -> Option<&str> {
+        match self {
+            RepoMapping::String(_) => None,
+            RepoMapping::Object { profile, .. } => profile.as_deref(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

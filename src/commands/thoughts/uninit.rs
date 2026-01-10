@@ -33,7 +33,7 @@ pub fn uninit(force: bool, config: ConfigArgs) -> Result<()> {
             if let Some(mapping) = config.repo_mappings.get(&current_repo_str) {
                 (
                     Some(mapping.repo().to_string()),
-                    None::<String>, // TODO: extract profile from mapping
+                    mapping.profile().map(|p| p.to_string()),
                     Some(config.thoughts_repo.clone()),
                 )
             } else if !force {
