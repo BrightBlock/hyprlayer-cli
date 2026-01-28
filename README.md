@@ -15,8 +15,13 @@ A standalone Rust CLI for managing developer thoughts and notes, compatible with
 
 ### Option 1: Install from release (recommended)
 
+Requires the [GitHub CLI](https://cli.github.com/) (`gh`) to be installed and authenticated.
+
 ```bash
-curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/BrightBlock/hyprlayer-cli/master/install.sh | sh
+export GITHUB_TOKEN=$(gh auth token) && \
+  curl --proto '=https' --tlsv1.2 -sSf \
+  -H "Authorization: token $GITHUB_TOKEN" \
+  https://raw.githubusercontent.com/BrightBlock/hyprlayer-cli/master/install.sh | sh
 ```
 
 This will:
