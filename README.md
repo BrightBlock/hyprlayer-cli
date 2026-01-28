@@ -22,6 +22,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/BrightBlo
 This will:
 - Download the latest binary for your OS and architecture
 - Install it to `~/.hyprlayer/bin/`
+- Install Claude Code agents and commands to `~/.claude/`
 - Add it to your PATH automatically
 - Detect your shell (bash, zsh, fish) and provide setup instructions
 
@@ -165,11 +166,67 @@ Configuration is stored in `~/.config/hyprlayer/config.json`:
 }
 ```
 
-## Agent Compatibility
+## Claude Code Integration
 
-This CLI is designed to work with:
-- **thoughts-locator**: Finds documents in the `thoughts/` directory structure
-- **thoughts-analyzer**: Extracts high-value insights from thoughts documents
+The installer sets up a full suite of Claude Code agents and slash commands in `~/.claude/`. These work together to provide a structured AI-assisted development workflow built around the thoughts directory.
+
+### Workflow Overview
+
+The typical development cycle looks like this:
+
+1. **Research** (`/research_codebase`) -- Explore and document how existing code works before making changes
+2. **Plan** (`/create_plan`) -- Build a detailed, phased implementation plan with success criteria
+3. **Implement** (`/implement_plan`) -- Execute the plan phase-by-phase with verification at each step
+4. **Validate** (`/validate_plan`) -- Verify the implementation matches the plan's success criteria
+5. **Ship** (`/describe_pr`, `/commit`) -- Generate PR descriptions and commits
+
+For ongoing work, use `/iterate_plan` to refine plans based on feedback, `/debug` to investigate issues, and `/research_codebase` to document unfamiliar areas of code.
+
+### Commands
+
+| Command | Description |
+|---|---|
+| `/create_plan` | Create a detailed implementation plan through interactive research |
+| `/create_plan_nt` | Same as above, without thoughts directory integration |
+| `/create_plan_generic` | Same as above, generic variant |
+| `/iterate_plan` | Refine an existing plan based on new information or feedback |
+| `/iterate_plan_nt` | Same as above, without thoughts directory |
+| `/implement_plan` | Execute a plan from `thoughts/shared/plans/`, phase by phase |
+| `/validate_plan` | Check implementation against plan success criteria |
+| `/research_codebase` | Document how existing code works (no suggestions, just facts) |
+| `/research_codebase_nt` | Same as above, without thoughts directory |
+| `/research_codebase_generic` | Same as above, generic variant |
+| `/describe_pr` | Generate a PR description from branch changes |
+| `/describe_pr_nt` | Same as above, without thoughts directory |
+| `/ci_describe_pr` | PR description for CI contexts |
+| `/commit` | Create a git commit with user approval |
+| `/ci_commit` | Create a git commit without user approval (CI contexts) |
+| `/debug` | Investigate issues via logs, database state, and git history |
+| `/founder_mode` | Retroactively create a JIRA ticket and PR for already-implemented work |
+| `/create_handoff` | Write a handoff document to transfer context to another session |
+| `/resume_handoff` | Pick up work from a handoff document |
+| `/local_review` | Set up a worktree to review a colleague's branch |
+
+The `_nt` variants skip thoughts directory integration for repos that don't use it.
+
+### Agents
+
+These are specialized sub-agents spawned automatically by the commands above. You don't invoke them directly.
+
+| Agent | Purpose |
+|---|---|
+| **codebase-locator** | Finds where files and components live in the repo |
+| **codebase-analyzer** | Traces data flow and explains how code works |
+| **codebase-pattern-finder** | Finds existing patterns and examples to model after |
+| **thoughts-locator** | Discovers relevant documents in the thoughts directory |
+| **thoughts-analyzer** | Extracts key insights from thoughts documents |
+| **jira-ticket-reader** | Fetches full JIRA ticket details via MCP server |
+| **jira-searcher** | Searches JIRA for related tickets and history via MCP server |
+| **web-search-researcher** | Researches external documentation and resources |
+
+### JIRA Integration
+
+The `jira-ticket-reader` and `jira-searcher` agents require a JIRA MCP server to be configured. When available, commands like `/create_plan` and `/research_codebase` will automatically use them to pull ticket details and search for related issues.
 
 ## Development
 
