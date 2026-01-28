@@ -18,23 +18,29 @@ BIN_DIR="$INSTALL_DIR/bin"
 REPO="BrightBlock/hyprlayer-cli"
 GITHUB_API="https://api.github.com/repos/$REPO/releases/latest"
 
-# Fetch latest release version
+# Auth header for private repos (set GITHUB_TOKEN env var)
+AUTH_HEADER=""
+if [ -n "$GITHUB_TOKEN" ]; then
+    AUTH_HEADER="Authorization: token $GITHUB_TOKEN"
+fi
+
+# Fetch latest release info
 echo "Fetching latest release..."
 if command -v curl &> /dev/null; then
-    VERSION=$(curl -s "$GITHUB_API" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+    RELEASE_JSON=$(curl -s ${AUTH_HEADER:+-H "$AUTH_HEADER"} "$GITHUB_API")
 elif command -v wget &> /dev/null; then
-    VERSION=$(wget -qO- "$GITHUB_API" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+    RELEASE_JSON=$(wget -qO- ${AUTH_HEADER:+--header="$AUTH_HEADER"} "$GITHUB_API")
 else
     echo -e "${RED}Error: Neither curl nor wget is installed${NC}"
     exit 1
 fi
 
+VERSION=$(echo "$RELEASE_JSON" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+
 if [ -z "$VERSION" ]; then
     echo -e "${RED}Error: Could not determine latest release version${NC}"
     exit 1
 fi
-
-DOWNLOAD_URL_BASE="https://github.com/$REPO/releases/download/$VERSION"
 
 # Detect OS and architecture
 OS="$(uname -s)"
@@ -96,16 +102,28 @@ mkdir -p "$BIN_DIR"
 mkdir -p "$INSTALL_DIR"
 
 # Download binary
-DOWNLOAD_URL="$DOWNLOAD_URL_BASE/$BINARY"
-echo "Downloading from: $DOWNLOAD_URL"
-
-if command -v curl &> /dev/null; then
-    curl -L -o "$BIN_DIR/hyprlayer" "$DOWNLOAD_URL"
-elif command -v wget &> /dev/null; then
-    wget -O "$BIN_DIR/hyprlayer" "$DOWNLOAD_URL"
+if [ -n "$GITHUB_TOKEN" ]; then
+    # Private repo: download via API with Accept header
+    ASSET_URL=$(echo "$RELEASE_JSON" | grep -B5 "\"name\": \"$BINARY\"" | grep '"url"' | head -1 | sed -E 's/.*"url": "([^"]+)".*/\1/')
+    if [ -z "$ASSET_URL" ]; then
+        echo -e "${RED}Error: Could not find asset $BINARY in release $VERSION${NC}"
+        exit 1
+    fi
+    echo "Downloading $BINARY ($VERSION)..."
+    if command -v curl &> /dev/null; then
+        curl -sL -H "$AUTH_HEADER" -H "Accept: application/octet-stream" -o "$BIN_DIR/hyprlayer" "$ASSET_URL"
+    elif command -v wget &> /dev/null; then
+        wget -q --header="$AUTH_HEADER" --header="Accept: application/octet-stream" -O "$BIN_DIR/hyprlayer" "$ASSET_URL"
+    fi
 else
-    echo -e "${RED}Error: Neither curl nor wget is installed${NC}"
-    exit 1
+    # Public repo: download via browser URL
+    DOWNLOAD_URL="https://github.com/$REPO/releases/download/$VERSION/$BINARY"
+    echo "Downloading $BINARY ($VERSION)..."
+    if command -v curl &> /dev/null; then
+        curl -sL -o "$BIN_DIR/hyprlayer" "$DOWNLOAD_URL"
+    elif command -v wget &> /dev/null; then
+        wget -q -O "$BIN_DIR/hyprlayer" "$DOWNLOAD_URL"
+    fi
 fi
 
 # Make binary executable
@@ -120,9 +138,9 @@ TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 
 if command -v curl &> /dev/null; then
-    curl -sL -o "$TMPDIR/repo.tar.gz" "$ARCHIVE_URL"
+    curl -sL ${AUTH_HEADER:+-H "$AUTH_HEADER"} -o "$TMPDIR/repo.tar.gz" "$ARCHIVE_URL"
 elif command -v wget &> /dev/null; then
-    wget -qO "$TMPDIR/repo.tar.gz" "$ARCHIVE_URL"
+    wget -q ${AUTH_HEADER:+--header="$AUTH_HEADER"} -O "$TMPDIR/repo.tar.gz" "$ARCHIVE_URL"
 fi
 
 tar -xzf "$TMPDIR/repo.tar.gz" -C "$TMPDIR"
