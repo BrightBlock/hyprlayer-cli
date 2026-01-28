@@ -23,7 +23,7 @@ jobs:
             binary: hyprlayer-aarch64-unknown-linux-gnu
             cross: true
           - target: x86_64-apple-darwin
-            runner: macos-13
+            runner: macos-15-intel
             binary: hyprlayer-x86_64-apple-darwin
           - target: aarch64-apple-darwin
             runner: macos-14
