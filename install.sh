@@ -1,5 +1,5 @@
 #!/bin/bash
-# HyprLayer Installer - Version 1.0.0
+# HyprLayer Installer
 # Install script for hyprlayer CLI
 
 set -e
@@ -14,10 +14,27 @@ NC='\033[0m' # No Color
 INSTALL_DIR="$HOME/.hyprlayer"
 BIN_DIR="$INSTALL_DIR/bin"
 
-# Get latest release info
+# Repository info
 REPO="BrightBlock/hyprlayer-cli"
 GITHUB_API="https://api.github.com/repos/$REPO/releases/latest"
-DOWNLOAD_URL_BASE="https://github.com/$REPO/releases/download/v1.0.0"
+
+# Fetch latest release version
+echo "Fetching latest release..."
+if command -v curl &> /dev/null; then
+    VERSION=$(curl -s "$GITHUB_API" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+elif command -v wget &> /dev/null; then
+    VERSION=$(wget -qO- "$GITHUB_API" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+else
+    echo -e "${RED}Error: Neither curl nor wget is installed${NC}"
+    exit 1
+fi
+
+if [ -z "$VERSION" ]; then
+    echo -e "${RED}Error: Could not determine latest release version${NC}"
+    exit 1
+fi
+
+DOWNLOAD_URL_BASE="https://github.com/$REPO/releases/download/$VERSION"
 
 # Detect OS and architecture
 OS="$(uname -s)"
@@ -61,7 +78,7 @@ case "$OS" in
         ;;
 esac
 
-echo -e "${GREEN}Installing HyprLayer v1.0.0...${NC}"
+echo -e "${GREEN}Installing HyprLayer $VERSION...${NC}"
 
 # Check for existing installation
 if [ -d "$INSTALL_DIR" ]; then
@@ -96,7 +113,7 @@ chmod +x "$BIN_DIR/hyprlayer"
 
 # Install Claude Code agents and commands
 CLAUDE_DEST="$HOME/.claude"
-ARCHIVE_URL="https://github.com/$REPO/archive/refs/tags/v1.0.0.tar.gz"
+ARCHIVE_URL="https://github.com/$REPO/archive/refs/tags/$VERSION.tar.gz"
 
 echo "Installing Claude Code agents and commands..."
 TMPDIR=$(mktemp -d)
