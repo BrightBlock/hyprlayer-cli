@@ -40,7 +40,19 @@ case "$OS" in
         esac
         ;;
     Darwin)
-        BINARY="hyprlayer-x86_64-apple-darwin"
+        case "$ARCH" in
+            x86_64)
+                BINARY="hyprlayer-x86_64-apple-darwin"
+                ;;
+            arm64)
+                BINARY="hyprlayer-aarch64-apple-darwin"
+                ;;
+            *)
+                echo -e "${RED}Error: Unsupported architecture: $ARCH${NC}"
+                echo "Please use cargo install for this architecture"
+                exit 1
+                ;;
+        esac
         ;;
     *)
         echo -e "${RED}Error: Unsupported OS: $OS${NC}"
@@ -81,6 +93,31 @@ fi
 
 # Make binary executable
 chmod +x "$BIN_DIR/hyprlayer"
+
+# Install Claude Code agents and commands
+CLAUDE_DEST="$HOME/.claude"
+ARCHIVE_URL="https://github.com/$REPO/archive/refs/tags/v1.0.0.tar.gz"
+
+echo "Installing Claude Code agents and commands..."
+TMPDIR=$(mktemp -d)
+trap 'rm -rf "$TMPDIR"' EXIT
+
+if command -v curl &> /dev/null; then
+    curl -sL -o "$TMPDIR/repo.tar.gz" "$ARCHIVE_URL"
+elif command -v wget &> /dev/null; then
+    wget -qO "$TMPDIR/repo.tar.gz" "$ARCHIVE_URL"
+fi
+
+tar -xzf "$TMPDIR/repo.tar.gz" -C "$TMPDIR"
+EXTRACTED_DIR=$(find "$TMPDIR" -maxdepth 1 -type d -name "hyprlayer-cli-*" | head -1)
+
+if [ -d "$EXTRACTED_DIR/claude" ]; then
+    mkdir -p "$CLAUDE_DEST"
+    cp -r "$EXTRACTED_DIR/claude"/. "$CLAUDE_DEST"/
+    echo -e "${GREEN}Claude Code configuration installed to $CLAUDE_DEST${NC}"
+else
+    echo -e "${YELLOW}Warning: Could not find Claude Code configuration in release archive${NC}"
+fi
 
 # Add to PATH
 echo ""
