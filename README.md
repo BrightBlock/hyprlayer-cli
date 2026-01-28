@@ -40,82 +40,111 @@ cd hyprlayer-cli
 cargo install --path .
 ```
 
+## Getting Started
+
+After installing the CLI, set up a thoughts profile to connect to your team's shared thoughts repository:
+
+1. **Clone the thoughts repository** into your home directory:
+
+```bash
+gh repo clone <org>/<thoughts-repo> ~/hyprlayer-thoughts
+```
+
+2. **Create a profile** pointing to the cloned directory:
+
+```bash
+hyprlayer thoughts profile create <PROFILE_NAME>
+```
+
+When prompted, specify the `~/hyprlayer-thoughts` directory as the thoughts repository path.
+
+3. **Initialize thoughts in a project.** Navigate to a project you want to use thoughts with, then run:
+
+```bash
+cd ~/Projects/my-project
+hyprlayer thoughts init --profile <PROFILE_NAME>
+```
+
+It will prompt you to create a new folder for your project inside the thoughts repository. Once complete, a `thoughts/` symlink structure is set up in your project directory.
+
+You can repeat step 3 for each project you work on.
+
 ## Usage
 
 ### Initialize Thoughts
 
 ```bash
 # Interactive setup
-hyprlayer init
+hyprlayer thoughts init
 
 # Use specific directory
-hyprlayer init --directory my-project
+hyprlayer thoughts init --directory my-project
 
 # Use a profile
-hyprlayer init --profile work
+hyprlayer thoughts init --profile work
 
 # Force reconfiguration
-hyprlayer init --force
+hyprlayer thoughts init --force
 ```
 
 ### Sync Thoughts
 
 ```bash
 # Sync with default message
-hyprlayer sync
+hyprlayer thoughts sync
 
 # Sync with custom message
-hyprlayer sync --message "Updated documentation"
+hyprlayer thoughts sync --message "Updated documentation"
 ```
 
 ### Show Status
 
 ```bash
-hyprlayer status
+hyprlayer thoughts status
 ```
 
 ### Remove Thoughts
 
 ```bash
-hyprlayer uninit
+hyprlayer thoughts uninit
 
 # Force removal
-hyprlayer uninit --force
+hyprlayer thoughts uninit --force
 ```
 
 ### Configuration
 
 ```bash
 # View configuration
-hyprlayer config
+hyprlayer thoughts config
 
 # Edit configuration
-hyprlayer config --edit
+hyprlayer thoughts config --edit
 
 # Output as JSON
-hyprlayer config --json
+hyprlayer thoughts config --json
 
 # Use custom config file
-hyprlayer config --config-file /path/to/config.json
+hyprlayer thoughts config --config-file /path/to/config.json
 ```
 
 ### Profile Management
 
 ```bash
 # Create a new profile
-hyprlayer profile-create work
+hyprlayer thoughts profile create work
 
 # List all profiles
-hyprlayer profile-list
+hyprlayer thoughts profile list
 
 # Show profile details
-hyprlayer profile-show work
+hyprlayer thoughts profile show work
 
 # Delete a profile
-hyprlayer profile-delete work
+hyprlayer thoughts profile delete work
 
 # Create profile with specific settings
-hyprlayer profile-create work --repo ~/thoughts-work --repos-dir repos --global-dir global
+hyprlayer thoughts profile create work --repo ~/thoughts-work --repos-dir repos --global-dir global
 ```
 
 ## Directory Structure
