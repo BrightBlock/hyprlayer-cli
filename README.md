@@ -16,7 +16,7 @@ A standalone Rust CLI for managing developer thoughts and notes, compatible with
 ### Option 1: Install from release (recommended)
 
 ```bash
-curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/BrightBlock/hyprlayer-cli/v1.0.2/install.sh | sh
+curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/BrightBlock/hyprlayer-cli/master/install.sh | sh
 ```
 
 This will:
