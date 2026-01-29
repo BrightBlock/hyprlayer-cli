@@ -75,7 +75,7 @@ pub struct ConfigArgsCmd {
 
 #[derive(Debug, Args)]
 #[command(
-    name = "profile-create",
+    name = "create",
     about = "Create a new thoughts profile",
     long_about = "Create a new thoughts profile"
 )]
@@ -93,7 +93,7 @@ pub struct ProfileCreateArgs {
 
 #[derive(Debug, Args)]
 #[command(
-    name = "profile-list",
+    name = "list",
     about = "List all thoughts profiles",
     long_about = "List all thoughts profiles"
 )]
@@ -106,7 +106,7 @@ pub struct ProfileListArgs {
 
 #[derive(Debug, Args)]
 #[command(
-    name = "profile-show",
+    name = "show",
     about = "Show details of a specific profile",
     long_about = "Show details of a specific profile"
 )]
@@ -120,7 +120,7 @@ pub struct ProfileShowArgs {
 
 #[derive(Debug, Args)]
 #[command(
-    name = "profile-delete",
+    name = "delete",
     about = "Delete a thoughts profile",
     long_about = "Delete a thoughts profile"
 )]
