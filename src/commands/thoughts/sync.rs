@@ -151,13 +151,23 @@ pub fn sync(message: Option<String>, config: ConfigArgs) -> Result<()> {
     println!("{}", "Creating searchable index...".blue());
     create_search_directory(&thoughts_dir)?;
 
+    // Determine the thoughts repo path based on profile mapping
+    let current_repo_str = current_repo.display().to_string();
+    let thoughts_repo_path = config
+        .repo_mappings
+        .get(&current_repo_str)
+        .and_then(|m| m.profile())
+        .and_then(|name| config.profiles.get(name))
+        .map(|p| p.thoughts_repo.clone())
+        .unwrap_or_else(|| config.thoughts_repo.clone());
+
     // Sync the thoughts repository
-    let expanded_repo = expand_path(&config.thoughts_repo);
+    let expanded_repo = expand_path(&thoughts_repo_path);
 
     if !expanded_repo.exists() {
         return Err(anyhow::anyhow!(
             "Thoughts repository not found at {}",
-            config.thoughts_repo
+            thoughts_repo_path
         ));
     }
 
