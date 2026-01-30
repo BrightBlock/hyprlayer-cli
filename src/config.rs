@@ -36,6 +36,17 @@ impl RepoMapping {
             RepoMapping::Object { profile, .. } => profile.as_deref(),
         }
     }
+
+    /// Create a new RepoMapping, using Object variant if profile is specified
+    pub fn new(mapped_name: &str, profile: &Option<String>) -> Self {
+        match profile {
+            Some(name) => RepoMapping::Object {
+                repo: mapped_name.to_string(),
+                profile: Some(name.clone()),
+            },
+            None => RepoMapping::String(mapped_name.to_string()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,6 +73,25 @@ pub struct EffectiveConfig {
 }
 
 impl ThoughtsConfig {
+    /// Validate that a profile exists in the config (if specified)
+    pub fn validate_profile(&self, profile: &Option<String>) -> Result<()> {
+        if let Some(name) = profile {
+            if !self.profiles.contains_key(name) {
+                return Err(anyhow::anyhow!("Profile \"{}\" does not exist", name));
+            }
+        }
+        Ok(())
+    }
+
+    /// Resolve effective thoughts_repo, repos_dir, global_dir based on profile
+    pub fn resolve_dirs(&self, profile: &Option<String>) -> (String, String, String) {
+        profile
+            .as_ref()
+            .and_then(|name| self.profiles.get(name))
+            .map(|p| (p.thoughts_repo.clone(), p.repos_dir.clone(), p.global_dir.clone()))
+            .unwrap_or_else(|| (self.thoughts_repo.clone(), self.repos_dir.clone(), self.global_dir.clone()))
+    }
+
     /// Load config from a file path
     pub fn load(config_path: &Path) -> Result<Self> {
         let content = fs::read_to_string(config_path)

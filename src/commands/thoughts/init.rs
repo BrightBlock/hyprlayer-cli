@@ -1,11 +1,8 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use colored::Colorize;
 use dialoguer::{Input, Select, theme::ColorfulTheme};
 use std::fs;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf, MAIN_SEPARATOR_STR as SEP};
-use std::process::Command;
 
 use crate::cli::InitArgs;
 use crate::config::{
@@ -13,8 +10,7 @@ use crate::config::{
     get_default_thoughts_repo, get_repo_name_from_path, sanitize_directory_name,
 };
 use crate::git_ops::GitRepo;
-
-const HOOK_VERSION: &str = "1";
+use crate::hooks;
 
 /// Context for the init operation
 struct InitContext {
@@ -38,13 +34,13 @@ pub fn init(args: InitArgs) -> Result<()> {
     let config_path = config.path()?;
     let mut thoughts_config = load_or_create_config(&config)?;
 
-    validate_profile(&thoughts_config, &profile)?;
+    thoughts_config.validate_profile(&profile)?;
 
     if !check_existing_setup(&current_repo, force)? {
         return Ok(());
     }
 
-    let (thoughts_repo, repos_dir, global_dir) = resolve_effective_config(&thoughts_config, &profile);
+    let (thoughts_repo, repos_dir, global_dir) = thoughts_config.resolve_dirs(&profile);
     let expanded_repo = expand_path(&thoughts_repo);
 
     ensure_repo_exists(&expanded_repo, &thoughts_repo)?;
@@ -55,7 +51,7 @@ pub fn init(args: InitArgs) -> Result<()> {
     let mapped_name = select_or_create_directory(&repos_path, &current_repo, directory, &thoughts_repo, &repos_dir)?;
 
     // Update config with mapping
-    let mapping = create_mapping(&mapped_name, &profile);
+    let mapping = RepoMapping::new(&mapped_name, &profile);
     thoughts_config.repo_mappings.insert(current_repo.display().to_string(), mapping);
     thoughts_config.save(&config_path)?;
     println!("{}", "✅ Global thoughts configuration saved".green());
@@ -143,15 +139,6 @@ fn prompt_for_username(theme: &ColorfulTheme) -> Result<String> {
     }
 }
 
-fn validate_profile(config: &ThoughtsConfig, profile: &Option<String>) -> Result<()> {
-    if let Some(name) = profile {
-        if !config.profiles.contains_key(name) {
-            return Err(anyhow::anyhow!("Profile \"{}\" does not exist", name));
-        }
-    }
-    Ok(())
-}
-
 fn check_existing_setup(current_repo: &Path, force: bool) -> Result<bool> {
     let thoughts_dir = current_repo.join("thoughts");
     if !thoughts_dir.exists() || force {
@@ -168,14 +155,6 @@ fn check_existing_setup(current_repo: &Path, force: bool) -> Result<bool> {
         println!("Setup cancelled.");
     }
     Ok(reconfigure)
-}
-
-fn resolve_effective_config(config: &ThoughtsConfig, profile: &Option<String>) -> (String, String, String) {
-    profile
-        .as_ref()
-        .and_then(|name| config.profiles.get(name))
-        .map(|p| (p.thoughts_repo.clone(), p.repos_dir.clone(), p.global_dir.clone()))
-        .unwrap_or_else(|| (config.thoughts_repo.clone(), config.repos_dir.clone(), config.global_dir.clone()))
 }
 
 fn ensure_repo_exists(expanded_repo: &Path, thoughts_repo: &str) -> Result<()> {
@@ -258,16 +237,6 @@ fn select_or_create_from_existing(
     }
 }
 
-fn create_mapping(mapped_name: &str, profile: &Option<String>) -> RepoMapping {
-    match profile {
-        Some(name) => RepoMapping::Object {
-            repo: mapped_name.to_string(),
-            profile: Some(name.clone()),
-        },
-        None => RepoMapping::String(mapped_name.to_string()),
-    }
-}
-
 fn setup_directory_structure(ctx: &InitContext) -> Result<()> {
     let repo_thoughts_path = ctx.expanded_repo.join(&ctx.repos_dir).join(&ctx.mapped_name);
     fs::create_dir_all(repo_thoughts_path.join(&ctx.thoughts_config.user))?;
@@ -342,7 +311,7 @@ fn create_symlinks(thoughts_dir: &Path, repo_thoughts_path: &Path, global_path: 
 }
 
 fn setup_hooks_and_print_summary(ctx: &InitContext) -> Result<()> {
-    let hooks_updated = setup_git_hooks(&ctx.current_repo)?;
+    let hooks_updated = hooks::setup_git_hooks(&ctx.current_repo)?;
     if !hooks_updated.is_empty() {
         println!("{}", format!("✓ Updated git hooks: {}", hooks_updated.join(", ")).yellow());
     }
@@ -382,132 +351,4 @@ fn print_summary(ctx: &InitContext) {
     println!("Protection enabled:");
     println!("  {} Pre-commit hook: Prevents committing thoughts/", "✓".green());
     println!("  {} Post-commit hook: Auto-syncs thoughts after commits", "✓".green());
-}
-
-// === Git Hooks ===
-
-fn hook_needs_update(hook_path: &Path) -> bool {
-    let Ok(content) = fs::read_to_string(hook_path) else {
-        return true;
-    };
-
-    if !content.contains("hyprlayer thoughts") {
-        return false;
-    }
-
-    content
-        .lines()
-        .find(|l| l.contains("# Version:"))
-        .and_then(|line| line.split(':').nth(1))
-        .and_then(|v| v.trim().parse::<u32>().ok())
-        .map(|v| v < HOOK_VERSION.parse::<u32>().unwrap_or(1))
-        .unwrap_or(true)
-}
-
-fn setup_git_hooks(repo_path: &Path) -> Result<Vec<String>> {
-    let hooks_dir = get_hooks_dir(repo_path)?;
-    fs::create_dir_all(&hooks_dir)?;
-
-    let mut updated = Vec::new();
-
-    if install_hook(&hooks_dir, "pre-commit", pre_commit_content())? {
-        updated.push("pre-commit".to_string());
-    }
-    if install_hook(&hooks_dir, "post-commit", post_commit_content())? {
-        updated.push("post-commit".to_string());
-    }
-
-    Ok(updated)
-}
-
-fn get_hooks_dir(repo_path: &Path) -> Result<PathBuf> {
-    let output = Command::new("git")
-        .args(["rev-parse", "--git-common-dir"])
-        .current_dir(repo_path)
-        .output()
-        .context("Failed to find git directory")?;
-
-    let git_common_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let git_common_dir = if Path::new(&git_common_dir).is_absolute() {
-        PathBuf::from(&git_common_dir)
-    } else {
-        repo_path.join(&git_common_dir)
-    };
-
-    Ok(git_common_dir.join("hooks"))
-}
-
-fn install_hook(hooks_dir: &Path, name: &str, content: String) -> Result<bool> {
-    let hook_path = hooks_dir.join(name);
-
-    if !hook_needs_update(&hook_path) {
-        return Ok(false);
-    }
-
-    // Backup existing non-hyprlayer hook
-    if hook_path.exists() {
-        let existing = fs::read_to_string(&hook_path)?;
-        if !existing.contains("hyprlayer thoughts") {
-            fs::rename(&hook_path, format!("{}.old", hook_path.display()))?;
-        }
-    }
-
-    fs::write(&hook_path, content)?;
-
-    #[cfg(unix)]
-    {
-        let mut perms = fs::metadata(&hook_path)?.permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&hook_path, perms)?;
-    }
-
-    Ok(true)
-}
-
-fn pre_commit_content() -> String {
-    format!(
-        r#"#!/bin/bash
-# hyprlayer thoughts protection - prevent committing thoughts directory
-# Version: {HOOK_VERSION}
-
-if git diff --cached --name-only | grep -q "^thoughts/"; then
-    echo "❌ Cannot commit thoughts/ to code repository"
-    echo "The thoughts directory should only exist in your separate thoughts repository."
-    git reset HEAD -- thoughts/
-    exit 1
-fi
-
-# Call any existing pre-commit hook
-SCRIPT_PATH="$(realpath "$0")"
-if [ -f "$SCRIPT_PATH.old" ]; then
-    "$SCRIPT_PATH.old" "$@"
-fi
-"#
-    )
-}
-
-fn post_commit_content() -> String {
-    format!(
-        r#"#!/bin/bash
-# hyprlayer thoughts auto-sync
-# Version: {HOOK_VERSION}
-
-# Check if we're in a worktree (skip auto-sync in worktrees)
-if [ -f .git ]; then
-    exit 0
-fi
-
-# Get the commit message
-COMMIT_MSG=$(git log -1 --pretty=%B)
-
-# Auto-sync thoughts after each commit (only in non-worktree repos)
-hyprlayer thoughts sync --message "Auto-sync with commit: $COMMIT_MSG" >/dev/null 2>&1 &
-
-# Call any existing post-commit hook
-SCRIPT_PATH="$(realpath "$0")"
-if [ -f "$SCRIPT_PATH.old" ]; then
-    "$SCRIPT_PATH.old" "$@"
-fi
-"#
-    )
 }

@@ -5,6 +5,7 @@ mod cli;
 mod commands;
 mod config;
 mod git_ops;
+mod hooks;
 
 use cli::{ProfileCommands, ThoughtsCommands};
 use commands::thoughts::profile::{
