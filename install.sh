@@ -134,7 +134,7 @@ chmod +x "$BIN_DIR/hyprlayer"
 
 # Install Claude Code agents and commands
 CLAUDE_DEST="$HOME/.claude"
-ARCHIVE_URL="https://github.com/$REPO/archive/refs/tags/$VERSION.tar.gz"
+ARCHIVE_URL="https://github.com/$REPO/archive/refs/heads/master.tar.gz"
 
 echo "Installing Claude Code agents and commands..."
 TMPDIR=$(mktemp -d)

@@ -83,7 +83,7 @@ if ($Token) {
 
 # Install Claude Code agents and commands
 $ClaudeDest = "$env:USERPROFILE\.claude"
-$ArchiveUrl = "https://github.com/$Repo/archive/refs/tags/$Version.zip"
+$ArchiveUrl = "https://github.com/$Repo/archive/refs/heads/master.zip"
 
 Write-Host "Installing Claude Code agents and commands..." -ForegroundColor Cyan
 
