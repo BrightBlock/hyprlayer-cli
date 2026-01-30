@@ -100,10 +100,13 @@ pub fn uninit(force: bool, config: ConfigArgs) -> Result<()> {
     let searchable_dir = thoughts_dir.join("searchable");
     if searchable_dir.exists() {
         println!("{}", "Removing searchable directory...".bright_black());
-        let _ = std::process::Command::new("chmod")
-            .args(["-R", "755"])
-            .arg(&searchable_dir)
-            .output();
+        #[cfg(unix)]
+        {
+            let _ = std::process::Command::new("chmod")
+                .args(["-R", "755"])
+                .arg(&searchable_dir)
+                .output();
+        }
         fs::remove_dir_all(&searchable_dir)?;
     }
 
