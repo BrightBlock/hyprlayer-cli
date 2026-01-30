@@ -4,7 +4,7 @@ use dialoguer::{Input, Select, theme::ColorfulTheme};
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, MAIN_SEPARATOR_STR as SEP};
 use std::process::Command;
 
 use crate::cli::args::ConfigArgs;
@@ -92,14 +92,14 @@ pub fn init(
 
         println!();
         println!("{}", "Creating thoughts structure:".yellow());
-        println!("  {}/", thoughts_repo.cyan());
+        println!("  {}{SEP}", thoughts_repo.cyan());
         println!(
-            "    ├── {}/     {}",
+            "    ├── {}{SEP}     {}",
             repos_dir.cyan(),
             "(project-specific thoughts)".bright_black()
         );
         println!(
-            "    └── {}/    {}",
+            "    └── {}{SEP}    {}",
             global_dir.cyan(),
             "(cross-project thoughts)".bright_black()
         );
@@ -188,7 +188,7 @@ pub fn init(
         println!(
             "{}",
             format!(
-                "✓ Using existing: {}/{}/{}",
+                "✓ Using existing: {}{SEP}{}{SEP}{}",
                 thoughts_repo.cyan(),
                 repos_dir.cyan(),
                 sanitized.cyan()
@@ -218,7 +218,7 @@ pub fn init(
             println!(
                 "{}",
                 format!(
-                    "✓ Will create: {}/{}/{}",
+                    "✓ Will create: {}{SEP}{}{SEP}{}",
                     thoughts_repo.cyan(),
                     repos_dir.cyan(),
                     sanitized.cyan()
@@ -254,7 +254,7 @@ pub fn init(
                 println!(
                     "{}",
                     format!(
-                        "✓ Will create: {}/{}/{}",
+                        "✓ Will create: {}{SEP}{}{SEP}{}",
                         thoughts_repo.cyan(),
                         repos_dir.cyan(),
                         sanitized.cyan()
@@ -388,10 +388,10 @@ Thumbs.db
     println!("{}", "=== Summary ===".blue());
     println!();
     println!("Repository structure created:");
-    println!("  {}/", current_repo.display().to_string().cyan());
-    println!("    └── thoughts/");
+    println!("  {}{SEP}", current_repo.display().to_string().cyan());
+    println!("    └── thoughts{SEP}");
     println!(
-        "         ├── {}/     → {}/{}/{}/{}/",
+        "         ├── {}{SEP}     → {}{SEP}{}{SEP}{}{SEP}{}{SEP}",
         config.user.cyan(),
         thoughts_repo.cyan(),
         repos_dir.cyan(),
@@ -399,13 +399,13 @@ Thumbs.db
         config.user.cyan(),
     );
     println!(
-        "         ├── shared/      → {}/{}/{}/shared/",
+        "         ├── shared{SEP}      → {}{SEP}{}{SEP}{}{SEP}shared{SEP}",
         thoughts_repo.cyan(),
         repos_dir.cyan(),
         mapped_name.cyan(),
     );
     println!(
-        "         └── global/      → {}/{}/",
+        "         └── global{SEP}      → {}{SEP}{}{SEP}",
         thoughts_repo.cyan(),
         global_dir.cyan(),
     );
