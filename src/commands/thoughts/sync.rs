@@ -159,19 +159,21 @@ pub fn sync(args: SyncArgs) -> Result<()> {
     git_repo.add_all()?;
 
     // Check if there are changes to commit
-    if git_repo.has_changes()? {
-        let commit_message = message.unwrap_or_else(|| {
-            format!(
-                "Sync thoughts - {}",
-                chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
-            )
-        });
-
-        git_repo.commit(&commit_message)?;
-        println!("{}", "✅ Thoughts synchronized".green());
-    } else {
+    let has_changes = git_repo.has_changes()?;
+    if !has_changes {
         println!("{}", "No changes to commit".bright_black());
+        return Ok(());
     }
+
+    let commit_message = message.unwrap_or_else(|| {
+        format!(
+            "Sync thoughts - {}",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+        )
+    });
+
+    git_repo.commit(&commit_message)?;
+    println!("{}", "✅ Thoughts synchronized".green());
 
     // Try to sync with remote if configured
     let Some(_) = git_repo.remote_url() else {
