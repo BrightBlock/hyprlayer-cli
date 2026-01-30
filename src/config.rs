@@ -1,5 +1,7 @@
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,7 +22,6 @@ pub enum RepoMapping {
     },
 }
 
-#[allow(dead_code)]
 impl RepoMapping {
     pub fn repo(&self) -> &str {
         match self {
@@ -48,6 +49,71 @@ pub struct ThoughtsConfig {
     pub repo_mappings: HashMap<String, RepoMapping>,
     #[serde(default)]
     pub profiles: HashMap<String, ProfileConfig>,
+}
+
+/// Effective configuration for a specific repository
+#[derive(Debug, Clone)]
+pub struct EffectiveConfig {
+    pub thoughts_repo: String,
+    pub repos_dir: String,
+    pub global_dir: String,
+    pub profile_name: Option<String>,
+    pub mapped_name: Option<String>,
+}
+
+impl ThoughtsConfig {
+    /// Load config from a file path
+    pub fn load(config_path: &Path) -> Result<Self> {
+        let content = fs::read_to_string(config_path)
+            .with_context(|| format!("Failed to read config file: {}", config_path.display()))?;
+        let config_file: ConfigFile = serde_json::from_str(&content)
+            .with_context(|| "Failed to parse config file")?;
+        config_file
+            .thoughts
+            .ok_or_else(|| anyhow::anyhow!("No thoughts configuration found in config file"))
+    }
+
+    /// Save config to a file path
+    pub fn save(&self, config_path: &Path) -> Result<()> {
+        if let Some(parent) = config_path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create config directory: {}", parent.display()))?;
+        }
+        let content = serde_json::json!({ "thoughts": self });
+        let json = serde_json::to_string_pretty(&content)?;
+        fs::write(config_path, json)
+            .with_context(|| format!("Failed to write config file: {}", config_path.display()))?;
+        Ok(())
+    }
+
+    /// Get the effective configuration for a repository path.
+    /// Resolves profile-specific settings if the repo is mapped to a profile.
+    pub fn effective_config_for(&self, repo_path: &str) -> EffectiveConfig {
+        let mapping = self.repo_mappings.get(repo_path);
+
+        let profile_name = mapping
+            .and_then(|m| m.profile())
+            .filter(|name| self.profiles.contains_key(*name))
+            .map(|s| s.to_string());
+
+        let profile = profile_name
+            .as_ref()
+            .and_then(|name| self.profiles.get(name));
+
+        EffectiveConfig {
+            thoughts_repo: profile
+                .map(|p| p.thoughts_repo.clone())
+                .unwrap_or_else(|| self.thoughts_repo.clone()),
+            repos_dir: profile
+                .map(|p| p.repos_dir.clone())
+                .unwrap_or_else(|| self.repos_dir.clone()),
+            global_dir: profile
+                .map(|p| p.global_dir.clone())
+                .unwrap_or_else(|| self.global_dir.clone()),
+            profile_name,
+            mapped_name: mapping.map(|m| m.repo().to_string()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

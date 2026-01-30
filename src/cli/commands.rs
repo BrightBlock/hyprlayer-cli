@@ -1,5 +1,45 @@
-use super::args::ConfigArgs;
+use anyhow::Result;
 use clap::Args;
+use std::path::PathBuf;
+
+use crate::config::{expand_path, get_default_config_path, ThoughtsConfig};
+
+/// Common config file argument shared across commands
+#[derive(Debug, Clone, Args)]
+pub struct ConfigArgs {
+    #[arg(long, help = "Path to config file")]
+    pub config_file: Option<String>,
+}
+
+impl ConfigArgs {
+    /// Resolve the config file path (from arg or default)
+    pub fn path(&self) -> Result<PathBuf> {
+        match &self.config_file {
+            Some(p) => Ok(expand_path(p)),
+            None => get_default_config_path(),
+        }
+    }
+
+    /// Load existing config, error if not found
+    pub fn load(&self) -> Result<ThoughtsConfig> {
+        let path = self.path()?;
+        if !path.exists() {
+            return Err(anyhow::anyhow!(
+                "No thoughts configuration found. Run 'hyprlayer thoughts init' first."
+            ));
+        }
+        ThoughtsConfig::load(&path)
+    }
+
+    /// Load config if exists, returns None if config file doesn't exist
+    pub fn load_if_exists(&self) -> Result<Option<ThoughtsConfig>> {
+        let path = self.path()?;
+        if !path.exists() {
+            return Ok(None);
+        }
+        ThoughtsConfig::load(&path).map(Some)
+    }
+}
 
 #[derive(Debug, Args)]
 #[command(

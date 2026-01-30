@@ -1,58 +1,51 @@
 use anyhow::Result;
 use colored::Colorize;
-use std::fs;
+use std::path::MAIN_SEPARATOR_STR as SEP;
 
-use crate::cli::args::ConfigArgs;
-use crate::config::{ConfigFile, expand_path, get_current_repo_path, get_default_config_path};
+use crate::cli::StatusArgs;
+use crate::config::{expand_path, get_current_repo_path};
 use crate::git_ops::GitRepo;
 
-pub fn status(config: ConfigArgs) -> Result<()> {
+pub fn status(args: StatusArgs) -> Result<()> {
     println!("{}", "Thoughts Repository Status".blue());
     println!("{}", "=".repeat(50).bright_black());
     println!();
 
     // Load config
-    let config_path = config
-        .config_file
-        .as_ref()
-        .map(|p| expand_path(p))
-        .unwrap_or_else(|| get_default_config_path().unwrap());
-
-    if !config_path.exists() {
-        return Err(anyhow::anyhow!(
-            "No thoughts configuration found. Run 'hyprlayer init' first."
-        ));
-    }
-
-    let content = fs::read_to_string(&config_path)?;
-    let config_file: ConfigFile = serde_json::from_str(&content)?;
-    let config = config_file
-        .thoughts
-        .ok_or_else(|| anyhow::anyhow!("No thoughts configuration found"))?;
+    let thoughts_config = args.config.load()?;
 
     // Show configuration
     println!("{}", "Configuration:".yellow());
-    println!("  Repository: {}", config.thoughts_repo.cyan());
-    println!("  Repos directory: {}", config.repos_dir.cyan());
-    println!("  Global directory: {}", config.global_dir.cyan());
-    println!("  User: {}", config.user.cyan());
+    println!("  Repository: {}", thoughts_config.thoughts_repo.cyan());
+    println!("  Repos directory: {}", thoughts_config.repos_dir.cyan());
+    println!("  Global directory: {}", thoughts_config.global_dir.cyan());
+    println!("  User: {}", thoughts_config.user.cyan());
     println!(
         "  Mapped repos: {}",
-        config.repo_mappings.len().to_string().cyan()
+        thoughts_config.repo_mappings.len().to_string().cyan()
     );
     println!();
 
     // Check current repo mapping
     let current_repo = get_current_repo_path()?;
     let current_repo_str = current_repo.display().to_string();
+    let effective = thoughts_config.effective_config_for(&current_repo_str);
 
-    if let Some(mapping) = config.repo_mappings.get(&current_repo_str) {
-        let mapped_name = mapping.repo();
+    if let Some(ref mapped_name) = effective.mapped_name {
         println!("{}", "Current Repository:".yellow());
         println!("  Path: {}", current_repo_str.cyan());
+        if let Some(ref profile) = effective.profile_name {
+            println!("  Profile: {}", profile.cyan());
+        }
         println!(
-            "  Thoughts directory: {}/{}",
-            config.repos_dir.cyan(),
+            "  Thoughts directory: {}{SEP}{}",
+            effective.repos_dir.cyan(),
+            mapped_name.cyan()
+        );
+        println!(
+            "  Full path: {}{SEP}{}{SEP}{}",
+            effective.thoughts_repo.cyan(),
+            effective.repos_dir.cyan(),
             mapped_name.cyan()
         );
 
@@ -68,61 +61,54 @@ pub fn status(config: ConfigArgs) -> Result<()> {
     println!();
 
     // Show thoughts repository git status
-    let expanded_repo = expand_path(&config.thoughts_repo);
-    if expanded_repo.exists() {
-        println!("{}", "Thoughts Repository Git Status:".yellow());
-
-        match GitRepo::open(&expanded_repo) {
-            Ok(git_repo) => {
-                // Show last commit
-                match git_repo.get_last_commit() {
-                    Ok(last_commit) => {
-                        println!("  Last commit: {}", last_commit);
-                    }
-                    Err(_) => {
-                        println!("  Last commit: {}", "No commits yet".bright_black());
-                    }
-                }
-
-                // Show remote status
-                if git_repo.remote_url().is_some() {
-                    println!("  Remote: {}", "origin configured".green());
-                } else {
-                    println!("  Remote: {}", "No remote configured".bright_black());
-                }
-
-                // Show uncommitted changes
-                match git_repo.has_changes() {
-                    Ok(true) => {
-                        println!();
-                        println!("{}", "Uncommitted changes:".yellow());
-                        if let Ok(status) = git_repo.status() {
-                            print!("{}", status);
-                        }
-                        println!();
-                        println!(
-                            "{}",
-                            "Run 'hyprlayer sync' to commit these changes".bright_black()
-                        );
-                    }
-                    Ok(false) => {
-                        println!();
-                        println!("{}", "✓ No uncommitted changes".green());
-                    }
-                    Err(e) => {
-                        println!("  Error checking status: {}", e);
-                    }
-                }
-            }
-            Err(e) => {
-                println!("  Error: {}", e.to_string().red());
-            }
-        }
-    } else {
+    let expanded_repo = expand_path(&effective.thoughts_repo);
+    if !expanded_repo.exists() {
         println!(
             "{}",
-            format!("Thoughts repository not found at {}", config.thoughts_repo).red()
+            format!("Thoughts repository not found at {}", effective.thoughts_repo).red()
         );
+        return Ok(());
+    }
+
+    println!("{}", "Thoughts Repository Git Status:".yellow());
+    let git_repo = match GitRepo::open(&expanded_repo) {
+        Ok(repo) => repo,
+        Err(e) => {
+            println!("  Error: {}", e.to_string().red());
+            return Ok(());
+        }
+    };
+
+    // Show last commit
+    let last_commit = git_repo
+        .get_last_commit()
+        .unwrap_or_else(|_| "No commits yet".bright_black().to_string());
+    println!("  Last commit: {}", last_commit);
+
+    // Show remote status
+    let remote_status = git_repo
+        .remote_url()
+        .map(|_| "origin configured".green().to_string())
+        .unwrap_or_else(|| "No remote configured".bright_black().to_string());
+    println!("  Remote: {}", remote_status);
+
+    // Show uncommitted changes
+    match git_repo.has_changes() {
+        Ok(true) => {
+            println!();
+            println!("{}", "Uncommitted changes:".yellow());
+            git_repo.status().iter().for_each(|s| print!("{}", s));
+            println!();
+            println!(
+                "{}",
+                "Run 'hyprlayer thoughts sync' to commit these changes".bright_black()
+            );
+        }
+        Ok(false) => {
+            println!();
+            println!("{}", "✓ No uncommitted changes".green());
+        }
+        Err(e) => println!("  Error checking status: {}", e),
     }
 
     Ok(())

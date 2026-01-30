@@ -1,16 +1,41 @@
 use anyhow::Result;
 use colored::Colorize;
-
-use crate::cli::args::ConfigArgs;
-use crate::config::{expand_path, get_default_config_path};
 use std::fs;
 
-pub fn delete(profile_name: String, force: bool, config: ConfigArgs) -> Result<()> {
-    let config_path = config
-        .config_file
-        .clone()
-        .map(|p| expand_path(&p))
-        .unwrap_or_else(|| get_default_config_path().unwrap());
+use crate::cli::ProfileDeleteArgs;
+
+fn check_profile_not_in_use(content: &str, profile_name: &str) -> Result<()> {
+    let config: serde_json::Value = serde_json::from_str(content)?;
+
+    let repo_mappings = config
+        .get("thoughts")
+        .and_then(|t| t.get("repo_mappings"))
+        .and_then(|m| m.as_object());
+
+    let Some(mappings) = repo_mappings else {
+        return Ok(());
+    };
+
+    let in_use_repo = mappings.iter().find(|(_, mapping)| {
+        mapping
+            .get("profile")
+            .and_then(|p| p.as_str())
+            .is_some_and(|p| p == profile_name)
+    });
+
+    match in_use_repo {
+        Some((repo, _)) => Err(anyhow::anyhow!(
+            "Profile \"{}\" is in use by repository: {}. Use --force to delete anyway.",
+            profile_name,
+            repo
+        )),
+        None => Ok(()),
+    }
+}
+
+pub fn delete(args: ProfileDeleteArgs) -> Result<()> {
+    let ProfileDeleteArgs { name: profile_name, force, config } = args;
+    let config_path = config.path()?;
 
     if !config_path.exists() {
         return Err(anyhow::anyhow!("No thoughts configuration found"));
@@ -18,33 +43,18 @@ pub fn delete(profile_name: String, force: bool, config: ConfigArgs) -> Result<(
 
     let content = fs::read_to_string(&config_path)?;
 
-    // Check if profile is in use
-    if !force
-        && let Some(thoughts) = serde_json::from_str::<serde_json::Value>(&content)?
-            .get("thoughts")
-            .and_then(|t| t.as_object())
-        && let Some(repo_mappings) = thoughts.get("repo_mappings").and_then(|m| m.as_object())
-    {
-        for (repo, mapping) in repo_mappings {
-            if let Some(profile) = mapping.get("profile").and_then(|p| p.as_str())
-                && profile == profile_name
-            {
-                return Err(anyhow::anyhow!(
-                    "Profile \"{}\" is in use by repository: {}. Use --force to delete anyway.",
-                    profile_name,
-                    repo
-                ));
-            }
-        }
+    // Check if profile is in use (unless force)
+    if !force {
+        check_profile_not_in_use(&content, &profile_name)?;
     }
 
-    let mut config: serde_json::Value = serde_json::from_str(&content)?;
-    let thoughts_config = config
+    let mut config_json: serde_json::Value = serde_json::from_str(&content)?;
+    let thoughts_obj = config_json
         .get_mut("thoughts")
         .and_then(|t| t.as_object_mut())
         .ok_or_else(|| anyhow::anyhow!("No thoughts configuration"))?;
 
-    let profiles = thoughts_config
+    let profiles = thoughts_obj
         .get_mut("profiles")
         .and_then(|p| p.as_object_mut())
         .ok_or_else(|| anyhow::anyhow!("No profiles configured"))?;
@@ -59,10 +69,10 @@ pub fn delete(profile_name: String, force: bool, config: ConfigArgs) -> Result<(
     profiles.remove(&profile_name);
 
     if profiles.is_empty() {
-        thoughts_config.remove("profiles");
+        thoughts_obj.remove("profiles");
     }
 
-    fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
+    fs::write(&config_path, serde_json::to_string_pretty(&config_json)?)?;
 
     println!(
         "{}",

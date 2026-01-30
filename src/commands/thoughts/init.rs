@@ -4,458 +4,423 @@ use dialoguer::{Input, Select, theme::ColorfulTheme};
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, MAIN_SEPARATOR_STR as SEP};
+use std::path::{Path, PathBuf, MAIN_SEPARATOR_STR as SEP};
 use std::process::Command;
 
-use crate::cli::args::ConfigArgs;
+use crate::cli::InitArgs;
 use crate::config::{
-    ConfigFile, RepoMapping, ThoughtsConfig, expand_path, get_current_repo_path,
-    get_default_config_path, get_default_thoughts_repo, get_repo_name_from_path,
-    sanitize_directory_name,
+    RepoMapping, ThoughtsConfig, expand_path, get_current_repo_path,
+    get_default_thoughts_repo, get_repo_name_from_path, sanitize_directory_name,
 };
 use crate::git_ops::GitRepo;
 
 const HOOK_VERSION: &str = "1";
 
-pub fn init(
-    force: bool,
-    directory: Option<String>,
-    profile: Option<String>,
-    config: ConfigArgs,
-) -> Result<()> {
+/// Context for the init operation
+struct InitContext {
+    current_repo: PathBuf,
+    thoughts_config: ThoughtsConfig,
+    thoughts_repo: String,
+    repos_dir: String,
+    global_dir: String,
+    expanded_repo: PathBuf,
+    mapped_name: String,
+}
+
+pub fn init(args: InitArgs) -> Result<()> {
+    let InitArgs { force, directory, profile, config } = args;
     let current_repo = get_current_repo_path()?;
 
-    // Check if we're in a git repository
     if !GitRepo::is_repo(&current_repo) {
         return Err(anyhow::anyhow!("Not in a git repository"));
     }
 
-    // Load or create global config
-    let config_path = config
-        .config_file
-        .clone()
-        .map(|p| expand_path(&p))
-        .unwrap_or_else(|| get_default_config_path().unwrap());
+    let config_path = config.path()?;
+    let mut thoughts_config = load_or_create_config(&config)?;
 
-    let mut config = if config_path.exists() {
-        let content = fs::read_to_string(&config_path)?;
-        let config_file: ConfigFile = serde_json::from_str(&content)?;
-        config_file
-            .thoughts
-            .ok_or_else(|| anyhow::anyhow!("No thoughts configuration found"))?
-    } else {
-        // Create initial config
-        let theme = ColorfulTheme::default();
+    validate_profile(&thoughts_config, &profile)?;
 
-        println!("{}", "=== Initial Thoughts Setup ===".blue());
-        println!();
-
-        let default_repo = get_default_thoughts_repo()?.display().to_string();
-        let mut thoughts_repo: String = Input::with_theme(&theme)
-            .with_prompt("Thoughts repository location")
-            .default(default_repo.clone())
-            .allow_empty(true)
-            .interact()?;
-
-        if thoughts_repo.is_empty() {
-            thoughts_repo = default_repo;
-        }
-
-        println!();
-        let repos_dir: String = Input::with_theme(&theme)
-            .with_prompt("Directory name for repository-specific thoughts")
-            .default("repos".to_string())
-            .interact()?;
-
-        let global_dir: String = Input::with_theme(&theme)
-            .with_prompt("Directory name for global thoughts")
-            .default("global".to_string())
-            .interact()?;
-
-        let default_user = std::env::var("USER")
-            .or_else(|_| std::env::var("USERNAME"))
-            .unwrap_or_else(|_| "user".to_string());
-        let user = loop {
-            let input: String = Input::with_theme(&theme)
-                .with_prompt("Your username")
-                .default(default_user.clone())
-                .interact()?;
-
-            if input.to_lowercase() != "global" {
-                break input;
-            }
-            println!(
-                "{}",
-                "Username cannot be \"global\" as it's reserved for cross-project thoughts.".red()
-            );
-        };
-
-        println!();
-        println!("{}", "Creating thoughts structure:".yellow());
-        println!("  {}{SEP}", thoughts_repo.cyan());
-        println!(
-            "    ├── {}{SEP}     {}",
-            repos_dir.cyan(),
-            "(project-specific thoughts)".bright_black()
-        );
-        println!(
-            "    └── {}{SEP}    {}",
-            global_dir.cyan(),
-            "(cross-project thoughts)".bright_black()
-        );
-        println!();
-
-        ThoughtsConfig {
-            thoughts_repo: thoughts_repo.clone(),
-            repos_dir,
-            global_dir,
-            user,
-            repo_mappings: Default::default(),
-            profiles: Default::default(),
-        }
-    };
-
-    // Validate profile if specified
-    if let Some(profile_name) = &profile
-        && !config.profiles.contains_key(profile_name)
-    {
-        return Err(anyhow::anyhow!(
-            "Profile \"{}\" does not exist",
-            profile_name
-        ));
+    if !check_existing_setup(&current_repo, force)? {
+        return Ok(());
     }
 
-    // Check for existing setup
-    let thoughts_dir = current_repo.join("thoughts");
-    if thoughts_dir.exists() && !force {
-        println!(
-            "{}",
-            "Thoughts directory already configured for this repository.".yellow()
-        );
-        let reconfigure: bool = Input::with_theme(&ColorfulTheme::default())
-            .with_prompt("Do you want to reconfigure?")
-            .default(false)
-            .interact()?;
-
-        if !reconfigure {
-            println!("Setup cancelled.");
-            return Ok(());
-        }
-    }
-
-    // Determine profile config
-    let (thoughts_repo, repos_dir, global_dir) = if let Some(profile_name) = &profile {
-        let profile = config.profiles.get(profile_name).unwrap();
-        (
-            profile.thoughts_repo.clone(),
-            profile.repos_dir.clone(),
-            profile.global_dir.clone(),
-        )
-    } else {
-        (
-            config.thoughts_repo.clone(),
-            config.repos_dir.clone(),
-            config.global_dir.clone(),
-        )
-    };
-
+    let (thoughts_repo, repos_dir, global_dir) = resolve_effective_config(&thoughts_config, &profile);
     let expanded_repo = expand_path(&thoughts_repo);
 
-    // Ensure thoughts repo exists
-    if !expanded_repo.exists() {
-        fs::create_dir_all(&expanded_repo)?;
-        println!(
-            "{}",
-            format!("Created thoughts repository at {}", thoughts_repo.cyan()).green()
-        );
-    }
+    ensure_repo_exists(&expanded_repo, &thoughts_repo)?;
 
-    // Create directory structure
     let repos_path = expanded_repo.join(&repos_dir);
-    if !repos_path.exists() {
-        fs::create_dir_all(&repos_path)?;
+    fs::create_dir_all(&repos_path)?;
+
+    let mapped_name = select_or_create_directory(&repos_path, &current_repo, directory, &thoughts_repo, &repos_dir)?;
+
+    // Update config with mapping
+    let mapping = create_mapping(&mapped_name, &profile);
+    thoughts_config.repo_mappings.insert(current_repo.display().to_string(), mapping);
+    thoughts_config.save(&config_path)?;
+    println!("{}", "✅ Global thoughts configuration saved".green());
+
+    let ctx = InitContext {
+        current_repo,
+        thoughts_config,
+        thoughts_repo,
+        repos_dir,
+        global_dir,
+        expanded_repo,
+        mapped_name,
+    };
+
+    setup_directory_structure(&ctx)?;
+    initialize_git_if_needed(&ctx)?;
+    setup_symlinks(&ctx)?;
+    setup_hooks_and_print_summary(&ctx)?;
+
+    Ok(())
+}
+
+fn load_or_create_config(config: &crate::cli::ConfigArgs) -> Result<ThoughtsConfig> {
+    if let Some(existing) = config.load_if_exists()? {
+        return Ok(existing);
     }
 
-    // Map current repository
-    let mapped_name = if let Some(dir) = directory {
-        let sanitized = sanitize_directory_name(&dir);
-        if !repos_path.join(&sanitized).exists() {
-            return Err(anyhow::anyhow!(
-                "Directory \"{}\" not found in thoughts repository",
-                sanitized
-            ));
+    let theme = ColorfulTheme::default();
+    println!("{}", "=== Initial Thoughts Setup ===".blue());
+    println!();
+
+    let default_repo = get_default_thoughts_repo()?.display().to_string();
+    let thoughts_repo: String = Input::with_theme(&theme)
+        .with_prompt("Thoughts repository location")
+        .default(default_repo.clone())
+        .allow_empty(true)
+        .interact()
+        .map(|s: String| if s.is_empty() { default_repo } else { s })?;
+
+    println!();
+    let repos_dir: String = Input::with_theme(&theme)
+        .with_prompt("Directory name for repository-specific thoughts")
+        .default("repos".to_string())
+        .interact()?;
+
+    let global_dir: String = Input::with_theme(&theme)
+        .with_prompt("Directory name for global thoughts")
+        .default("global".to_string())
+        .interact()?;
+
+    let user = prompt_for_username(&theme)?;
+
+    println!();
+    println!("{}", "Creating thoughts structure:".yellow());
+    println!("  {}{SEP}", thoughts_repo.cyan());
+    println!("    ├── {}{SEP}     {}", repos_dir.cyan(), "(project-specific thoughts)".bright_black());
+    println!("    └── {}{SEP}    {}", global_dir.cyan(), "(cross-project thoughts)".bright_black());
+    println!();
+
+    Ok(ThoughtsConfig {
+        thoughts_repo,
+        repos_dir,
+        global_dir,
+        user,
+        repo_mappings: Default::default(),
+        profiles: Default::default(),
+    })
+}
+
+fn prompt_for_username(theme: &ColorfulTheme) -> Result<String> {
+    let default_user = std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .unwrap_or_else(|_| "user".to_string());
+
+    loop {
+        let input: String = Input::with_theme(theme)
+            .with_prompt("Your username")
+            .default(default_user.clone())
+            .interact()?;
+
+        if input.to_lowercase() != "global" {
+            return Ok(input);
         }
-        println!(
-            "{}",
-            format!(
-                "✓ Using existing: {}{SEP}{}{SEP}{}",
-                thoughts_repo.cyan(),
-                repos_dir.cyan(),
-                sanitized.cyan()
-            )
-            .green()
-        );
-        sanitized
+        println!("{}", "Username cannot be \"global\" as it's reserved for cross-project thoughts.".red());
+    }
+}
+
+fn validate_profile(config: &ThoughtsConfig, profile: &Option<String>) -> Result<()> {
+    if let Some(name) = profile {
+        if !config.profiles.contains_key(name) {
+            return Err(anyhow::anyhow!("Profile \"{}\" does not exist", name));
+        }
+    }
+    Ok(())
+}
+
+fn check_existing_setup(current_repo: &Path, force: bool) -> Result<bool> {
+    let thoughts_dir = current_repo.join("thoughts");
+    if !thoughts_dir.exists() || force {
+        return Ok(true);
+    }
+
+    println!("{}", "Thoughts directory already configured for this repository.".yellow());
+    let reconfigure: bool = Input::with_theme(&ColorfulTheme::default())
+        .with_prompt("Do you want to reconfigure?")
+        .default(false)
+        .interact()?;
+
+    if !reconfigure {
+        println!("Setup cancelled.");
+    }
+    Ok(reconfigure)
+}
+
+fn resolve_effective_config(config: &ThoughtsConfig, profile: &Option<String>) -> (String, String, String) {
+    profile
+        .as_ref()
+        .and_then(|name| config.profiles.get(name))
+        .map(|p| (p.thoughts_repo.clone(), p.repos_dir.clone(), p.global_dir.clone()))
+        .unwrap_or_else(|| (config.thoughts_repo.clone(), config.repos_dir.clone(), config.global_dir.clone()))
+}
+
+fn ensure_repo_exists(expanded_repo: &Path, thoughts_repo: &str) -> Result<()> {
+    if !expanded_repo.exists() {
+        fs::create_dir_all(expanded_repo)?;
+        println!("{}", format!("Created thoughts repository at {}", thoughts_repo.cyan()).green());
+    }
+    Ok(())
+}
+
+fn select_or_create_directory(
+    repos_path: &Path,
+    current_repo: &Path,
+    directory: Option<String>,
+    thoughts_repo: &str,
+    repos_dir: &str,
+) -> Result<String> {
+    if let Some(dir) = directory {
+        return use_existing_directory(repos_path, &dir, thoughts_repo, repos_dir);
+    }
+
+    let existing_repos = list_existing_repos(repos_path)?;
+
+    if existing_repos.is_empty() {
+        prompt_for_new_directory(current_repo, thoughts_repo, repos_dir)
     } else {
-        let existing_repos: Vec<_> = fs::read_dir(&repos_path)?
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().is_dir())
-            .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
-            .map(|e| e.file_name().to_string_lossy().to_string())
-            .collect();
+        select_or_create_from_existing(&existing_repos, current_repo, thoughts_repo, repos_dir)
+    }
+}
 
-        if existing_repos.is_empty() {
-            let default_name = get_repo_name_from_path(&current_repo);
-            let input: String = Input::with_theme(&ColorfulTheme::default())
-                .with_prompt(format!(
-                    "Directory name for this project's thoughts [{}]",
-                    default_name
-                ))
-                .default(default_name)
-                .interact()?;
+fn use_existing_directory(repos_path: &Path, dir: &str, thoughts_repo: &str, repos_dir: &str) -> Result<String> {
+    let sanitized = sanitize_directory_name(dir);
+    if !repos_path.join(&sanitized).exists() {
+        return Err(anyhow::anyhow!("Directory \"{}\" not found in thoughts repository", sanitized));
+    }
+    println!("{}", format!("✓ Using existing: {}{SEP}{}{SEP}{}", thoughts_repo.cyan(), repos_dir.cyan(), sanitized.cyan()).green());
+    Ok(sanitized)
+}
 
-            let sanitized = sanitize_directory_name(&input);
-            println!(
-                "{}",
-                format!(
-                    "✓ Will create: {}{SEP}{}{SEP}{}",
-                    thoughts_repo.cyan(),
-                    repos_dir.cyan(),
-                    sanitized.cyan()
-                )
-                .green()
-            );
-            sanitized
-        } else {
-            let mut options = existing_repos
-                .iter()
-                .map(|r| format!("Use existing: {}", r))
-                .collect::<Vec<_>>();
-            options.push("→ Create new directory".to_string());
+fn list_existing_repos(repos_path: &Path) -> Result<Vec<String>> {
+    Ok(fs::read_dir(repos_path)?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect())
+}
 
-            let selection = Select::with_theme(&ColorfulTheme::default())
-                .with_prompt("Select or create a thoughts directory for this repository")
-                .items(&options)
-                .default(0)
-                .interact()?;
+fn prompt_for_new_directory(current_repo: &Path, thoughts_repo: &str, repos_dir: &str) -> Result<String> {
+    let default_name = get_repo_name_from_path(current_repo);
+    let input: String = Input::with_theme(&ColorfulTheme::default())
+        .with_prompt(format!("Directory name for this project's thoughts [{}]", default_name))
+        .default(default_name)
+        .interact()?;
 
-            if selection == options.len() - 1 {
-                // Create new
-                let default_name = get_repo_name_from_path(&current_repo);
-                let input: String = Input::with_theme(&ColorfulTheme::default())
-                    .with_prompt(format!(
-                        "Directory name for this project's thoughts [{}]",
-                        default_name
-                    ))
-                    .default(default_name)
-                    .interact()?;
+    let sanitized = sanitize_directory_name(&input);
+    println!("{}", format!("✓ Will create: {}{SEP}{}{SEP}{}", thoughts_repo.cyan(), repos_dir.cyan(), sanitized.cyan()).green());
+    Ok(sanitized)
+}
 
-                let sanitized = sanitize_directory_name(&input);
-                println!(
-                    "{}",
-                    format!(
-                        "✓ Will create: {}{SEP}{}{SEP}{}",
-                        thoughts_repo.cyan(),
-                        repos_dir.cyan(),
-                        sanitized.cyan()
-                    )
-                    .green()
-                );
-                sanitized
-            } else {
-                existing_repos[selection].clone()
-            }
-        }
-    };
+fn select_or_create_from_existing(
+    existing_repos: &[String],
+    current_repo: &Path,
+    thoughts_repo: &str,
+    repos_dir: &str,
+) -> Result<String> {
+    let mut options: Vec<String> = existing_repos.iter().map(|r| format!("Use existing: {}", r)).collect();
+    options.push("→ Create new directory".to_string());
 
-    // Add to repo mappings
-    let mapping = if let Some(profile_name) = &profile {
-        RepoMapping::Object {
-            repo: mapped_name.clone(),
-            profile: Some(profile_name.clone()),
-        }
+    let selection = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Select or create a thoughts directory for this repository")
+        .items(&options)
+        .default(0)
+        .interact()?;
+
+    if selection == options.len() - 1 {
+        prompt_for_new_directory(current_repo, thoughts_repo, repos_dir)
     } else {
-        RepoMapping::String(mapped_name.clone())
-    };
-    config
-        .repo_mappings
-        .insert(current_repo.display().to_string(), mapping);
+        Ok(existing_repos[selection].clone())
+    }
+}
 
-    // Save config
-    let config_dir = config_path.parent().expect("config_path parent");
-    fs::create_dir_all(config_dir)?;
-    let content = serde_json::json!({ "thoughts": config });
-    fs::write(&config_path, serde_json::to_string_pretty(&content)?)?;
-    println!("{}", "✅ Global thoughts configuration created".green());
+fn create_mapping(mapped_name: &str, profile: &Option<String>) -> RepoMapping {
+    match profile {
+        Some(name) => RepoMapping::Object {
+            repo: mapped_name.to_string(),
+            profile: Some(name.clone()),
+        },
+        None => RepoMapping::String(mapped_name.to_string()),
+    }
+}
 
-    // Create directory structure
-    let repo_thoughts_path = repos_path.join(&mapped_name);
-    fs::create_dir_all(repo_thoughts_path.join(&config.user))?;
+fn setup_directory_structure(ctx: &InitContext) -> Result<()> {
+    let repo_thoughts_path = ctx.expanded_repo.join(&ctx.repos_dir).join(&ctx.mapped_name);
+    fs::create_dir_all(repo_thoughts_path.join(&ctx.thoughts_config.user))?;
     fs::create_dir_all(repo_thoughts_path.join("shared"))?;
 
-    let global_path = expanded_repo.join(&global_dir);
-    fs::create_dir_all(global_path.join(&config.user))?;
+    let global_path = ctx.expanded_repo.join(&ctx.global_dir);
+    fs::create_dir_all(global_path.join(&ctx.thoughts_config.user))?;
     fs::create_dir_all(global_path.join("shared"))?;
 
-    // Initialize git repo if needed
-    if !GitRepo::is_repo(&expanded_repo) {
-        let _ = GitRepo::init(&expanded_repo);
-        let gitignore = r#"# OS files
-.DS_Store
-Thumbs.db
+    Ok(())
+}
 
-# Editor files
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# Temporary files
-*.tmp
-*.bak
-"#;
-        fs::write(expanded_repo.join(".gitignore"), gitignore)?;
-
-        // Initial commit
-        let git_repo = GitRepo::open(&expanded_repo)?;
-        git_repo.add_all()?;
-        git_repo.commit("Initial thoughts repository setup")?;
+fn initialize_git_if_needed(ctx: &InitContext) -> Result<()> {
+    if GitRepo::is_repo(&ctx.expanded_repo) {
+        return Ok(());
     }
 
-    // Create thoughts directory in current repo
+    GitRepo::init(&ctx.expanded_repo)?;
+
+    let gitignore = "# OS files\n.DS_Store\nThumbs.db\n\n# Editor files\n.vscode/\n.idea/\n*.swp\n*.swo\n*~\n\n# Temporary files\n*.tmp\n*.bak\n";
+    fs::write(ctx.expanded_repo.join(".gitignore"), gitignore)?;
+
+    let git_repo = GitRepo::open(&ctx.expanded_repo)?;
+    git_repo.add_all()?;
+    git_repo.commit("Initial thoughts repository setup")?;
+
+    Ok(())
+}
+
+fn setup_symlinks(ctx: &InitContext) -> Result<()> {
+    let thoughts_dir = ctx.current_repo.join("thoughts");
+    let repo_thoughts_path = ctx.expanded_repo.join(&ctx.repos_dir).join(&ctx.mapped_name);
+    let global_path = ctx.expanded_repo.join(&ctx.global_dir);
+
     if thoughts_dir.exists() {
-        // Remove existing
-        std::fs::remove_dir_all(&thoughts_dir)?;
+        fs::remove_dir_all(&thoughts_dir)?;
     }
     fs::create_dir(&thoughts_dir)?;
 
-    // Create symlinks
-    #[cfg(unix)]
-    {
-        std::os::unix::fs::symlink(
-            repo_thoughts_path.join(&config.user),
-            thoughts_dir.join(&config.user),
-        )?;
-        std::os::unix::fs::symlink(
-            repo_thoughts_path.join("shared"),
-            thoughts_dir.join("shared"),
-        )?;
-        std::os::unix::fs::symlink(&global_path, thoughts_dir.join("global"))?;
-    }
+    create_symlinks(&thoughts_dir, &repo_thoughts_path, &global_path, &ctx.thoughts_config.user)
+}
 
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::symlink_dir;
+#[cfg(unix)]
+fn create_symlinks(thoughts_dir: &Path, repo_thoughts_path: &Path, global_path: &Path, user: &str) -> Result<()> {
+    std::os::unix::fs::symlink(repo_thoughts_path.join(user), thoughts_dir.join(user))?;
+    std::os::unix::fs::symlink(repo_thoughts_path.join("shared"), thoughts_dir.join("shared"))?;
+    std::os::unix::fs::symlink(global_path, thoughts_dir.join("global"))?;
+    Ok(())
+}
 
-        let create_symlink = |target: &std::path::Path, link: &std::path::Path| -> Result<()> {
-            symlink_dir(target, link).with_context(|| {
-                format!(
-                    "Failed to create symlink. On Windows, symlinks require either:\n\
-                     1. Run as Administrator, or\n\
-                     2. Enable Developer Mode in Settings > Update & Security > For developers\n\
-                     \n\
-                     Target: {}\n\
-                     Link: {}",
-                    target.display(),
-                    link.display()
-                )
-            })
-        };
+#[cfg(windows)]
+fn create_symlinks(thoughts_dir: &Path, repo_thoughts_path: &Path, global_path: &Path, user: &str) -> Result<()> {
+    use std::os::windows::fs::symlink_dir;
 
-        create_symlink(
-            &repo_thoughts_path.join(&config.user),
-            &thoughts_dir.join(&config.user),
-        )?;
-        create_symlink(
-            &repo_thoughts_path.join("shared"),
-            &thoughts_dir.join("shared"),
-        )?;
-        create_symlink(&global_path, &thoughts_dir.join("global"))?;
-    }
+    let create = |target: &Path, link: &Path| -> Result<()> {
+        symlink_dir(target, link).with_context(|| {
+            format!(
+                "Failed to create symlink. On Windows, symlinks require either:\n\
+                 1. Run as Administrator, or\n\
+                 2. Enable Developer Mode in Settings > Update & Security > For developers\n\n\
+                 Target: {}\nLink: {}",
+                target.display(),
+                link.display()
+            )
+        })
+    };
 
-    // Setup git hooks
-    let hooks_updated = setup_git_hooks(&current_repo)?;
+    create(&repo_thoughts_path.join(user), &thoughts_dir.join(user))?;
+    create(&repo_thoughts_path.join("shared"), &thoughts_dir.join("shared"))?;
+    create(global_path, &thoughts_dir.join("global"))?;
+    Ok(())
+}
+
+fn setup_hooks_and_print_summary(ctx: &InitContext) -> Result<()> {
+    let hooks_updated = setup_git_hooks(&ctx.current_repo)?;
     if !hooks_updated.is_empty() {
-        println!(
-            "{}",
-            format!("✓ Updated git hooks: {}", hooks_updated.join(", ")).yellow()
-        );
+        println!("{}", format!("✓ Updated git hooks: {}", hooks_updated.join(", ")).yellow());
     }
 
+    print_summary(ctx);
+    Ok(())
+}
+
+fn print_summary(ctx: &InitContext) {
     println!("{}", "✅ Thoughts setup complete!".green());
     println!();
     println!("{}", "=== Summary ===".blue());
     println!();
     println!("Repository structure created:");
-    println!("  {}{SEP}", current_repo.display().to_string().cyan());
+    println!("  {}{SEP}", ctx.current_repo.display().to_string().cyan());
     println!("    └── thoughts{SEP}");
     println!(
         "         ├── {}{SEP}     → {}{SEP}{}{SEP}{}{SEP}{}{SEP}",
-        config.user.cyan(),
-        thoughts_repo.cyan(),
-        repos_dir.cyan(),
-        mapped_name.cyan(),
-        config.user.cyan(),
+        ctx.thoughts_config.user.cyan(),
+        ctx.thoughts_repo.cyan(),
+        ctx.repos_dir.cyan(),
+        ctx.mapped_name.cyan(),
+        ctx.thoughts_config.user.cyan(),
     );
     println!(
         "         ├── shared{SEP}      → {}{SEP}{}{SEP}{}{SEP}shared{SEP}",
-        thoughts_repo.cyan(),
-        repos_dir.cyan(),
-        mapped_name.cyan(),
+        ctx.thoughts_repo.cyan(),
+        ctx.repos_dir.cyan(),
+        ctx.mapped_name.cyan(),
     );
     println!(
         "         └── global{SEP}      → {}{SEP}{}{SEP}",
-        thoughts_repo.cyan(),
-        global_dir.cyan(),
+        ctx.thoughts_repo.cyan(),
+        ctx.global_dir.cyan(),
     );
     println!();
     println!("Protection enabled:");
-    println!(
-        "  {} Pre-commit hook: Prevents committing thoughts/",
-        "✓".green()
-    );
-    println!(
-        "  {} Post-commit hook: Auto-syncs thoughts after commits",
-        "✓".green()
-    );
-
-    Ok(())
+    println!("  {} Pre-commit hook: Prevents committing thoughts/", "✓".green());
+    println!("  {} Post-commit hook: Auto-syncs thoughts after commits", "✓".green());
 }
 
-/// Check if a hook needs updating based on version
-fn hook_needs_update(hook_path: &Path) -> bool {
-    if !hook_path.exists() {
-        return true;
-    }
+// === Git Hooks ===
 
-    let content = match fs::read_to_string(hook_path) {
-        Ok(c) => c,
-        Err(_) => return true,
+fn hook_needs_update(hook_path: &Path) -> bool {
+    let Ok(content) = fs::read_to_string(hook_path) else {
+        return true;
     };
 
-    // Not our hook
     if !content.contains("hyprlayer thoughts") {
         return false;
     }
 
-    // Check version
-    if let Some(version_line) = content.lines().find(|l| l.contains("# Version:"))
-        && let Some(version) = version_line.split(':').nth(1)
-    {
-        let current_version: u32 = version.trim().parse().unwrap_or(0);
-        let target_version: u32 = HOOK_VERSION.parse().unwrap_or(1);
-        return current_version < target_version;
-    }
-
-    true // No version found, needs update
+    content
+        .lines()
+        .find(|l| l.contains("# Version:"))
+        .and_then(|line| line.split(':').nth(1))
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .map(|v| v < HOOK_VERSION.parse::<u32>().unwrap_or(1))
+        .unwrap_or(true)
 }
 
-/// Setup git hooks for thoughts protection
 fn setup_git_hooks(repo_path: &Path) -> Result<Vec<String>> {
+    let hooks_dir = get_hooks_dir(repo_path)?;
+    fs::create_dir_all(&hooks_dir)?;
+
     let mut updated = Vec::new();
 
-    // Get git common dir (handles worktrees)
+    if install_hook(&hooks_dir, "pre-commit", pre_commit_content())? {
+        updated.push("pre-commit".to_string());
+    }
+    if install_hook(&hooks_dir, "post-commit", post_commit_content())? {
+        updated.push("post-commit".to_string());
+    }
+
+    Ok(updated)
+}
+
+fn get_hooks_dir(repo_path: &Path) -> Result<PathBuf> {
     let output = Command::new("git")
         .args(["rev-parse", "--git-common-dir"])
         .current_dir(repo_path)
@@ -463,21 +428,47 @@ fn setup_git_hooks(repo_path: &Path) -> Result<Vec<String>> {
         .context("Failed to find git directory")?;
 
     let git_common_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let git_common_dir = if std::path::Path::new(&git_common_dir).is_absolute() {
-        std::path::PathBuf::from(&git_common_dir)
+    let git_common_dir = if Path::new(&git_common_dir).is_absolute() {
+        PathBuf::from(&git_common_dir)
     } else {
         repo_path.join(&git_common_dir)
     };
 
-    let hooks_dir = git_common_dir.join("hooks");
-    fs::create_dir_all(&hooks_dir)?;
+    Ok(git_common_dir.join("hooks"))
+}
 
-    // Pre-commit hook - prevents committing thoughts/
-    let pre_commit_path = hooks_dir.join("pre-commit");
-    let pre_commit_content = format!(
+fn install_hook(hooks_dir: &Path, name: &str, content: String) -> Result<bool> {
+    let hook_path = hooks_dir.join(name);
+
+    if !hook_needs_update(&hook_path) {
+        return Ok(false);
+    }
+
+    // Backup existing non-hyprlayer hook
+    if hook_path.exists() {
+        let existing = fs::read_to_string(&hook_path)?;
+        if !existing.contains("hyprlayer thoughts") {
+            fs::rename(&hook_path, format!("{}.old", hook_path.display()))?;
+        }
+    }
+
+    fs::write(&hook_path, content)?;
+
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(&hook_path)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&hook_path, perms)?;
+    }
+
+    Ok(true)
+}
+
+fn pre_commit_content() -> String {
+    format!(
         r#"#!/bin/bash
 # hyprlayer thoughts protection - prevent committing thoughts directory
-# Version: {}
+# Version: {HOOK_VERSION}
 
 if git diff --cached --name-only | grep -q "^thoughts/"; then
     echo "❌ Cannot commit thoughts/ to code repository"
@@ -487,21 +478,19 @@ if git diff --cached --name-only | grep -q "^thoughts/"; then
 fi
 
 # Call any existing pre-commit hook
-if [ -f "{}.old" ]; then
-    "{}.old" "$@"
+SCRIPT_PATH="$(realpath "$0")"
+if [ -f "$SCRIPT_PATH.old" ]; then
+    "$SCRIPT_PATH.old" "$@"
 fi
-"#,
-        HOOK_VERSION,
-        pre_commit_path.display(),
-        pre_commit_path.display()
-    );
+"#
+    )
+}
 
-    // Post-commit hook - auto-syncs thoughts
-    let post_commit_path = hooks_dir.join("post-commit");
-    let post_commit_content = format!(
+fn post_commit_content() -> String {
+    format!(
         r#"#!/bin/bash
 # hyprlayer thoughts auto-sync
-# Version: {}
+# Version: {HOOK_VERSION}
 
 # Check if we're in a worktree (skip auto-sync in worktrees)
 if [ -f .git ]; then
@@ -515,60 +504,10 @@ COMMIT_MSG=$(git log -1 --pretty=%B)
 hyprlayer thoughts sync --message "Auto-sync with commit: $COMMIT_MSG" >/dev/null 2>&1 &
 
 # Call any existing post-commit hook
-if [ -f "{}.old" ]; then
-    "{}.old" "$@"
+SCRIPT_PATH="$(realpath "$0")"
+if [ -f "$SCRIPT_PATH.old" ]; then
+    "$SCRIPT_PATH.old" "$@"
 fi
-"#,
-        HOOK_VERSION,
-        post_commit_path.display(),
-        post_commit_path.display()
-    );
-
-    // Install pre-commit hook
-    if hook_needs_update(&pre_commit_path) {
-        // Backup existing non-hyprlayer hook
-        if pre_commit_path.exists() {
-            let content = fs::read_to_string(&pre_commit_path)?;
-            if !content.contains("hyprlayer thoughts") {
-                fs::rename(
-                    &pre_commit_path,
-                    format!("{}.old", pre_commit_path.display()),
-                )?;
-            }
-        }
-
-        fs::write(&pre_commit_path, pre_commit_content)?;
-        #[cfg(unix)]
-        {
-            let mut perms = fs::metadata(&pre_commit_path)?.permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&pre_commit_path, perms)?;
-        }
-        updated.push("pre-commit".to_string());
-    }
-
-    // Install post-commit hook
-    if hook_needs_update(&post_commit_path) {
-        // Backup existing non-hyprlayer hook
-        if post_commit_path.exists() {
-            let content = fs::read_to_string(&post_commit_path)?;
-            if !content.contains("hyprlayer thoughts") {
-                fs::rename(
-                    &post_commit_path,
-                    format!("{}.old", post_commit_path.display()),
-                )?;
-            }
-        }
-
-        fs::write(&post_commit_path, post_commit_content)?;
-        #[cfg(unix)]
-        {
-            let mut perms = fs::metadata(&post_commit_path)?.permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&post_commit_path, perms)?;
-        }
-        updated.push("post-commit".to_string());
-    }
-
-    Ok(updated)
+"#
+    )
 }
