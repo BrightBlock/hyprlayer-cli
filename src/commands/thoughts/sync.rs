@@ -4,8 +4,8 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::cli::args::ConfigArgs;
-use crate::config::{ConfigFile, expand_path, get_current_repo_path, get_default_config_path};
+use crate::cli::SyncArgs;
+use crate::config::{expand_path, get_current_repo_path};
 use crate::git_ops::GitRepo;
 
 /// Recursively find all files following symlinks, avoiding cycles
@@ -118,27 +118,12 @@ fn create_search_directory(thoughts_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn sync(message: Option<String>, config: ConfigArgs) -> Result<()> {
+pub fn sync(args: SyncArgs) -> Result<()> {
+    let SyncArgs { message, config } = args;
     println!("{}", "Syncing thoughts...".blue());
 
     // Load config
-    let config_path = config
-        .config_file
-        .as_ref()
-        .map(|p| expand_path(p))
-        .unwrap_or_else(|| get_default_config_path().unwrap());
-
-    if !config_path.exists() {
-        return Err(anyhow::anyhow!(
-            "No thoughts configuration found. Run 'hyprlayer init' first."
-        ));
-    }
-
-    let content = fs::read_to_string(&config_path)?;
-    let config_file: ConfigFile = serde_json::from_str(&content)?;
-    let config = config_file
-        .thoughts
-        .ok_or_else(|| anyhow::anyhow!("No thoughts configuration found"))?;
+    let thoughts_config = config.load()?;
 
     // Check if current repo has thoughts setup
     let current_repo = get_current_repo_path()?;
@@ -146,7 +131,7 @@ pub fn sync(message: Option<String>, config: ConfigArgs) -> Result<()> {
 
     if !thoughts_dir.exists() {
         return Err(anyhow::anyhow!(
-            "Thoughts not initialized for this repository. Run 'hyprlayer init' first."
+            "Thoughts not initialized for this repository. Run 'hyprlayer thoughts init' first."
         ));
     }
 
@@ -156,21 +141,15 @@ pub fn sync(message: Option<String>, config: ConfigArgs) -> Result<()> {
 
     // Determine the thoughts repo path based on profile mapping
     let current_repo_str = current_repo.display().to_string();
-    let thoughts_repo_path = config
-        .repo_mappings
-        .get(&current_repo_str)
-        .and_then(|m| m.profile())
-        .and_then(|name| config.profiles.get(name))
-        .map(|p| p.thoughts_repo.clone())
-        .unwrap_or_else(|| config.thoughts_repo.clone());
+    let effective = thoughts_config.effective_config_for(&current_repo_str);
 
     // Sync the thoughts repository
-    let expanded_repo = expand_path(&thoughts_repo_path);
+    let expanded_repo = expand_path(&effective.thoughts_repo);
 
     if !expanded_repo.exists() {
         return Err(anyhow::anyhow!(
             "Thoughts repository not found at {}",
-            thoughts_repo_path
+            effective.thoughts_repo
         ));
     }
 
@@ -194,34 +173,28 @@ pub fn sync(message: Option<String>, config: ConfigArgs) -> Result<()> {
         println!("{}", "No changes to commit".bright_black());
     }
 
-    // Try to pull latest changes
-    if git_repo.remote_url().is_some() {
-        println!("{}", "Pulling latest changes...".bright_black());
-        match git_repo.pull_rebase() {
-            Ok(_) => {}
-            Err(e) => {
-                println!(
-                    "{}",
-                    format!("Warning: Could not pull latest changes: {}", e).yellow()
-                );
-            }
-        }
-
-        // Try to push
-        println!("{}", "Pushing to remote...".bright_black());
-        match git_repo.push() {
-            Ok(_) => {}
-            Err(e) => {
-                println!(
-                    "{}",
-                    format!("⚠️  Could not push to remote: {}", e).yellow()
-                );
-            }
-        }
-    } else {
+    // Try to sync with remote if configured
+    let Some(_) = git_repo.remote_url() else {
         println!(
             "{}",
             "ℹ️  No remote configured for thoughts repository".yellow()
+        );
+        return Ok(());
+    };
+
+    println!("{}", "Pulling latest changes...".bright_black());
+    if let Err(e) = git_repo.pull_rebase() {
+        println!(
+            "{}",
+            format!("Warning: Could not pull latest changes: {}", e).yellow()
+        );
+    }
+
+    println!("{}", "Pushing to remote...".bright_black());
+    if let Err(e) = git_repo.push() {
+        println!(
+            "{}",
+            format!("⚠️  Could not push to remote: {}", e).yellow()
         );
     }
 

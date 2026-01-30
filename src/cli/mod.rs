@@ -1,8 +1,7 @@
-pub mod args;
 pub mod commands;
 
 use clap::{Parser, Subcommand};
-use commands::*;
+pub use commands::*;
 
 const VERSION: &str = concat!(
     env!("CARGO_PKG_VERSION"),

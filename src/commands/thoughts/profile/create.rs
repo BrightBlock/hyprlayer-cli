@@ -2,26 +2,55 @@ use anyhow::Result;
 use colored::Colorize;
 use dialoguer::Input;
 use dialoguer::theme::ColorfulTheme;
-
-use crate::cli::args::ConfigArgs;
-use crate::config::{
-    expand_path, get_default_config_path, get_default_thoughts_repo, sanitize_profile_name,
-};
-use crate::git_ops::GitRepo;
 use std::fs;
 
-pub fn create(
-    profile_name: String,
-    repo: Option<String>,
-    repos_dir: Option<String>,
-    global_dir: Option<String>,
-    config: ConfigArgs,
-) -> Result<()> {
-    let config_path = config
-        .config_file
-        .clone()
-        .map(|p| expand_path(&p))
-        .unwrap_or_else(|| get_default_config_path().unwrap());
+use crate::cli::ProfileCreateArgs;
+use crate::config::{expand_path, get_default_thoughts_repo, sanitize_profile_name};
+use crate::git_ops::GitRepo;
+
+fn prompt_for_profile_config(profile_name: &str) -> Result<(String, String, String)> {
+    let theme = ColorfulTheme::default();
+
+    println!(
+        "{}",
+        format!("\n=== Creating Profile: {} ===\n", profile_name).blue()
+    );
+
+    let default_repo = format!(
+        "{}/{}",
+        get_default_thoughts_repo()?.display(),
+        profile_name
+    );
+    let thoughts_repo: String = Input::with_theme(&theme)
+        .with_prompt("Thoughts repository")
+        .default(default_repo.clone())
+        .allow_empty(true)
+        .interact()
+        .map(|s: String| if s.is_empty() { default_repo } else { s })?;
+
+    println!();
+    let repos_dir: String = Input::with_theme(&theme)
+        .with_prompt("Repository-specific thoughts directory")
+        .default("repos".to_string())
+        .interact()?;
+
+    let global_dir: String = Input::with_theme(&theme)
+        .with_prompt("Global thoughts directory")
+        .default("global".to_string())
+        .interact()?;
+
+    Ok((thoughts_repo, repos_dir, global_dir))
+}
+
+pub fn create(args: ProfileCreateArgs) -> Result<()> {
+    let ProfileCreateArgs {
+        name: profile_name,
+        repo,
+        repos_dir,
+        global_dir,
+        config,
+    } = args;
+    let config_path = config.path()?;
 
     let content = if config_path.exists() {
         fs::read_to_string(&config_path)?
@@ -51,10 +80,12 @@ pub fn create(
     }
 
     // Check if profile exists
-    if let Some(profiles) = thoughts_config.get("profiles")
-        && let Some(profiles_obj) = profiles.as_object()
-        && profiles_obj.contains_key(&sanitized_name)
-    {
+    let profile_exists = thoughts_config
+        .get("profiles")
+        .and_then(|p| p.as_object())
+        .is_some_and(|obj| obj.contains_key(&sanitized_name));
+
+    if profile_exists {
         return Err(anyhow::anyhow!(
             "Profile \"{}\" already exists",
             sanitized_name
@@ -66,47 +97,10 @@ pub fn create(
         .get_mut("profiles")
         .and_then(|p| p.as_object_mut());
 
-    let (thoughts_repo, repos_dir, global_dir) =
-        if let (Some(r), Some(rd), Some(gd)) = (repo, repos_dir, global_dir) {
-            (r, rd, gd)
-        } else {
-            let theme = ColorfulTheme::default();
-
-            println!(
-                "{}",
-                format!("\n=== Creating Profile: {} ===\n", sanitized_name).blue()
-            );
-
-            let default_repo = format!(
-                "{}/{}",
-                get_default_thoughts_repo()?.display(),
-                sanitized_name
-            );
-            let thoughts_repo: String = Input::with_theme(&theme)
-                .with_prompt("Thoughts repository")
-                .default(default_repo.clone())
-                .allow_empty(true)
-                .interact()?;
-
-            let thoughts_repo = if thoughts_repo.is_empty() {
-                default_repo
-            } else {
-                thoughts_repo
-            };
-
-            println!();
-            let repos_dir: String = Input::with_theme(&theme)
-                .with_prompt("Repository-specific thoughts directory")
-                .default("repos".to_string())
-                .interact()?;
-
-            let global_dir: String = Input::with_theme(&theme)
-                .with_prompt("Global thoughts directory")
-                .default("global".to_string())
-                .interact()?;
-
-            (thoughts_repo, repos_dir, global_dir)
-        };
+    let (thoughts_repo, repos_dir, global_dir) = match (repo, repos_dir, global_dir) {
+        (Some(r), Some(rd), Some(gd)) => (r, rd, gd),
+        _ => prompt_for_profile_config(&sanitized_name)?,
+    };
 
     // Create profile object
     let profile = serde_json::json!({
@@ -116,18 +110,13 @@ pub fn create(
     });
 
     // Add to profiles
-    match profiles {
-        Some(p) => {
-            p.insert(sanitized_name.clone(), profile);
-        }
-        None => {
-            let mut new_profiles = serde_json::Map::new();
-            new_profiles.insert(sanitized_name.clone(), profile);
-            thoughts_config.insert(
-                "profiles".to_string(),
-                serde_json::Value::Object(new_profiles),
-            );
-        }
+    if let Some(p) = profiles {
+        p.insert(sanitized_name.clone(), profile);
+    } else {
+        thoughts_config.insert(
+            "profiles".to_string(),
+            serde_json::json!({ sanitized_name.clone(): profile }),
+        );
     }
 
     // Save config
@@ -159,10 +148,10 @@ pub fn create(
     println!();
     println!("{}", "Next steps:".bright_black());
     println!(
-        "  1. Run \"hyprlayer init --profile {}\" in a repository",
+        "  1. Run \"hyprlayer thoughts init --profile {}\" in a repository",
         sanitized_name.cyan()
     );
-    println!("  2. Your thoughts will sync to to profile's repository");
+    println!("  2. Your thoughts will sync to the profile's repository");
 
     Ok(())
 }

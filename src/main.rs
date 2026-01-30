@@ -15,26 +15,16 @@ use commands::thoughts::{config_cmd, init, status, sync, uninit};
 fn main() -> Result<()> {
     match cli::Cli::parse() {
         cli::Cli::Thoughts { command } => match command {
-            ThoughtsCommands::Init(args) => {
-                init::init(args.force, args.directory, args.profile, args.config)?
-            }
-            ThoughtsCommands::Uninit(args) => uninit::uninit(args.force, args.config)?,
-            ThoughtsCommands::Sync(args) => sync::sync(args.message, args.config)?,
-            ThoughtsCommands::Status(args) => status::status(args.config)?,
-            ThoughtsCommands::Config(args) => config_cmd::config(args.edit, args.json, args.config)?,
+            ThoughtsCommands::Init(args) => init::init(args)?,
+            ThoughtsCommands::Uninit(args) => uninit::uninit(args)?,
+            ThoughtsCommands::Sync(args) => sync::sync(args)?,
+            ThoughtsCommands::Status(args) => status::status(args)?,
+            ThoughtsCommands::Config(args) => config_cmd::config(args)?,
             ThoughtsCommands::Profile { command } => match command {
-                ProfileCommands::Create(args) => profile_create::create(
-                    args.name,
-                    args.repo,
-                    args.repos_dir,
-                    args.global_dir,
-                    args.config,
-                )?,
-                ProfileCommands::List(args) => profile_list::list(args.json, args.config)?,
-                ProfileCommands::Show(args) => profile_show::show(args.name, args.json, args.config)?,
-                ProfileCommands::Delete(args) => {
-                    profile_delete::delete(args.name, args.force, args.config)?
-                }
+                ProfileCommands::Create(args) => profile_create::create(args)?,
+                ProfileCommands::List(args) => profile_list::list(args)?,
+                ProfileCommands::Show(args) => profile_show::show(args)?,
+                ProfileCommands::Delete(args) => profile_delete::delete(args)?,
             },
         },
     }
