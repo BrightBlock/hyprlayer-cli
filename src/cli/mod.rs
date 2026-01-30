@@ -4,8 +4,16 @@ pub mod commands;
 use clap::{Parser, Subcommand};
 use commands::*;
 
+const VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("GIT_COMMIT"),
+    ")"
+);
+
 #[derive(Parser, Debug)]
 #[command(name = "hyprlayer")]
+#[command(version = VERSION)]
 #[command(about = "Manage developer thoughts and notes", long_about = None)]
 pub enum Cli {
     /// Manage developer thoughts and notes
