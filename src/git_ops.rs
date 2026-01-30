@@ -91,19 +91,14 @@ impl GitRepo {
 
         let sig = self.repo.signature()?;
 
-        let head_commit_id = {
-            if let Ok(head) = self.repo.head() {
-                head.target().and_then(|oid| self.repo.find_commit(oid).ok())
-            } else {
-                None
-            }
-        };
+        let head_commit = self
+            .repo
+            .head()
+            .ok()
+            .and_then(|head| head.target())
+            .and_then(|oid| self.repo.find_commit(oid).ok());
 
-        let parents = if let Some(ref commit) = head_commit_id {
-            vec![commit]
-        } else {
-            vec![]
-        };
+        let parents: Vec<_> = head_commit.iter().collect();
 
         let _commit_id = self.repo.commit(
             Some("HEAD"),
@@ -144,12 +139,7 @@ impl GitRepo {
 
     pub fn remote_url(&self) -> Option<String> {
         let remote = self.repo.find_remote("origin").ok()?;
-        let url = remote.url()?.to_string();
-        if url.is_empty() {
-            None
-        } else {
-            Some(url)
-        }
+        remote.url().map(String::from)
     }
 
     /// Pull with rebase using git command (git2 doesn't support rebase well)

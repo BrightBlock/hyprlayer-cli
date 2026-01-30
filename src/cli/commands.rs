@@ -14,10 +14,9 @@ pub struct ConfigArgs {
 impl ConfigArgs {
     /// Resolve the config file path (from arg or default)
     pub fn path(&self) -> Result<PathBuf> {
-        match &self.config_file {
-            Some(p) => Ok(expand_path(p)),
-            None => get_default_config_path(),
-        }
+        self.config_file
+            .as_ref()
+            .map_or_else(get_default_config_path, |p| Ok(expand_path(p)))
     }
 
     /// Load existing config, error if not found
