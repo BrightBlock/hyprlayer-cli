@@ -31,6 +31,37 @@ This will:
 - Add it to your PATH automatically
 - Detect your shell (bash, zsh, fish) and provide setup instructions
 
+### Windows Installation
+
+Requires the [GitHub CLI](https://cli.github.com/) (`gh`) to be installed and authenticated.
+
+**Prerequisites:** Install the [Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe) if not already installed.
+
+```powershell
+$env:GITHUB_TOKEN = (gh auth token); `
+  Invoke-Expression ((Invoke-WebRequest `
+  -Uri "https://raw.githubusercontent.com/BrightBlock/hyprlayer-cli/master/install.ps1" `
+  -Headers @{Authorization = "token $env:GITHUB_TOKEN"}).Content)
+```
+
+If you get an execution policy error, run PowerShell as Administrator and execute:
+
+```powershell
+Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
+```
+
+Or run the script directly with bypass:
+
+```powershell
+powershell -ExecutionPolicy Bypass -Command { ... }
+```
+
+After installation, add to your PATH:
+
+```powershell
+[Environment]::SetEnvironmentVariable('PATH', $env:PATH + ';C:\Users\<username>\.hyprlayer\bin', 'User')
+```
+
 ### Option 2: Install with cargo
 
 ```bash
@@ -279,4 +310,5 @@ cargo build --release
 The release binaries will be created in `target/release/` with architecture-specific names:
 - `hyprlayer-x86_64-unknown-linux-gnu` (Linux x86_64)
 - `hyprlayer-aarch64-unknown-linux-gnu` (Linux ARM64)
-- `hyprlayer-x86_64-apple-darwin` (macOS x86_64)
+- `hyprlayer-aarch64-apple-darwin` (macOS Apple Silicon)
+- `hyprlayer-x86_64-pc-windows-msvc.exe` (Windows x86_64)
