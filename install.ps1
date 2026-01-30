@@ -110,6 +110,18 @@ try {
     Remove-Item -Recurse -Force $TempDir -ErrorAction SilentlyContinue
 }
 
+# Check for Visual C++ runtime
+$VCRuntimeInstalled = Test-Path "$env:SystemRoot\System32\vcruntime140.dll"
+if (-not $VCRuntimeInstalled) {
+    Write-Host ""
+    Write-Host "Warning: Visual C++ Runtime not found!" -ForegroundColor Red
+    Write-Host "HyprLayer requires the Visual C++ Redistributable to run." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "Download and install from:" -ForegroundColor Yellow
+    Write-Host "  https://aka.ms/vs/17/release/vc_redist.x64.exe" -ForegroundColor Cyan
+    Write-Host ""
+}
+
 Write-Host ""
 Write-Host "Installation successful!" -ForegroundColor Green
 Write-Host ""
