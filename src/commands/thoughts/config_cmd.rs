@@ -14,7 +14,13 @@ pub fn config(edit: bool, json: bool, config: ConfigArgs) -> Result<()> {
         .unwrap_or_else(|| get_default_config_path().unwrap());
 
     if edit {
-        let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+        let editor = std::env::var("EDITOR").unwrap_or_else(|_| {
+            if cfg!(windows) {
+                "notepad".to_string()
+            } else {
+                "vi".to_string()
+            }
+        });
         Command::new(&editor).arg(&config_path).status()?;
         return Ok(());
     }

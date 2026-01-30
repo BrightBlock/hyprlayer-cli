@@ -22,12 +22,12 @@ jobs:
             runner: ubuntu-latest
             binary: hyprlayer-aarch64-unknown-linux-gnu
             cross: true
-          - target: x86_64-apple-darwin
-            runner: macos-15-intel
-            binary: hyprlayer-x86_64-apple-darwin
           - target: aarch64-apple-darwin
             runner: macos-14
             binary: hyprlayer-aarch64-apple-darwin
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            binary: hyprlayer-x86_64-pc-windows-msvc.exe
 
     steps:
       - uses: actions/checkout@v4
@@ -50,7 +50,13 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Rename binary
-        run: mv target/${{ matrix.target }}/release/hyprlayer ${{ matrix.binary }}
+        shell: bash
+        run: |
+          if [[ "${{ matrix.target }}" == *"windows"* ]]; then
+            mv target/${{ matrix.target }}/release/hyprlayer.exe ${{ matrix.binary }}
+          else
+            mv target/${{ matrix.target }}/release/hyprlayer ${{ matrix.binary }}
+          fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

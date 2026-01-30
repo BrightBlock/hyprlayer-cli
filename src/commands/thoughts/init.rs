@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use dialoguer::{Input, Select, theme::ColorfulTheme};
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
@@ -71,7 +72,9 @@ pub fn init(
             .default("global".to_string())
             .interact()?;
 
-        let default_user = std::env::var("USER").unwrap_or_else(|_| "user".to_string());
+        let default_user = std::env::var("USER")
+            .or_else(|_| std::env::var("USERNAME"))
+            .unwrap_or_else(|_| "user".to_string());
         let user = loop {
             let input: String = Input::with_theme(&theme)
                 .with_prompt("Your username")
@@ -341,6 +344,36 @@ Thumbs.db
         std::os::unix::fs::symlink(&global_path, thoughts_dir.join("global"))?;
     }
 
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::symlink_dir;
+
+        let create_symlink = |target: &std::path::Path, link: &std::path::Path| -> Result<()> {
+            symlink_dir(target, link).with_context(|| {
+                format!(
+                    "Failed to create symlink. On Windows, symlinks require either:\n\
+                     1. Run as Administrator, or\n\
+                     2. Enable Developer Mode in Settings > Update & Security > For developers\n\
+                     \n\
+                     Target: {}\n\
+                     Link: {}",
+                    target.display(),
+                    link.display()
+                )
+            })
+        };
+
+        create_symlink(
+            &repo_thoughts_path.join(&config.user),
+            &thoughts_dir.join(&config.user),
+        )?;
+        create_symlink(
+            &repo_thoughts_path.join("shared"),
+            &thoughts_dir.join("shared"),
+        )?;
+        create_symlink(&global_path, &thoughts_dir.join("global"))?;
+    }
+
     // Setup git hooks
     let hooks_updated = setup_git_hooks(&current_repo)?;
     if !hooks_updated.is_empty() {
@@ -505,9 +538,12 @@ fi
         }
 
         fs::write(&pre_commit_path, pre_commit_content)?;
-        let mut perms = fs::metadata(&pre_commit_path)?.permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&pre_commit_path, perms)?;
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(&pre_commit_path)?.permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&pre_commit_path, perms)?;
+        }
         updated.push("pre-commit".to_string());
     }
 
@@ -525,9 +561,12 @@ fi
         }
 
         fs::write(&post_commit_path, post_commit_content)?;
-        let mut perms = fs::metadata(&post_commit_path)?.permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&post_commit_path, perms)?;
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(&post_commit_path)?.permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&post_commit_path, perms)?;
+        }
         updated.push("post-commit".to_string());
     }
 

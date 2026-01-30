@@ -18,10 +18,16 @@ BIN_DIR="$INSTALL_DIR/bin"
 REPO="BrightBlock/hyprlayer-cli"
 GITHUB_API="https://api.github.com/repos/$REPO/releases/latest"
 
-# Auth header for private repos (set GITHUB_TOKEN env var)
+# Auth header for private repos
+# Try GITHUB_TOKEN env var first, then gh CLI
+TOKEN="${GITHUB_TOKEN:-}"
+if [ -z "$TOKEN" ] && command -v gh &> /dev/null; then
+    TOKEN=$(gh auth token 2>/dev/null || true)
+fi
+
 AUTH_HEADER=""
-if [ -n "$GITHUB_TOKEN" ]; then
-    AUTH_HEADER="Authorization: token $GITHUB_TOKEN"
+if [ -n "$TOKEN" ]; then
+    AUTH_HEADER="Authorization: token $TOKEN"
 fi
 
 # Fetch latest release info
@@ -64,15 +70,12 @@ case "$OS" in
         ;;
     Darwin)
         case "$ARCH" in
-            x86_64)
-                BINARY="hyprlayer-x86_64-apple-darwin"
-                ;;
             arm64)
                 BINARY="hyprlayer-aarch64-apple-darwin"
                 ;;
             *)
                 echo -e "${RED}Error: Unsupported architecture: $ARCH${NC}"
-                echo "Please use cargo install for this architecture"
+                echo "Intel Macs are no longer supported. Please use cargo install."
                 exit 1
                 ;;
         esac
@@ -102,7 +105,7 @@ mkdir -p "$BIN_DIR"
 mkdir -p "$INSTALL_DIR"
 
 # Download binary
-if [ -n "$GITHUB_TOKEN" ]; then
+if [ -n "$TOKEN" ]; then
     # Private repo: download via API with Accept header
     ASSET_URL=$(echo "$RELEASE_JSON" | grep -B5 "\"name\": \"$BINARY\"" | grep '"url"' | head -1 | sed -E 's/.*"url": "([^"]+)".*/\1/')
     if [ -z "$ASSET_URL" ]; then

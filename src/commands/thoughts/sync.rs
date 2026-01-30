@@ -68,11 +68,14 @@ fn create_search_directory(thoughts_dir: &Path) -> Result<()> {
 
     // Remove existing searchable directory
     if search_dir.exists() {
-        // Reset permissions so we can delete
-        let _ = std::process::Command::new("chmod")
-            .args(["-R", "755"])
-            .arg(&search_dir)
-            .output();
+        // Reset permissions so we can delete (Unix only)
+        #[cfg(unix)]
+        {
+            let _ = std::process::Command::new("chmod")
+                .args(["-R", "755"])
+                .arg(&search_dir)
+                .output();
+        }
         fs::remove_dir_all(&search_dir)?;
     }
 
