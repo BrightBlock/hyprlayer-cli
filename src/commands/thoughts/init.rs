@@ -1,3 +1,5 @@
+#[cfg(windows)]
+use anyhow::Context;
 use anyhow::Result;
 use colored::Colorize;
 use dialoguer::{Input, Select, theme::ColorfulTheme};
