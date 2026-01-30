@@ -160,20 +160,18 @@ pub fn sync(args: SyncArgs) -> Result<()> {
 
     // Check if there are changes to commit
     let has_changes = git_repo.has_changes()?;
-    if !has_changes {
+    if has_changes {
+        let commit_message = message.unwrap_or_else(|| {
+            format!(
+                "Sync thoughts - {}",
+                chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+            )
+        });
+        git_repo.commit(&commit_message)?;
+        println!("{}", "✅ Thoughts synchronized".green());
+    } else {
         println!("{}", "No changes to commit".bright_black());
-        return Ok(());
     }
-
-    let commit_message = message.unwrap_or_else(|| {
-        format!(
-            "Sync thoughts - {}",
-            chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
-        )
-    });
-
-    git_repo.commit(&commit_message)?;
-    println!("{}", "✅ Thoughts synchronized".green());
 
     // Try to sync with remote if configured
     let Some(_) = git_repo.remote_url() else {
@@ -184,6 +182,7 @@ pub fn sync(args: SyncArgs) -> Result<()> {
         return Ok(());
     };
 
+    // Always pull to get remote changes
     println!("{}", "Pulling latest changes...".bright_black());
     if let Err(e) = git_repo.pull_rebase() {
         println!(
@@ -192,12 +191,15 @@ pub fn sync(args: SyncArgs) -> Result<()> {
         );
     }
 
-    println!("{}", "Pushing to remote...".bright_black());
-    if let Err(e) = git_repo.push() {
-        println!(
-            "{}",
-            format!("⚠️  Could not push to remote: {}", e).yellow()
-        );
+    // Only push if we committed changes
+    if has_changes {
+        println!("{}", "Pushing to remote...".bright_black());
+        if let Err(e) = git_repo.push() {
+            println!(
+                "{}",
+                format!("⚠️  Could not push to remote: {}", e).yellow()
+            );
+        }
     }
 
     Ok(())
