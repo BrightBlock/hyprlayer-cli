@@ -43,15 +43,15 @@ Then wait for the user's input.
    - Related implementation plans
    - Any JSON/data files mentioned
    - **IMPORTANT**: Use the Read tool WITHOUT limit/offset parameters to read entire files
-   - **CRITICAL**: DO NOT spawn sub-tasks before reading these files yourself in the main context
+   - **CRITICAL**: DO NOT delegate to sub-agents before reading these files yourself in the main context
    - **NEVER** read files partially - if a file is mentioned, read it completely
 
-2. **Spawn initial research tasks to gather context**:
-   Before asking the user any questions, use specialized agents to research in parallel:
+2. **Delegate initial research to sub-agents to gather context**:
+   Before asking the user any questions, use specialized agents to research:
 
-   - Use the **codebase-locator** agent to find all files related to the ticket/task
-   - Use the **codebase-analyzer** agent to understand how the current implementation works
-   - If a JIRA ticket is mentioned, use the **jira-ticket-reader** agent to get full details
+   - `@codebase-locator` -- Find all files related to the ticket/task
+   - `@codebase-analyzer` -- Understand how the current implementation works
+   - If a JIRA ticket is mentioned, `@jira-ticket-reader` -- Get full details
 
    These agents will:
    - Find relevant source files, configs, and tests
@@ -93,23 +93,22 @@ After getting initial clarifications:
 
 1. **If the user corrects any misunderstanding**:
    - DO NOT just accept the correction
-   - Spawn new research tasks to verify the correct information
+   - Delegate new research to sub-agents to verify the correct information
    - Read the specific files/directories they mention
    - Only proceed once you've verified the facts yourself
 
-2. **Create a research todo list** using TodoWrite to track exploration tasks
+2. **Create a research checklist** as a markdown checklist to track exploration tasks
 
-3. **Spawn parallel sub-tasks for comprehensive research**:
-   - Create multiple Task agents to research different aspects concurrently
+3. **Delegate to sub-agents for comprehensive research**:
    - Use the right agent for each type of research:
 
    **For deeper investigation:**
-   - **codebase-locator** - To find more specific files (e.g., "find all files that handle [specific component]")
-   - **codebase-analyzer** - To understand implementation details (e.g., "analyze how [system] works")
-   - **codebase-pattern-finder** - To find similar features we can model after
+   - `@codebase-locator` -- Find more specific files (e.g., "find all files that handle [specific component]")
+   - `@codebase-analyzer` -- Understand implementation details (e.g., "analyze how [system] works")
+   - `@codebase-pattern-finder` -- Find similar features we can model after
 
    **For related tickets:**
-   - **jira-searcher** - To find similar issues or past implementations
+   - `@jira-searcher` -- Find similar issues or past implementations
 
    Each agent knows how to:
    - Find the right files and code patterns
@@ -321,8 +320,8 @@ After structure approval:
    - Include "what we're NOT doing"
 
 5. **Track Progress**:
-   - Use TodoWrite to track planning tasks
-   - Update todos as you complete research
+   - Use a markdown checklist to track planning tasks
+   - Update the checklist as you complete research
    - Mark planning tasks complete when done
 
 6. **No Open Questions in Final Plan**:
@@ -387,12 +386,12 @@ After structure approval:
 - Maintain backwards compatibility
 - Include migration strategy
 
-## Sub-task Spawning Best Practices
+## Sub-agent Delegation Best Practices
 
-When spawning research sub-tasks:
+When delegating research to sub-agents:
 
-1. **Spawn multiple tasks in parallel** for efficiency
-2. **Each task should be focused** on a specific area
+1. **Delegate to multiple agents** for efficiency
+2. **Each agent request should be focused** on a specific area
 3. **Provide detailed instructions** including:
    - Exactly what to search for
    - Which directories to focus on
@@ -402,24 +401,21 @@ When spawning research sub-tasks:
    - If the ticket mentions "WUI", specify `humanlayer-wui/` directory
    - If it mentions "daemon", specify `hld/` directory
    - Never use generic terms like "UI" when you mean "WUI"
-   - Include the full path context in your prompts
-5. **Specify read-only tools** to use
+   - Include the full path context in your requests
+5. **Specify read-only operations** only
 6. **Request specific file:line references** in responses
-7. **Wait for all tasks to complete** before synthesizing
-8. **Verify sub-task results**:
-   - If a sub-task returns unexpected results, spawn follow-up tasks
+7. **Wait for all agents to complete** before synthesizing
+8. **Verify agent results**:
+   - If an agent returns unexpected results, delegate follow-up requests
    - Cross-check findings against the actual codebase
    - Don't accept results that seem incorrect
 
-Example of spawning multiple tasks:
-```python
-# Spawn these tasks concurrently:
-tasks = [
-    Task("Research database schema", db_research_prompt),
-    Task("Find API patterns", api_research_prompt),
-    Task("Investigate UI components", ui_research_prompt),
-    Task("Check test patterns", test_research_prompt)
-]
+Example of delegating to multiple agents:
+```
+@codebase-locator find all database schema files and migrations
+@codebase-analyzer analyze the API endpoint patterns in src/api/
+@codebase-pattern-finder find UI component patterns similar to [component]
+@codebase-locator find all test files related to [feature]
 ```
 
 ## Example Interaction Flow

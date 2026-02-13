@@ -57,8 +57,8 @@ Then wait for the user's input.
      - Action items and next steps
      - Other notes
 
-2. **Spawn focused research tasks**:
-   Based on the handoff content, spawn parallel research tasks to verify current state:
+2. **Delegate focused research to sub-agents**:
+   Based on the handoff content, delegate research to sub-agents to verify current state:
 
    ```
    Task 1 - Gather artifact context:
@@ -117,16 +117,16 @@ Then wait for the user's input.
 
 ### Step 3: Create Action Plan
 
-1. **Use TodoWrite to create task list**:
-   - Convert action items from handoff into todos
+1. **Create a markdown checklist**:
+   - Convert action items from handoff into a checklist
    - Add any new tasks discovered during analysis
    - Prioritize based on dependencies and handoff guidance
 
 2. **Present the plan**:
    ```
-   I've created a task list based on the handoff and current analysis:
+   I've created a checklist based on the handoff and current analysis:
 
-   [Show todo list]
+   [Show checklist]
 
    Ready to begin with the first task: [task description]?
    ```
@@ -159,7 +159,7 @@ Then wait for the user's input.
    - Build on discovered solutions
 
 4. **Track Continuity**:
-   - Use TodoWrite to maintain task continuity
+   - Use a markdown checklist to maintain task continuity
    - Reference the handoff document in commits
    - Document any deviations from original plan
    - Consider creating a new handoff when done
@@ -203,7 +203,7 @@ User: /resume_handoff specification/feature/handoffs/handoff-0.md
 Assistant: Let me read and analyze that handoff document...
 
 [Reads handoff completely]
-[Spawns research tasks]
+[Delegates research to sub-agents]
 [Waits for completion]
 [Reads identified files]
 
