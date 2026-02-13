@@ -6,6 +6,7 @@ use dialoguer::{Input, Select, theme::ColorfulTheme};
 use std::fs;
 use std::path::{Path, PathBuf, MAIN_SEPARATOR_STR as SEP};
 
+use crate::agents::AgentTool;
 use crate::cli::InitArgs;
 use crate::config::{
     RepoMapping, ThoughtsConfig, expand_path, get_current_repo_path,
@@ -35,6 +36,29 @@ pub fn init(args: InitArgs) -> Result<()> {
 
     let config_path = config.path()?;
     let mut thoughts_config = load_or_create_config(&config)?;
+
+    // Prompt for agent tool if not yet set, or allow changing with --force
+    if thoughts_config.agent_tool.is_none() || force {
+        let agent_tool = prompt_for_agent_tool(&ColorfulTheme::default())?;
+        thoughts_config.agent_tool = Some(agent_tool);
+        thoughts_config.save(&config_path)?;
+    }
+
+    // Always install/restore agent files when init is run.
+    // This runs before check_existing_setup() so agent files are
+    // restored even if the user declines thoughts reconfiguration.
+    if let Some(ref agent_tool) = thoughts_config.agent_tool {
+        agent_tool.install()?;
+        println!(
+            "{}",
+            format!(
+                "  {} agent files installed to {}",
+                agent_tool,
+                agent_tool.dest_display()
+            )
+            .green()
+        );
+    }
 
     thoughts_config.validate_profile(&profile)?;
 
@@ -105,6 +129,7 @@ fn load_or_create_config(config: &crate::cli::ConfigArgs) -> Result<ThoughtsConf
         .interact()?;
 
     let user = prompt_for_username(&theme)?;
+    let agent_tool = prompt_for_agent_tool(&theme)?;
 
     println!();
     println!("{}", "Creating thoughts structure:".yellow());
@@ -118,6 +143,7 @@ fn load_or_create_config(config: &crate::cli::ConfigArgs) -> Result<ThoughtsConf
         repos_dir,
         global_dir,
         user,
+        agent_tool: Some(agent_tool),
         repo_mappings: Default::default(),
         profiles: Default::default(),
     })
@@ -139,6 +165,17 @@ fn prompt_for_username(theme: &ColorfulTheme) -> Result<String> {
         }
         println!("{}", "Username cannot be \"global\" as it's reserved for cross-project thoughts.".red());
     }
+}
+
+fn prompt_for_agent_tool(theme: &ColorfulTheme) -> Result<AgentTool> {
+    let options: Vec<String> = AgentTool::ALL.iter().map(|t| t.to_string()).collect();
+    let selection = Select::with_theme(theme)
+        .with_prompt("Which AI tool do you use?")
+        .items(&options)
+        .default(0)
+        .interact()?;
+
+    Ok(AgentTool::ALL[selection].clone())
 }
 
 fn check_existing_setup(current_repo: &Path, force: bool) -> Result<bool> {
@@ -349,6 +386,14 @@ fn print_summary(ctx: &InitContext) {
         ctx.thoughts_repo.cyan(),
         ctx.global_dir.cyan(),
     );
+    if let Some(ref agent_tool) = ctx.thoughts_config.agent_tool {
+        println!();
+        println!(
+            "AI Tool: {} (agents installed to {})",
+            agent_tool.to_string().cyan(),
+            agent_tool.dest_display().cyan()
+        );
+    }
     println!();
     println!("Protection enabled:");
     println!("  {} Pre-commit hook: Prevents committing thoughts/", "✓".green());

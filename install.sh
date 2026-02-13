@@ -132,30 +132,10 @@ fi
 # Make binary executable
 chmod +x "$BIN_DIR/hyprlayer"
 
-# Install Claude Code agents and commands
-CLAUDE_DEST="$HOME/.claude"
-ARCHIVE_URL="https://github.com/$REPO/archive/refs/heads/master.tar.gz"
-
-echo "Installing Claude Code agents and commands..."
-TMPDIR=$(mktemp -d)
-trap 'rm -rf "$TMPDIR"' EXIT
-
-if command -v curl &> /dev/null; then
-    curl -sL ${AUTH_HEADER:+-H "$AUTH_HEADER"} -o "$TMPDIR/repo.tar.gz" "$ARCHIVE_URL"
-elif command -v wget &> /dev/null; then
-    wget -q ${AUTH_HEADER:+--header="$AUTH_HEADER"} -O "$TMPDIR/repo.tar.gz" "$ARCHIVE_URL"
-fi
-
-tar -xzf "$TMPDIR/repo.tar.gz" -C "$TMPDIR"
-EXTRACTED_DIR=$(find "$TMPDIR" -maxdepth 1 -type d -name "hyprlayer-cli-*" | head -1)
-
-if [ -d "$EXTRACTED_DIR/claude" ]; then
-    mkdir -p "$CLAUDE_DEST"
-    cp -r "$EXTRACTED_DIR/claude"/. "$CLAUDE_DEST"/
-    echo -e "${GREEN}Claude Code configuration installed to $CLAUDE_DEST${NC}"
-else
-    echo -e "${YELLOW}Warning: Could not find Claude Code configuration in release archive${NC}"
-fi
+# Agent files are now installed by `hyprlayer thoughts init`
+echo ""
+echo -e "${YELLOW}Agent files will be installed when you run 'hyprlayer thoughts init'${NC}"
+echo "You'll be prompted to choose between Claude Code and GitHub Copilot."
 
 # Add to PATH
 echo ""
