@@ -74,10 +74,10 @@ After the user describes the issue:
 
 ### Step 2: Investigate the Issue
 
-Spawn parallel Task agents for efficient investigation:
+Delegate to sub-agents for efficient investigation:
 
 ```
-Task 1 - Check Recent Logs:
+Agent 1 - Check Recent Logs:
 Find and analyze the most recent logs for errors:
 1. Find latest daemon log: ls -t ~/.humanlayer/logs/daemon-*.log | head -1
 2. Find latest WUI log: ls -t ~/.humanlayer/logs/wui-*.log | head -1
@@ -88,7 +88,7 @@ Return: Key errors/warnings with timestamps
 ```
 
 ```
-Task 2 - Database State:
+Agent 2 - Database State:
 Check the current database state:
 1. Connect to database: sqlite3 ~/.humanlayer/daemon.db
 2. Check schema: .tables and .schema for relevant tables
@@ -101,7 +101,7 @@ Return: Relevant database findings
 ```
 
 ```
-Task 3 - Git and File State:
+Agent 3 - Git and File State:
 Understand what changed recently:
 1. Check git status and current branch
 2. Look at recent commits: git log --oneline -10

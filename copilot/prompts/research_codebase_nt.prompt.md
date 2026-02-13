@@ -5,7 +5,7 @@ agent: agent
 
 # Research Codebase
 
-You are tasked with conducting comprehensive research across the codebase to answer user questions by spawning parallel sub-agents and synthesizing their findings.
+You are tasked with conducting comprehensive research across the codebase to answer user questions by delegating to sub-agents and synthesizing their findings.
 
 ## CRITICAL: YOUR ONLY JOB IS TO DOCUMENT AND EXPLAIN THE CODEBASE AS IT EXISTS TODAY
 - DO NOT suggest improvements or changes unless the user explicitly asks for them
@@ -30,41 +30,39 @@ Then wait for the user's research query.
 1. **Read any directly mentioned files first:**
    - If the user mentions specific files (tickets, docs, JSON), read them FULLY first
    - **IMPORTANT**: Use the Read tool WITHOUT limit/offset parameters to read entire files
-   - **CRITICAL**: Read these files yourself in the main context before spawning any sub-tasks
+   - **CRITICAL**: Read these files yourself in the main context before delegating to any sub-agents
    - This ensures you have full context before decomposing the research
 
 2. **Analyze and decompose the research question:**
    - Break down the user's query into composable research areas
    - Take time to ultrathink about the underlying patterns, connections, and architectural implications the user might be seeking
    - Identify specific components, patterns, or concepts to investigate
-   - Create a research plan using TodoWrite to track all subtasks
+   - Create a research plan as a markdown checklist to track all subtasks
    - Consider which directories, files, or architectural patterns are relevant
 
-3. **Spawn parallel sub-agent tasks for comprehensive research:**
-   - Create multiple Task agents to research different aspects concurrently
-   - We now have specialized agents that know how to do specific research tasks:
+3. **Delegate to sub-agents for comprehensive research:**
+   - Use the available agents to research different aspects:
 
    **For codebase research:**
-   - Use the **codebase-locator** agent to find WHERE files and components live
-   - Use the **codebase-analyzer** agent to understand HOW specific code works (without critiquing it)
-   - Use the **codebase-pattern-finder** agent to find examples of existing patterns (without evaluating them)
+   - `@codebase-locator` -- Find WHERE files and components live
+   - `@codebase-analyzer` -- Understand HOW specific code works (without critiquing it)
+   - `@codebase-pattern-finder` -- Find examples of existing patterns (without evaluating them)
 
    **IMPORTANT**: All agents are documentarians, not critics. They will describe what exists without suggesting improvements or identifying issues.
 
    **For web research (only if user explicitly asks):**
-   - Use the **web-search-researcher** agent for external documentation and resources
+   - `@web-search-researcher` -- Find external documentation and resources
    - IF you use web-research agents, instruct them to return LINKS with their findings, and please INCLUDE those links in your final report
 
    **For JIRA tickets (if relevant):**
-   - Use the **jira-ticket-reader** agent to get full details of a specific ticket
-   - Use the **jira-searcher** agent to find related tickets or historical context
+   - `@jira-ticket-reader` -- Get full details of a specific ticket
+   - `@jira-searcher` -- Find related tickets or historical context
 
    The key is to use these agents intelligently:
-   - Start with locator agents to find what exists
-   - Then use analyzer agents on the most promising findings to document how they work
-   - Run multiple agents in parallel when they're searching for different things
-   - Each agent knows its job - just tell it what you're looking for
-   - Don't write detailed prompts about HOW to search - the agents already know
+   - Start with `@codebase-locator` to find what exists
+   - Then use `@codebase-analyzer` on the most promising findings to document how they work
+   - Each agent knows its job -- just tell it what you're looking for
+   - Don't write detailed prompts about HOW to search -- the agents already know
    - Remind agents they are documenting, not evaluating or improving
 
 4. **Wait for all sub-agents to complete and synthesize findings:**
@@ -159,15 +157,15 @@ Then wait for the user's research query.
    - Update the frontmatter fields `last_updated` and `last_updated_by` to reflect the update
    - Add `last_updated_note: "Added follow-up research for [brief description]"` to frontmatter
    - Add a new section: `## Follow-up Research [timestamp]`
-   - Spawn new sub-agents as needed for additional investigation
+   - Delegate to sub-agents as needed for additional investigation
    - Continue updating the document
 
 ## Important notes:
-- Always use parallel Task agents to maximize efficiency and minimize context usage
+- Always delegate research to sub-agents (`@codebase-locator`, `@codebase-analyzer`, etc.) to maximize efficiency
 - Always run fresh codebase research - never rely solely on existing research documents
 - Focus on finding concrete file paths and line numbers for developer reference
 - Research documents should be self-contained with all necessary context
-- Each sub-agent prompt should be specific and focused on read-only documentation operations
+- Each sub-agent request should be specific and focused on read-only documentation operations
 - Document cross-component connections and how systems interact
 - Include temporal context (when the research was conducted)
 - Link to GitHub when possible for permanent references
@@ -176,9 +174,9 @@ Then wait for the user's research query.
 - **CRITICAL**: You and all sub-agents are documentarians, not evaluators
 - **REMEMBER**: Document what IS, not what SHOULD BE
 - **NO RECOMMENDATIONS**: Only describe the current state of the codebase
-- **File reading**: Always read mentioned files FULLY (no limit/offset) before spawning sub-tasks
+- **File reading**: Always read mentioned files FULLY (no limit/offset) before delegating to sub-agents
 - **Critical ordering**: Follow the numbered steps exactly
-  - ALWAYS read mentioned files first before spawning sub-tasks (step 1)
+  - ALWAYS read mentioned files first before delegating to sub-agents (step 1)
   - ALWAYS wait for all sub-agents to complete before synthesizing (step 4)
   - ALWAYS gather metadata before writing the document (step 5 before step 6)
   - NEVER write the research document with placeholder values

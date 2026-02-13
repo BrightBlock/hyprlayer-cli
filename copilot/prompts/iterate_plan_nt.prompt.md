@@ -59,22 +59,22 @@ When this command is invoked:
 
 ### Step 2: Research If Needed
 
-**Only spawn research tasks if the changes require new technical understanding.**
+**Only delegate research if the changes require new technical understanding.**
 
 If the user's feedback requires understanding new code patterns or validating assumptions:
 
-1. **Create a research todo list** using TodoWrite
+1. **Create a research checklist** as a markdown checklist
 
-2. **Spawn parallel sub-tasks for research**:
+2. **Delegate to sub-agents for research**:
    Use the right agent for each type of research:
 
    **For code investigation:**
-   - **codebase-locator** - To find relevant files
-   - **codebase-analyzer** - To understand implementation details
-   - **codebase-pattern-finder** - To find similar patterns
+   - `@codebase-locator` -- Find relevant files
+   - `@codebase-analyzer` -- Understand implementation details
+   - `@codebase-pattern-finder` -- Find similar patterns
 
    **Be EXTREMELY specific about directories**:
-   - Include full path context in prompts
+   - Include full path context in requests
 
 3. **Read any new files identified by research**:
    - Read them FULLY into the main context
@@ -170,8 +170,8 @@ Get user confirmation before proceeding.
    - Don't disappear into research without communicating
 
 5. **Track Progress**:
-   - Use TodoWrite to track update tasks if complex
-   - Update todos as you complete research
+   - Use a markdown checklist to track update tasks if complex
+   - Update the checklist as you complete research
    - Mark tasks complete when done
 
 6. **No Open Questions**:
@@ -195,21 +195,21 @@ When updating success criteria, always maintain the two-category structure:
    - Edge cases that are hard to automate
    - User acceptance criteria
 
-## Sub-task Spawning Best Practices
+## Sub-agent Delegation Best Practices
 
-When spawning research sub-tasks:
+When delegating research to sub-agents:
 
-1. **Only spawn if truly needed** - don't research for simple changes
-2. **Spawn multiple tasks in parallel** for efficiency
-3. **Each task should be focused** on a specific area
+1. **Only delegate if truly needed** - don't research for simple changes
+2. **Delegate to multiple agents** for efficiency
+3. **Each agent request should be focused** on a specific area
 4. **Provide detailed instructions** including:
    - Exactly what to search for
    - Which directories to focus on
    - What information to extract
    - Expected output format
 5. **Request specific file:line references** in responses
-6. **Wait for all tasks to complete** before synthesizing
-7. **Verify sub-task results** - if something seems off, spawn follow-up tasks
+6. **Wait for all agents to complete** before synthesizing
+7. **Verify agent results** - if something seems off, delegate follow-up requests
 
 ## Example Interaction Flows
 

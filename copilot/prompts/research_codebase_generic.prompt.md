@@ -5,7 +5,7 @@ agent: agent
 
 # Research Codebase
 
-You are tasked with conducting comprehensive research across the codebase to answer user questions by spawning parallel sub-agents and synthesizing their findings.
+You are tasked with conducting comprehensive research across the codebase to answer user questions by delegating to sub-agents and synthesizing their findings.
 
 ## Initial Setup:
 
@@ -26,24 +26,27 @@ Then wait for the user's research query.
 
 2. **Analyze and decompose the research question:**
    - Break down the user's query into composable research areas
-   - Take time to ultrathink about the underlying patterns, connections, and architectural implications the user might be seeking
+   - Take time to think deeply about the underlying patterns, connections, and architectural implications the user might be seeking
    - Identify specific components, patterns, or concepts to investigate
-   - Create a research plan using TodoWrite to track all subtasks
+   - Create a research plan as a markdown checklist to track subtasks
    - Consider which directories, files, or architectural patterns are relevant
 
-3. **Spawn parallel sub-agent tasks for comprehensive research:**
-   - Create multiple Task agents to research different aspects concurrently
+3. **Delegate to sub-agents for comprehensive research:**
+   - Use the available agents to research different aspects:
+     - `@codebase-locator` — Find where relevant code lives (files, directories, components)
+     - `@codebase-analyzer` — Analyze implementation details of specific components
+     - `@codebase-pattern-finder` — Find similar implementations, usage examples, or existing patterns
+     - `@thoughts-locator` — Find relevant documents in the thoughts/ directory
+     - `@thoughts-analyzer` — Deep dive into thoughts/ documents for historical context
 
    The key is to use these agents intelligently:
-   - Start with locator agents to find what exists
-   - Then use analyzer agents on the most promising findings
-   - Run multiple agents in parallel when they're searching for different things
-   - Each agent knows its job - just tell it what you're looking for
-   - Don't write detailed prompts about HOW to search - the agents already know
+   - Start with `@codebase-locator` and `@thoughts-locator` to find what exists
+   - Then use `@codebase-analyzer` and `@thoughts-analyzer` on the most promising findings
+   - Each agent knows its job — just tell it what you're looking for
+   - Don't write detailed prompts about HOW to search — the agents already know
 
-4. **Wait for all sub-agents to complete and synthesize findings:**
-   - IMPORTANT: Wait for ALL sub-agent tasks to complete before proceeding
-   - Compile all sub-agent results (both codebase and thoughts findings)
+4. **Synthesize findings:**
+   - Compile all agent results (both codebase and thoughts findings)
    - Prioritize live codebase findings as primary source of truth
    - Use thoughts/ findings as supplementary historical context
    - Connect findings across different components
@@ -145,17 +148,17 @@ Then wait for the user's research query.
    - Continue updating the document and syncing
 
 ## Important notes:
-- Always use parallel Task agents to maximize efficiency and minimize context usage
+- Always delegate research to sub-agents (`@codebase-locator`, `@codebase-analyzer`, `@thoughts-locator`, etc.) to maximize efficiency
 - Always run fresh codebase research - never rely solely on existing research documents
 - The thoughts/ directory provides historical context to supplement live findings
 - Focus on finding concrete file paths and line numbers for developer reference
 - Research documents should be self-contained with all necessary context
-- Each sub-agent prompt should be specific and focused on read-only operations
+- Each sub-agent request should be specific and focused on read-only operations
 - Consider cross-component connections and architectural patterns
 - Include temporal context (when the research was conducted)
 - Link to GitHub when possible for permanent references
-- Keep the main agent focused on synthesis, not deep file reading
-- Encourage sub-agents to find examples and usage patterns, not just definitions
+- Keep the main conversation focused on synthesis, not deep file reading
+- Ask sub-agents to find examples and usage patterns, not just definitions
 - Explore all of thoughts/ directory, not just research subdirectory
 - **File reading**: Always read mentioned files FULLY (no limit/offset) before spawning sub-tasks
 - **Critical ordering**: Follow the numbered steps exactly
