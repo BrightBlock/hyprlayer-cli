@@ -81,34 +81,10 @@ if ($Token) {
     Invoke-WebRequest -Uri $DownloadUrl -OutFile "$BinDir\hyprlayer.exe"
 }
 
-# Install Claude Code agents and commands
-$ClaudeDest = "$env:USERPROFILE\.claude"
-$ArchiveUrl = "https://github.com/$Repo/archive/refs/heads/master.zip"
-
-Write-Host "Installing Claude Code agents and commands..." -ForegroundColor Cyan
-
-$TempDir = New-Item -ItemType Directory -Force -Path "$env:TEMP\hyprlayer-install-$(Get-Random)"
-try {
-    $ZipPath = "$TempDir\repo.zip"
-    if ($Token) {
-        Invoke-WebRequest -Uri $ArchiveUrl -Headers $Headers -OutFile $ZipPath
-    } else {
-        Invoke-WebRequest -Uri $ArchiveUrl -OutFile $ZipPath
-    }
-
-    Expand-Archive -Path $ZipPath -DestinationPath $TempDir
-    $ExtractedDir = Get-ChildItem -Path $TempDir -Directory | Where-Object { $_.Name -like "hyprlayer-cli-*" } | Select-Object -First 1
-
-    if ($ExtractedDir -and (Test-Path "$($ExtractedDir.FullName)\claude")) {
-        New-Item -ItemType Directory -Force -Path $ClaudeDest | Out-Null
-        Copy-Item -Recurse -Force "$($ExtractedDir.FullName)\claude\*" $ClaudeDest
-        Write-Host "Claude Code configuration installed to $ClaudeDest" -ForegroundColor Green
-    } else {
-        Write-Host "Warning: Could not find Claude Code configuration in release archive" -ForegroundColor Yellow
-    }
-} finally {
-    Remove-Item -Recurse -Force $TempDir -ErrorAction SilentlyContinue
-}
+# Agent files are now installed by `hyprlayer thoughts init`
+Write-Host ""
+Write-Host "Agent files will be installed when you run 'hyprlayer thoughts init'" -ForegroundColor Yellow
+Write-Host "You'll be prompted to choose between Claude Code and GitHub Copilot."
 
 # Check for Visual C++ runtime
 $VCRuntimeInstalled = Test-Path "$env:SystemRoot\System32\vcruntime140.dll"

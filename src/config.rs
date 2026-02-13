@@ -4,6 +4,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::agents::AgentTool;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileConfig {
@@ -56,6 +58,8 @@ pub struct ThoughtsConfig {
     pub repos_dir: String,
     pub global_dir: String,
     pub user: String,
+    #[serde(default)]
+    pub agent_tool: Option<AgentTool>,
     #[serde(default)]
     pub repo_mappings: HashMap<String, RepoMapping>,
     #[serde(default)]
