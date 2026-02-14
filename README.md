@@ -13,23 +13,20 @@ A standalone Rust CLI for managing developer thoughts and notes, compatible with
 
 ## Installation
 
-### Option 1: Install from release (recommended)
+### Option 1: Homebrew (macOS & Linux)
 
 Requires the [GitHub CLI](https://cli.github.com/) (`gh`) to be installed and authenticated.
 
 ```bash
-export GITHUB_TOKEN=$(gh auth token) && \
-  curl --proto '=https' --tlsv1.2 -sSf \
-  -H "Authorization: token $GITHUB_TOKEN" \
-  https://raw.githubusercontent.com/BrightBlock/hyprlayer-cli/master/install.sh | sh
-```
+# Set the GitHub API token for Homebrew to access the private tap
+export HOMEBREW_GITHUB_API_TOKEN=$(gh auth token)
 
-This will:
-- Download the latest binary for your OS and architecture
-- Install it to `~/.hyprlayer/bin/`
-- Install Claude Code agents and commands to `~/.claude/`
-- Add it to your PATH automatically
-- Detect your shell (bash, zsh, fish) and provide setup instructions
+# Add the BrightBlock tap
+brew tap brightblock/tap
+
+# Install hyprlayer
+brew install hyprlayer
+```
 
 ### Windows Installation
 
@@ -62,13 +59,13 @@ After installation, add to your PATH:
 [Environment]::SetEnvironmentVariable('PATH', $env:PATH + ';C:\Users\<username>\.hyprlayer\bin', 'User')
 ```
 
-### Option 2: Install with cargo
+### Option 2: Install with Cargo
 
 ```bash
 cargo install --git https://github.com/BrightBlock/hyprlayer-cli.git
 ```
 
-### Option 3: Install from source
+### Option 3: Install from Source
 
 ```bash
 git clone https://github.com/BrightBlock/hyprlayer-cli.git
