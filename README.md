@@ -239,10 +239,11 @@ The typical development cycle looks like this:
 1. **Research** (`/research_codebase`) -- Explore and document how existing code works before making changes
 2. **Plan** (`/create_plan`) -- Build a detailed, phased implementation plan with success criteria
 3. **Implement** (`/implement_plan`) -- Execute the plan phase-by-phase with verification at each step
-4. **Validate** (`/validate_plan`) -- Verify the implementation matches the plan's success criteria
-5. **Ship** (`/describe_pr`, `/commit`) -- Generate PR descriptions and commits
+4. **Commit** (`/commit`) -- Create atomic commits for changes
+5. **Validate** (`/validate_plan`) -- Verify the implementation matches the plan's success criteria
+6. **Ship** (`/describe_pr`) -- Generate PR description
 
-For ongoing work, use `/iterate_plan` to refine plans based on feedback, `/debug` to investigate issues, and `/research_codebase` to document unfamiliar areas of code.
+For ongoing work, use `/iterate_plan` to refine plans based on feedback and `/research_codebase` to document unfamiliar areas of code.
 
 ### Commands
 
@@ -263,7 +264,6 @@ For ongoing work, use `/iterate_plan` to refine plans based on feedback, `/debug
 | `/ci_describe_pr` | PR description for CI contexts |
 | `/commit` | Create a git commit with user approval |
 | `/ci_commit` | Create a git commit without user approval (CI contexts) |
-| `/debug` | Investigate issues via logs, database state, and git history |
 | `/founder_mode` | Retroactively create a JIRA ticket and PR for already-implemented work |
 | `/create_handoff` | Write a handoff document to transfer context to another session |
 | `/resume_handoff` | Pick up work from a handoff document |
