@@ -20,7 +20,7 @@ When invoked with a parameter like `gh_username:branchName`:
    - If no ticket found, use a sanitized version of the branch name
 
 3. **Determine repo info**:
-   - `$REPO_NAME` = basename of current directory (e.g., `humanlayer`, `ai-trader`)
+   - `$REPO_NAME` = basename of current directory (e.g., `hyprlayer`, `my-sample-project`)
 
 4. **Set up the remote and worktree**:
    - Check if the remote already exists using `git remote -v`
@@ -29,8 +29,14 @@ When invoked with a parameter like `gh_username:branchName`:
    - Create worktree: `git worktree add -b BRANCHNAME ~/wt/$REPO_NAME/SHORT_NAME USERNAME/BRANCHNAME`
 
 5. **Configure the worktree**:
-   - Copy Claude settings: `cp .claude/settings.local.json WORKTREE/.claude/`
-   - Run setup using hack/create_worktree.sh or manually detect (npm install, make setup, etc.)
+   - Copy Claude local settings if they exist: `mkdir -p WORKTREE/.claude && cp .claude/settings.local.json WORKTREE/.claude/`
+   - Detect and run the appropriate setup command:
+     - If `Makefile` exists with a `setup` target: `make -C WORKTREE setup`
+     - Else if `package.json` exists: `cd WORKTREE && npm install`
+     - Else if `pyproject.toml` exists: `cd WORKTREE && pip install -e .`
+     - Else if `go.mod` exists: `cd WORKTREE && go mod download`
+     - Else if a `*.sln` or `*.csproj` file exists: `cd WORKTREE && dotnet restore`
+     - Otherwise, skip dependency setup
    - Initialize thoughts: `cd WORKTREE && hyprlayer thoughts init --directory $REPO_NAME`
 
 ## Error Handling
