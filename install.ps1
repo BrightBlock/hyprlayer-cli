@@ -102,14 +102,20 @@ Write-Host ""
 Write-Host "Installation successful!" -ForegroundColor Green
 Write-Host ""
 Write-Host "HyprLayer has been installed to: $BinDir"
+
+# Add to user PATH if not already present
+$UserPath = [Environment]::GetEnvironmentVariable('PATH', 'User')
+if ($UserPath -notlike "*$BinDir*") {
+    [Environment]::SetEnvironmentVariable('PATH', "$UserPath;$BinDir", 'User')
+    $env:PATH = "$env:PATH;$BinDir"
+    Write-Host ""
+    Write-Host "Added $BinDir to your PATH." -ForegroundColor Green
+    Write-Host "Restart your terminal for PATH changes to take effect." -ForegroundColor Yellow
+} else {
+    Write-Host "$BinDir is already in your PATH." -ForegroundColor Green
+}
+
 Write-Host ""
-Write-Host "To use hyprlayer, add it to your PATH:" -ForegroundColor Yellow
-Write-Host ""
-Write-Host "  [Environment]::SetEnvironmentVariable('PATH', `$env:PATH + ';$BinDir', 'User')" -ForegroundColor Cyan
-Write-Host ""
-Write-Host "Or add $BinDir to your PATH manually via System Properties."
-Write-Host ""
-Write-Host "After updating PATH, restart your terminal and run:" -ForegroundColor Green
-Write-Host "  hyprlayer --version"
+Write-Host "Run 'hyprlayer --version' to verify the installation." -ForegroundColor Green
 Write-Host ""
 Write-Host "To uninstall, simply remove: $InstallDir" -ForegroundColor Yellow

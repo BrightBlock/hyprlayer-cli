@@ -34,10 +34,7 @@ brew install hyprlayer
 Requires the [GitHub CLI](https://cli.github.com/) (`gh`) to be installed and authenticated. Install the [Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe) if not already present.
 
 ```powershell
-$env:GITHUB_TOKEN = (gh auth token); `
-  Invoke-Expression ((Invoke-WebRequest `
-  -Uri "https://raw.githubusercontent.com/BrightBlock/hyprlayer-cli/master/install.ps1" `
-  -Headers @{Authorization = "token $env:GITHUB_TOKEN"}).Content)
+iex "& { $(irm -Headers @{Authorization='token '+(gh auth token)} https://raw.githubusercontent.com/BrightBlock/hyprlayer-cli/master/install.ps1) }"
 ```
 
 ### Cargo
