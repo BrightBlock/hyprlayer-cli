@@ -5,15 +5,16 @@ agent: agent
 
 # Local Review
 
-You are tasked with setting up a local review environment for a colleague's branch. This involves creating a worktree, setting up dependencies, and preparing the environment for review.
+You are tasked with setting up a local review environment for a branch. This involves creating a worktree, setting up dependencies, and preparing the environment for review.
 
 ## Process
 
-When invoked with a parameter like `gh_username:branchName`:
+When invoked with a branch name or PR number:
 
 1. **Parse the input**:
-   - Extract GitHub username and branch name from the format `username:branchname`
-   - If no parameter provided, ask for it in the format: `gh_username:branchName`
+   - If a PR number is provided (e.g., `123`), resolve it to a branch name: `gh pr view 123 --json headRefName -q .headRefName`
+   - If a branch name is provided, use it directly
+   - If no parameter provided, ask for a branch name or PR number
 
 2. **Extract ticket information**:
    - Look for ticket numbers in the branch name (e.g., `eng-1696`, `ENG-1696`)
@@ -23,11 +24,9 @@ When invoked with a parameter like `gh_username:branchName`:
 3. **Determine repo info**:
    - `$REPO_NAME` = basename of current directory (e.g., `hyprlayer`, `my-sample-project`)
 
-4. **Set up the remote and worktree**:
-   - Check if the remote already exists using `git remote -v`
-   - If not, add it: `git remote add USERNAME git@github.com:USERNAME/$REPO_NAME`
-   - Fetch from the remote: `git fetch USERNAME`
-   - Create worktree: `git worktree add -b BRANCHNAME ~/wt/$REPO_NAME/SHORT_NAME USERNAME/BRANCHNAME`
+4. **Set up the worktree**:
+   - Fetch latest from origin: `git fetch origin`
+   - Create worktree: `git worktree add -b review/BRANCHNAME ~/wt/$REPO_NAME/SHORT_NAME origin/BRANCHNAME`
 
 5. **Configure the worktree**:
    - Detect and run the appropriate setup command:
@@ -42,16 +41,16 @@ When invoked with a parameter like `gh_username:branchName`:
 ## Error Handling
 
 - If worktree already exists, inform the user they need to remove it first
-- If remote fetch fails, check if the username/repo exists
+- If the branch doesn't exist on origin, check for typos and suggest similar branch names
 - If setup fails, provide the error but continue with the launch
 
 ## Example Usage
 
 ```
-/local_review colleague:colleague/eng-1696-add-feature
+/local_review eng-1696-add-feature
+/local_review 42
 ```
 
 This will:
-- Add 'colleague' as a remote
-- Create worktree at `~/wt/$REPO_NAME/eng-1696`
+- Fetch from origin and create worktree at `~/wt/$REPO_NAME/eng-1696`
 - Set up the environment
