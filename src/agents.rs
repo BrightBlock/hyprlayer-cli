@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::{Path, PathBuf, MAIN_SEPARATOR_STR as SEP};
 use std::process::Command;
 
 const REPO: &str = "BrightBlock/hyprlayer-cli";
@@ -53,15 +53,15 @@ impl AgentTool {
     }
 
     /// Display the destination directory for user-facing messages
-    pub fn dest_display(&self) -> &str {
+    pub fn dest_display(&self) -> String {
         match self {
-            Self::Claude => "~/.claude/",
+            Self::Claude => format!("~{SEP}.claude{SEP}"),
             #[cfg(target_os = "linux")]
-            Self::Copilot => "~/.config/Code/User/",
+            Self::Copilot => format!("~{SEP}.config{SEP}Code{SEP}User{SEP}"),
             #[cfg(target_os = "macos")]
-            Self::Copilot => "~/Library/Application Support/Code/User/",
+            Self::Copilot => format!("~{SEP}Library{SEP}Application Support{SEP}Code{SEP}User{SEP}"),
             #[cfg(target_os = "windows")]
-            Self::Copilot => "%APPDATA%/Code/User/",
+            Self::Copilot => format!("%APPDATA%{SEP}Code{SEP}User{SEP}"),
         }
     }
 
@@ -209,4 +209,45 @@ fn curl_download_file(url: &str, dest: &Path, token: &str) -> Result<()> {
         return Err(anyhow::anyhow!("Failed to download {}", dest.display()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dest_display_uses_platform_separator() {
+        for tool in AgentTool::ALL {
+            let display = tool.dest_display();
+            assert!(
+                !display.contains(if SEP == "/" { "\\" } else { "/" }),
+                "{} dest_display contains wrong separator: {}",
+                tool,
+                display
+            );
+            assert!(
+                display.ends_with(SEP),
+                "{} dest_display should end with SEP: {}",
+                tool,
+                display
+            );
+        }
+    }
+
+    #[test]
+    fn dest_display_claude_contains_claude_dir() {
+        let display = AgentTool::Claude.dest_display();
+        assert!(display.contains(".claude"), "Expected .claude in: {}", display);
+    }
+
+    #[test]
+    fn dest_display_copilot_contains_code_user() {
+        let display = AgentTool::Copilot.dest_display();
+        assert!(
+            display.contains(&format!("Code{SEP}User")),
+            "Expected Code{}User in: {}",
+            SEP,
+            display
+        );
+    }
 }
