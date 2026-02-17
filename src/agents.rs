@@ -14,6 +14,7 @@ const BRANCH: &str = "master";
 pub enum AgentTool {
     Claude,
     Copilot,
+    OpenCode,
 }
 
 impl fmt::Display for AgentTool {
@@ -21,19 +22,21 @@ impl fmt::Display for AgentTool {
         match self {
             Self::Claude => write!(f, "Claude Code"),
             Self::Copilot => write!(f, "GitHub Copilot"),
+            Self::OpenCode => write!(f, "OpenCode"),
         }
     }
 }
 
 impl AgentTool {
     /// All available variants, for use in selection prompts
-    pub const ALL: &[AgentTool] = &[AgentTool::Claude, AgentTool::Copilot];
+    pub const ALL: &[AgentTool] = &[AgentTool::Claude, AgentTool::Copilot, AgentTool::OpenCode];
 
     /// The directory name in the repo that contains this tool's agent files
     fn repo_dir(&self) -> &str {
         match self {
             Self::Claude => "claude",
             Self::Copilot => "copilot",
+            Self::OpenCode => "opencode",
         }
     }
 
@@ -49,6 +52,11 @@ impl AgentTool {
                     .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?;
                 Ok(config.join("Code").join("User"))
             }
+            Self::OpenCode => {
+                let config = dirs::config_dir()
+                    .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?;
+                Ok(config.join("opencode"))
+            }
         }
     }
 
@@ -62,6 +70,12 @@ impl AgentTool {
             Self::Copilot => format!("~{SEP}Library{SEP}Application Support{SEP}Code{SEP}User{SEP}"),
             #[cfg(target_os = "windows")]
             Self::Copilot => format!("%APPDATA%{SEP}Code{SEP}User{SEP}"),
+            #[cfg(target_os = "linux")]
+            Self::OpenCode => format!("~{SEP}.config{SEP}opencode{SEP}"),
+            #[cfg(target_os = "macos")]
+            Self::OpenCode => format!("~{SEP}Library{SEP}Application Support{SEP}opencode{SEP}"),
+            #[cfg(target_os = "windows")]
+            Self::OpenCode => format!("%APPDATA%{SEP}opencode{SEP}"),
         }
     }
 
@@ -238,6 +252,12 @@ mod tests {
     fn dest_display_claude_contains_claude_dir() {
         let display = AgentTool::Claude.dest_display();
         assert!(display.contains(".claude"), "Expected .claude in: {}", display);
+    }
+
+    #[test]
+    fn dest_display_opencode_contains_opencode_dir() {
+        let display = AgentTool::OpenCode.dest_display();
+        assert!(display.contains("opencode"), "Expected opencode in: {}", display);
     }
 
     #[test]
