@@ -4,12 +4,10 @@ use std::fs;
 
 use crate::cli::ProfileDeleteArgs;
 
-fn check_profile_not_in_use(content: &str, profile_name: &str) -> Result<()> {
-    let config: serde_json::Value = serde_json::from_str(content)?;
-
+fn check_profile_not_in_use(config: &serde_json::Value, profile_name: &str) -> Result<()> {
     let repo_mappings = config
         .get("thoughts")
-        .and_then(|t| t.get("repo_mappings"))
+        .and_then(|t| t.get("repoMappings"))
         .and_then(|m| m.as_object());
 
     let Some(mappings) = repo_mappings else {
@@ -35,20 +33,12 @@ fn check_profile_not_in_use(content: &str, profile_name: &str) -> Result<()> {
 
 pub fn delete(args: ProfileDeleteArgs) -> Result<()> {
     let ProfileDeleteArgs { name: profile_name, force, config } = args;
-    let config_path = config.path()?;
-
-    if !config_path.exists() {
-        return Err(anyhow::anyhow!("No thoughts configuration found"));
-    }
-
-    let content = fs::read_to_string(&config_path)?;
+    let (config_path, mut config_json) = config.load_raw()?;
 
     // Check if profile is in use (unless force)
     if !force {
-        check_profile_not_in_use(&content, &profile_name)?;
+        check_profile_not_in_use(&config_json, &profile_name)?;
     }
-
-    let mut config_json: serde_json::Value = serde_json::from_str(&content)?;
     let thoughts_obj = config_json
         .get_mut("thoughts")
         .and_then(|t| t.as_object_mut())

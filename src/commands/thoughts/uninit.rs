@@ -1,7 +1,7 @@
 use anyhow::Result;
 use colored::Colorize;
 use std::fs;
-use std::path::{Path, MAIN_SEPARATOR_STR as SEP};
+use std::path::{MAIN_SEPARATOR_STR as SEP, Path};
 
 use crate::cli::UninitArgs;
 use crate::config::{ConfigFile, EffectiveConfig, get_current_repo_path};
@@ -36,7 +36,11 @@ fn print_safe_location(eff: &EffectiveConfig) {
     );
     println!(
         "  {}",
-        format!("Repo:   {}{SEP}{}{SEP}{}", eff.thoughts_repo, eff.repos_dir, name).bright_black()
+        format!(
+            "Repo:   {}{SEP}{}{SEP}{}",
+            eff.thoughts_repo, eff.repos_dir, name
+        )
+        .bright_black()
     );
     println!(
         "  {}",

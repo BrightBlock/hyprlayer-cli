@@ -1,19 +1,11 @@
 use anyhow::Result;
 use colored::Colorize;
-use std::fs;
 
 use crate::cli::ProfileShowArgs;
 
 pub fn show(args: ProfileShowArgs) -> Result<()> {
     let ProfileShowArgs { name: profile_name, json, config } = args;
-    let config_path = config.path()?;
-
-    if !config_path.exists() {
-        return Err(anyhow::anyhow!("No thoughts configuration found"));
-    }
-
-    let content = fs::read_to_string(&config_path)?;
-    let config_json: serde_json::Value = serde_json::from_str(&content)?;
+    let (_, config_json) = config.load_raw()?;
 
     if json {
         let profile = config_json

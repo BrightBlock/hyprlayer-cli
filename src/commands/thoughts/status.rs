@@ -97,7 +97,7 @@ pub fn status(args: StatusArgs) -> Result<()> {
         Ok(true) => {
             println!();
             println!("{}", "Uncommitted changes:".yellow());
-            git_repo.status().iter().for_each(|s| print!("{}", s));
+            print!("{}", git_repo.status()?);
             println!();
             println!(
                 "{}",
