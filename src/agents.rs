@@ -53,9 +53,9 @@ impl AgentTool {
                 Ok(config.join("Code").join("User"))
             }
             Self::OpenCode => {
-                let config = dirs::config_dir()
-                    .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?;
-                Ok(config.join("opencode"))
+                let home = dirs::home_dir()
+                    .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+                Ok(home.join(".config").join("opencode"))
             }
         }
     }
@@ -70,12 +70,7 @@ impl AgentTool {
             Self::Copilot => format!("~{SEP}Library{SEP}Application Support{SEP}Code{SEP}User{SEP}"),
             #[cfg(target_os = "windows")]
             Self::Copilot => format!("%APPDATA%{SEP}Code{SEP}User{SEP}"),
-            #[cfg(target_os = "linux")]
             Self::OpenCode => format!("~{SEP}.config{SEP}opencode{SEP}"),
-            #[cfg(target_os = "macos")]
-            Self::OpenCode => format!("~{SEP}Library{SEP}Application Support{SEP}opencode{SEP}"),
-            #[cfg(target_os = "windows")]
-            Self::OpenCode => format!("%APPDATA%{SEP}opencode{SEP}"),
         }
     }
 
