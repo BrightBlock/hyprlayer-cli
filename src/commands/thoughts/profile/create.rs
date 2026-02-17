@@ -3,6 +3,7 @@ use colored::Colorize;
 use dialoguer::Input;
 use dialoguer::theme::ColorfulTheme;
 use std::fs;
+use std::path::MAIN_SEPARATOR_STR as SEP;
 
 use crate::cli::ProfileCreateArgs;
 use crate::config::{expand_path, get_default_thoughts_repo, sanitize_directory_name};
@@ -17,7 +18,7 @@ fn prompt_for_profile_config(profile_name: &str) -> Result<(String, String, Stri
     );
 
     let default_repo = format!(
-        "{}/{}",
+        "{}{SEP}{}",
         get_default_thoughts_repo()?.display(),
         profile_name
     );
