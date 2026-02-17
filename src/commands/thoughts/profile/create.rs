@@ -5,7 +5,7 @@ use dialoguer::theme::ColorfulTheme;
 use std::fs;
 
 use crate::cli::ProfileCreateArgs;
-use crate::config::{expand_path, get_default_thoughts_repo, sanitize_profile_name};
+use crate::config::{expand_path, get_default_thoughts_repo, sanitize_directory_name};
 use crate::git_ops::GitRepo;
 
 fn prompt_for_profile_config(profile_name: &str) -> Result<(String, String, String)> {
@@ -67,7 +67,7 @@ pub fn create(args: ProfileCreateArgs) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("Thoughts not configured"))?;
 
     // Sanitize profile name
-    let sanitized_name = sanitize_profile_name(&profile_name);
+    let sanitized_name = sanitize_directory_name(&profile_name);
     if sanitized_name != profile_name {
         println!(
             "{}",

@@ -79,21 +79,25 @@ pub struct EffectiveConfig {
 impl ThoughtsConfig {
     /// Validate that a profile exists in the config (if specified)
     pub fn validate_profile(&self, profile: &Option<String>) -> Result<()> {
-        if let Some(name) = profile {
-            if !self.profiles.contains_key(name) {
-                return Err(anyhow::anyhow!("Profile \"{}\" does not exist", name));
-            }
+        if let Some(name) = profile
+            && !self.profiles.contains_key(name)
+        {
+            return Err(anyhow::anyhow!("Profile \"{}\" does not exist", name));
         }
         Ok(())
     }
 
     /// Resolve effective thoughts_repo, repos_dir, global_dir based on profile
-    pub fn resolve_dirs(&self, profile: &Option<String>) -> (String, String, String) {
+    pub fn resolve_dirs(&self, profile: &Option<String>) -> ProfileConfig {
         profile
             .as_ref()
             .and_then(|name| self.profiles.get(name))
-            .map(|p| (p.thoughts_repo.clone(), p.repos_dir.clone(), p.global_dir.clone()))
-            .unwrap_or_else(|| (self.thoughts_repo.clone(), self.repos_dir.clone(), self.global_dir.clone()))
+            .cloned()
+            .unwrap_or(ProfileConfig {
+                thoughts_repo: self.thoughts_repo.clone(),
+                repos_dir: self.repos_dir.clone(),
+                global_dir: self.global_dir.clone(),
+            })
     }
 
     /// Load config from a file path
@@ -130,20 +134,12 @@ impl ThoughtsConfig {
             .filter(|name| self.profiles.contains_key(*name))
             .map(|s| s.to_string());
 
-        let profile = profile_name
-            .as_ref()
-            .and_then(|name| self.profiles.get(name));
+        let dirs = self.resolve_dirs(&profile_name);
 
         EffectiveConfig {
-            thoughts_repo: profile
-                .map(|p| p.thoughts_repo.clone())
-                .unwrap_or_else(|| self.thoughts_repo.clone()),
-            repos_dir: profile
-                .map(|p| p.repos_dir.clone())
-                .unwrap_or_else(|| self.repos_dir.clone()),
-            global_dir: profile
-                .map(|p| p.global_dir.clone())
-                .unwrap_or_else(|| self.global_dir.clone()),
+            thoughts_repo: dirs.thoughts_repo,
+            repos_dir: dirs.repos_dir,
+            global_dir: dirs.global_dir,
             profile_name,
             mapped_name: mapping.map(|m| m.repo().to_string()),
         }
@@ -188,6 +184,3 @@ pub fn sanitize_directory_name(name: &str) -> String {
     name.replace(|c: char| !c.is_alphanumeric() && c != '_' && c != '-', "_")
 }
 
-pub fn sanitize_profile_name(name: &str) -> String {
-    sanitize_directory_name(name)
-}

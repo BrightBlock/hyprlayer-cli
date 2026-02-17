@@ -174,13 +174,13 @@ pub fn sync(args: SyncArgs) -> Result<()> {
     }
 
     // Try to sync with remote if configured
-    let Some(_) = git_repo.remote_url() else {
+    if git_repo.remote_url().is_none() {
         println!(
             "{}",
             "ℹ️  No remote configured for thoughts repository".yellow()
         );
         return Ok(());
-    };
+    }
 
     // Always pull to get remote changes
     println!("{}", "Pulling latest changes...".bright_black());

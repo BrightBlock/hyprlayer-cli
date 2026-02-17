@@ -1,21 +1,11 @@
 use anyhow::Result;
 use colored::Colorize;
-use std::fs;
 
 use crate::cli::ProfileListArgs;
 
 pub fn list(args: ProfileListArgs) -> Result<()> {
     let ProfileListArgs { json, config } = args;
-    let config_path = config.path()?;
-
-    if !config_path.exists() {
-        return Err(anyhow::anyhow!(
-            "No thoughts configuration found. Run 'hyprlayer thoughts init' first."
-        ));
-    }
-
-    let content = fs::read_to_string(&config_path)?;
-    let config_json: serde_json::Value = serde_json::from_str(&content)?;
+    let (_, config_json) = config.load_raw()?;
 
     if json {
         let profiles = config_json
