@@ -1,16 +1,15 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use git2::{Repository, Status, StatusOptions};
+use std::fmt::Write;
 use std::process::Command;
 use std::time::UNIX_EPOCH;
 
-#[allow(dead_code)]
 pub struct GitRepo {
     repo: Repository,
     path: std::path::PathBuf,
 }
 
-#[allow(dead_code)]
 impl GitRepo {
     pub fn open(path: &std::path::Path) -> Result<Self> {
         let repo = Repository::open(path)
@@ -34,43 +33,38 @@ impl GitRepo {
         Repository::open(path).is_ok()
     }
 
-    pub fn get_common_dir(&self) -> Result<std::path::PathBuf> {
-        Ok(self.repo.path().to_path_buf())
+    fn statuses(&self) -> Result<git2::Statuses<'_>> {
+        let mut opts = StatusOptions::new();
+        opts.include_untracked(true);
+        Ok(self.repo.statuses(Some(&mut opts))?)
     }
 
     pub fn status(&self) -> Result<String> {
-        let mut opts = StatusOptions::new();
-        opts.include_untracked(true);
-
-        let statuses = self.repo.statuses(Some(&mut opts))?;
+        let statuses = self.statuses()?;
 
         if statuses.is_empty() {
-            Ok("No changes to commit".to_string())
-        } else {
-            let mut result = String::new();
-            for entry in statuses.iter() {
-                if let Some(path) = entry.path() {
-                    let status = entry.status();
-                    let status_text = match status {
-                        s if s.contains(Status::WT_NEW) => "untracked".to_string(),
-                        s if s.contains(Status::WT_MODIFIED) => "modified".to_string(),
-                        s if s.contains(Status::INDEX_NEW) => "added".to_string(),
-                        s if s.contains(Status::INDEX_DELETED) => "deleted".to_string(),
-                        s if s.contains(Status::WT_DELETED) => "deleted".to_string(),
-                        _ => format!("{:?}", status),
-                    };
-                    result.push_str(&format!("  {:<10} {}\n", status_text, path));
-                }
-            }
-            Ok(result)
+            return Ok("No changes to commit".to_string());
         }
+
+        let mut result = String::new();
+        for entry in statuses.iter() {
+            if let Some(path) = entry.path() {
+                let s = entry.status();
+                let label = match s {
+                    _ if s.contains(Status::WT_NEW) => "untracked",
+                    _ if s.contains(Status::WT_MODIFIED) => "modified",
+                    _ if s.contains(Status::INDEX_NEW) => "added",
+                    _ if s.contains(Status::INDEX_DELETED) || s.contains(Status::WT_DELETED) => "deleted",
+                    _ => "unknown",
+                };
+                let _ = writeln!(result, "  {:<10} {}", label, path);
+            }
+        }
+        Ok(result)
     }
 
     pub fn has_changes(&self) -> Result<bool> {
-        let mut opts = StatusOptions::new();
-        opts.include_untracked(true);
-        let statuses = self.repo.statuses(Some(&mut opts))?;
-        Ok(!statuses.is_empty())
+        Ok(!self.statuses()?.is_empty())
     }
 
     pub fn add_all(&self) -> Result<()> {
@@ -100,14 +94,9 @@ impl GitRepo {
 
         let parents: Vec<_> = head_commit.iter().collect();
 
-        let _commit_id = self.repo.commit(
-            Some("HEAD"),
-            &sig,
-            &sig,
-            message,
-            &tree,
-            parents.as_slice(),
-        )?;
+        let _commit_id =
+            self.repo
+                .commit(Some("HEAD"), &sig, &sig, message, &tree, parents.as_slice())?;
 
         println!("{}", "✅ Committed successfully".green());
         Ok(())

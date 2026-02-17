@@ -116,14 +116,14 @@ fn download_directory(token: &str, repo_path: &str, dest: &Path, count: &mut usi
     let json = curl_get_json(&api_url, token)?;
 
     // The API returns a JSON object with a "message" field on errors (e.g. 404)
-    if let Ok(err) = serde_json::from_str::<GitHubError>(&json) {
-        if err.message.is_some() {
-            return Err(anyhow::anyhow!(
-                "Agent files for '{}' are not available on GitHub ({})",
-                repo_path,
-                err.message.unwrap()
-            ));
-        }
+    if let Ok(err) = serde_json::from_str::<GitHubError>(&json)
+        && let Some(message) = err.message
+    {
+        return Err(anyhow::anyhow!(
+            "Agent files for '{}' are not available on GitHub ({})",
+            repo_path,
+            message
+        ));
     }
 
     let entries: Vec<GitHubEntry> =

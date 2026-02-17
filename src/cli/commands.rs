@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::Args;
+use std::fs;
 use std::path::PathBuf;
 
 use crate::config::{expand_path, get_default_config_path, ThoughtsConfig};
@@ -21,13 +22,8 @@ impl ConfigArgs {
 
     /// Load existing config, error if not found
     pub fn load(&self) -> Result<ThoughtsConfig> {
-        let path = self.path()?;
-        if !path.exists() {
-            return Err(anyhow::anyhow!(
-                "No thoughts configuration found. Run 'hyprlayer thoughts init' first."
-            ));
-        }
-        ThoughtsConfig::load(&path)
+        self.load_if_exists()?
+            .ok_or_else(|| anyhow::anyhow!("No thoughts configuration found. Run 'hyprlayer thoughts init' first."))
     }
 
     /// Load config if exists, returns None if config file doesn't exist
@@ -38,14 +34,21 @@ impl ConfigArgs {
         }
         ThoughtsConfig::load(&path).map(Some)
     }
+
+    /// Load raw JSON config, error if not found
+    pub fn load_raw(&self) -> Result<(PathBuf, serde_json::Value)> {
+        let path = self.path()?;
+        if !path.exists() {
+            return Err(anyhow::anyhow!("No thoughts configuration found"));
+        }
+        let content = fs::read_to_string(&path)?;
+        let value = serde_json::from_str(&content)?;
+        Ok((path, value))
+    }
 }
 
 #[derive(Debug, Args)]
-#[command(
-    name = "init",
-    about = "Initialize thoughts for current repository",
-    long_about = "Initialize thoughts for current repository"
-)]
+#[command(name = "init", about = "Initialize thoughts for current repository")]
 pub struct InitArgs {
     #[arg(long, help = "Force reconfiguration even if already set up")]
     pub force: bool,
@@ -61,11 +64,7 @@ pub struct InitArgs {
 }
 
 #[derive(Debug, Args)]
-#[command(
-    name = "uninit",
-    about = "Remove thoughts setup from current repository",
-    long_about = "Remove thoughts setup from current repository"
-)]
+#[command(name = "uninit", about = "Remove thoughts setup from current repository")]
 pub struct UninitArgs {
     #[arg(long, help = "Force removal even if not in configuration")]
     pub force: bool,
@@ -74,11 +73,7 @@ pub struct UninitArgs {
 }
 
 #[derive(Debug, Args)]
-#[command(
-    name = "sync",
-    about = "Manually sync thoughts to thoughts repository",
-    long_about = "Manually sync thoughts to thoughts repository"
-)]
+#[command(name = "sync", about = "Manually sync thoughts to thoughts repository")]
 pub struct SyncArgs {
     #[arg(short, long, help = "Commit message for sync")]
     pub message: Option<String>,
@@ -87,22 +82,14 @@ pub struct SyncArgs {
 }
 
 #[derive(Debug, Args)]
-#[command(
-    name = "status",
-    about = "Show status of thoughts repository",
-    long_about = "Show status of thoughts repository"
-)]
+#[command(name = "status", about = "Show status of thoughts repository")]
 pub struct StatusArgs {
     #[command(flatten)]
     pub config: ConfigArgs,
 }
 
 #[derive(Debug, Args)]
-#[command(
-    name = "config",
-    about = "View or edit thoughts configuration",
-    long_about = "View or edit thoughts configuration"
-)]
+#[command(name = "config", about = "View or edit thoughts configuration")]
 pub struct ConfigArgsCmd {
     #[arg(long, help = "Open configuration in editor")]
     pub edit: bool,
@@ -113,11 +100,7 @@ pub struct ConfigArgsCmd {
 }
 
 #[derive(Debug, Args)]
-#[command(
-    name = "create",
-    about = "Create a new thoughts profile",
-    long_about = "Create a new thoughts profile"
-)]
+#[command(name = "create", about = "Create a new thoughts profile")]
 pub struct ProfileCreateArgs {
     pub name: String,
     #[arg(long, help = "Thoughts repository path")]
@@ -131,11 +114,7 @@ pub struct ProfileCreateArgs {
 }
 
 #[derive(Debug, Args)]
-#[command(
-    name = "list",
-    about = "List all thoughts profiles",
-    long_about = "List all thoughts profiles"
-)]
+#[command(name = "list", about = "List all thoughts profiles")]
 pub struct ProfileListArgs {
     #[arg(long, help = "Output as JSON")]
     pub json: bool,
@@ -144,11 +123,7 @@ pub struct ProfileListArgs {
 }
 
 #[derive(Debug, Args)]
-#[command(
-    name = "show",
-    about = "Show details of a specific profile",
-    long_about = "Show details of a specific profile"
-)]
+#[command(name = "show", about = "Show details of a specific profile")]
 pub struct ProfileShowArgs {
     pub name: String,
     #[arg(long, help = "Output as JSON")]
@@ -158,11 +133,7 @@ pub struct ProfileShowArgs {
 }
 
 #[derive(Debug, Args)]
-#[command(
-    name = "delete",
-    about = "Delete a thoughts profile",
-    long_about = "Delete a thoughts profile"
-)]
+#[command(name = "delete", about = "Delete a thoughts profile")]
 pub struct ProfileDeleteArgs {
     pub name: String,
     #[arg(long, help = "Force deletion even if in use")]

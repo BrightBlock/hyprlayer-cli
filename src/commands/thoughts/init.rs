@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf, MAIN_SEPARATOR_STR as SEP};
 use crate::agents::AgentTool;
 use crate::cli::InitArgs;
 use crate::config::{
-    RepoMapping, ThoughtsConfig, expand_path, get_current_repo_path,
+    ProfileConfig, RepoMapping, ThoughtsConfig, expand_path, get_current_repo_path,
     get_default_thoughts_repo, get_repo_name_from_path, sanitize_directory_name,
 };
 use crate::git_ops::GitRepo;
@@ -66,7 +66,7 @@ pub fn init(args: InitArgs) -> Result<()> {
         return Ok(());
     }
 
-    let (thoughts_repo, repos_dir, global_dir) = thoughts_config.resolve_dirs(&profile);
+    let ProfileConfig { thoughts_repo, repos_dir, global_dir } = thoughts_config.resolve_dirs(&profile);
     let expanded_repo = expand_path(&thoughts_repo);
 
     ensure_repo_exists(&expanded_repo, &thoughts_repo)?;
