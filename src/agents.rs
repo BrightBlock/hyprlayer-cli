@@ -74,6 +74,22 @@ impl AgentTool {
         }
     }
 
+    /// Check if agent files appear to be installed already.
+    /// Returns true if the destination directory contains the expected subdirectories.
+    pub fn is_installed(&self) -> bool {
+        let Ok(dest) = self.dest_dir() else {
+            return false;
+        };
+        match self {
+            Self::Claude | Self::OpenCode => {
+                dest.join("commands").is_dir() && dest.join("agents").is_dir()
+            }
+            Self::Copilot => {
+                dest.join("prompts").is_dir() && dest.join("agents").is_dir()
+            }
+        }
+    }
+
     /// Download agent files from GitHub and install to the destination.
     /// Uses the GitHub Contents API to fetch only the specific directory needed.
     pub fn install(&self) -> Result<()> {
