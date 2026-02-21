@@ -14,12 +14,20 @@ pub fn status(args: StatusArgs) -> Result<()> {
     // Load config
     let thoughts_config = args.config.load()?;
 
-    // Show configuration
+    // Resolve effective config for current repo (profile-aware)
+    let current_repo = get_current_repo_path()?;
+    let current_repo_str = current_repo.display().to_string();
+    let effective = thoughts_config.effective_config_for(&current_repo_str);
+
+    // Show configuration (use effective/profile-resolved values)
     println!("{}", "Configuration:".yellow());
-    println!("  Repository: {}", thoughts_config.thoughts_repo.cyan());
-    println!("  Repos directory: {}", thoughts_config.repos_dir.cyan());
-    println!("  Global directory: {}", thoughts_config.global_dir.cyan());
+    println!("  Repository: {}", effective.thoughts_repo.cyan());
+    println!("  Repos directory: {}", effective.repos_dir.cyan());
+    println!("  Global directory: {}", effective.global_dir.cyan());
     println!("  User: {}", thoughts_config.user.cyan());
+    if let Some(ref profile) = effective.profile_name {
+        println!("  Profile: {}", profile.cyan());
+    }
     println!(
         "  Mapped repos: {}",
         thoughts_config.repo_mappings.len().to_string().cyan()
@@ -27,16 +35,9 @@ pub fn status(args: StatusArgs) -> Result<()> {
     println!();
 
     // Check current repo mapping
-    let current_repo = get_current_repo_path()?;
-    let current_repo_str = current_repo.display().to_string();
-    let effective = thoughts_config.effective_config_for(&current_repo_str);
-
     if let Some(ref mapped_name) = effective.mapped_name {
         println!("{}", "Current Repository:".yellow());
         println!("  Path: {}", current_repo_str.cyan());
-        if let Some(ref profile) = effective.profile_name {
-            println!("  Profile: {}", profile.cyan());
-        }
         println!(
             "  Thoughts directory: {}{SEP}{}",
             effective.repos_dir.cyan(),
@@ -65,7 +66,11 @@ pub fn status(args: StatusArgs) -> Result<()> {
     if !expanded_repo.exists() {
         println!(
             "{}",
-            format!("Thoughts repository not found at {}", effective.thoughts_repo).red()
+            format!(
+                "Thoughts repository not found at {}",
+                effective.thoughts_repo
+            )
+            .red()
         );
         return Ok(());
     }
