@@ -1,18 +1,37 @@
 use anyhow::Result;
 use colored::Colorize;
+use dialoguer::{theme::ColorfulTheme, Input};
 use std::fs;
-use std::path::{MAIN_SEPARATOR_STR as SEP, Path};
+use std::path::{Path, MAIN_SEPARATOR_STR as SEP};
 
 use crate::cli::UninitArgs;
-use crate::config::{ConfigFile, EffectiveConfig, get_current_repo_path};
+use crate::config::{get_current_repo_path, EffectiveConfig, ThoughtsConfig};
 
 fn remove_from_config(config_path: &Path, repo_key: &str) -> Result<()> {
-    let content = fs::read_to_string(config_path)?;
-    let mut config_file: ConfigFile = serde_json::from_str(&content)?;
-    if let Some(ref mut thoughts) = config_file.thoughts {
-        thoughts.repo_mappings.remove(repo_key);
+    let mut config = ThoughtsConfig::load(config_path)?;
+    config.repo_mappings.remove(repo_key);
+
+    // Check for other stale mappings while we're saving
+    let orphaned = config.find_orphaned_mappings();
+    if !orphaned.is_empty() {
+        println!(
+            "{}",
+            "Found stale repo mappings (paths no longer exist):".yellow()
+        );
+        for path in &orphaned {
+            println!("  {}", path.bright_black());
+        }
+        let remove: bool = Input::with_theme(&ColorfulTheme::default())
+            .with_prompt("Remove stale mappings from config?")
+            .default(true)
+            .interact()?;
+        if remove {
+            config.remove_mappings(&orphaned);
+            println!("{}", "Stale mappings removed.".green());
+        }
     }
-    fs::write(config_path, serde_json::to_string_pretty(&config_file)?)?;
+
+    config.save(config_path)?;
     Ok(())
 }
 
@@ -120,7 +139,7 @@ pub fn uninit(args: UninitArgs) -> Result<()> {
             "{}",
             "Removing repository from thoughts configuration...".bright_black()
         );
-        let _ = remove_from_config(&config_path, &current_repo_str);
+        remove_from_config(&config_path, &current_repo_str)?;
     }
 
     println!("{}", "✅ Thoughts removed from repository".green());

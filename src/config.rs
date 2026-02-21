@@ -124,6 +124,22 @@ impl ThoughtsConfig {
         Ok(())
     }
 
+    /// Find repo mappings whose paths no longer exist on disk.
+    pub fn find_orphaned_mappings(&self) -> Vec<String> {
+        self.repo_mappings
+            .keys()
+            .filter(|path| !Path::new(path).is_dir())
+            .cloned()
+            .collect()
+    }
+
+    /// Remove the given repo mappings by path.
+    pub fn remove_mappings(&mut self, paths: &[String]) {
+        for path in paths {
+            self.repo_mappings.remove(path);
+        }
+    }
+
     /// Get the effective configuration for a repository path.
     /// Resolves profile-specific settings if the repo is mapped to a profile.
     pub fn effective_config_for(&self, repo_path: &str) -> EffectiveConfig {
