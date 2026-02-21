@@ -42,6 +42,27 @@ pub fn init(args: InitArgs) -> Result<()> {
     let config_path = config.path()?;
     let mut thoughts_config = load_or_create_config(&config)?;
 
+    // Check for stale repo mappings (paths that no longer exist on disk)
+    let orphaned = thoughts_config.find_orphaned_mappings();
+    if !orphaned.is_empty() {
+        println!(
+            "{}",
+            "Found stale repo mappings (paths no longer exist):".yellow()
+        );
+        for path in &orphaned {
+            println!("  {}", path.bright_black());
+        }
+        let remove: bool = Input::with_theme(&ColorfulTheme::default())
+            .with_prompt("Remove stale mappings from config?")
+            .default(true)
+            .interact()?;
+        if remove {
+            thoughts_config.remove_mappings(&orphaned);
+            thoughts_config.save(&config_path)?;
+            println!("{}", "Stale mappings removed.".green());
+        }
+    }
+
     // Prompt for agent tool if not yet set, or allow changing with --force
     if thoughts_config.agent_tool.is_none() || force {
         let agent_tool = prompt_for_agent_tool(&ColorfulTheme::default())?;
