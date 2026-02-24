@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::agents::AgentTool;
+use crate::agents::{AgentTool, OpenCodeProvider};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -60,6 +60,12 @@ pub struct ThoughtsConfig {
     pub user: String,
     #[serde(default)]
     pub agent_tool: Option<AgentTool>,
+    #[serde(default)]
+    pub opencode_provider: Option<OpenCodeProvider>,
+    #[serde(default)]
+    pub opencode_sonnet_model: Option<String>,
+    #[serde(default)]
+    pub opencode_opus_model: Option<String>,
     #[serde(default)]
     pub repo_mappings: HashMap<String, RepoMapping>,
     #[serde(default)]
