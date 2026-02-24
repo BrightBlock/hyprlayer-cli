@@ -1,6 +1,6 @@
 ---
 description: Document codebase as-is with thoughts directory for historical context
-model: anthropic/claude-sonnet-4-5
+model: {{OPUS_MODEL}}
 subtask: false
 ---
 

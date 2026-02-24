@@ -1,6 +1,6 @@
 ---
 description: Create detailed implementation plans with thorough research and iteration
-model: anthropic/claude-sonnet-4-5
+model: {{OPUS_MODEL}}
 subtask: false
 ---
 
