@@ -1,6 +1,6 @@
 ---
 description: Iterate on existing implementation plans with thorough research and updates
-model: anthropic/claude-sonnet-4-5
+model: {{OPUS_MODEL}}
 subtask: false
 ---
 

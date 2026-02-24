@@ -1,7 +1,7 @@
 ---
 description: Searches JIRA for tickets using JQL or text queries via the JIRA MCP server. Use this to find similar issues, past implementations, related bugs, or historical context across the project.
 mode: subagent
-model: anthropic/claude-sonnet-4-5
+model: {{SONNET_MODEL}}
 tools:
   write: false
   edit: false

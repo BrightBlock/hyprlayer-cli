@@ -1,6 +1,6 @@
 ---
 description: Document codebase as-is without evaluation or recommendations
-model: anthropic/claude-sonnet-4-5
+model: {{OPUS_MODEL}}
 subtask: false
 ---
 
