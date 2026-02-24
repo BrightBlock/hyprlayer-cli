@@ -6,7 +6,7 @@ use dialoguer::{theme::ColorfulTheme, Input, Select};
 use std::fs;
 use std::path::{Path, PathBuf, MAIN_SEPARATOR_STR as SEP};
 
-use crate::agents::AgentTool;
+use crate::agents::{AgentTool, OpenCodeProvider};
 use crate::cli::InitArgs;
 use crate::config::{
     expand_path, get_current_repo_path, get_default_thoughts_repo, get_repo_name_from_path,
@@ -66,7 +66,17 @@ pub fn init(args: InitArgs) -> Result<()> {
     // Prompt for agent tool if not yet set, or allow changing with --force
     if thoughts_config.agent_tool.is_none() || force {
         let agent_tool = prompt_for_agent_tool(&ColorfulTheme::default())?;
-        thoughts_config.agent_tool = Some(agent_tool);
+        thoughts_config.agent_tool = Some(agent_tool.clone());
+
+        // If OpenCode is selected, prompt for provider and set model strings
+        if agent_tool == AgentTool::OpenCode {
+            let provider = prompt_for_opencode_provider(&ColorfulTheme::default())?;
+            thoughts_config.opencode_sonnet_model =
+                Some(provider.default_sonnet_model().to_string());
+            thoughts_config.opencode_opus_model = Some(provider.default_opus_model().to_string());
+            thoughts_config.opencode_provider = Some(provider);
+        }
+
         thoughts_config.save(&config_path)?;
     }
 
@@ -75,7 +85,8 @@ pub fn init(args: InitArgs) -> Result<()> {
     // restored even if the user declines thoughts reconfiguration.
     if let Some(ref agent_tool) = thoughts_config.agent_tool {
         if force || !agent_tool.is_installed() {
-            agent_tool.install()?;
+            let provider = thoughts_config.opencode_provider.as_ref();
+            agent_tool.install(provider)?;
             println!(
                 "{}",
                 format!(
@@ -85,6 +96,12 @@ pub fn init(args: InitArgs) -> Result<()> {
                 )
                 .green()
             );
+
+            if matches!(agent_tool, AgentTool::OpenCode)
+                && let Some(p) = provider
+            {
+                println!("{}", format!("  Configured for {} provider", p).green());
+            }
         } else {
             println!(
                 "{}",
@@ -180,6 +197,17 @@ fn load_or_create_config(config: &crate::cli::ConfigArgs) -> Result<ThoughtsConf
     let user = prompt_for_username(&theme)?;
     let agent_tool = prompt_for_agent_tool(&theme)?;
 
+    // If OpenCode is selected, prompt for provider
+    let (opencode_provider, opencode_sonnet_model, opencode_opus_model) =
+        if agent_tool == AgentTool::OpenCode {
+            let provider = prompt_for_opencode_provider(&theme)?;
+            let sonnet = provider.default_sonnet_model().to_string();
+            let opus = provider.default_opus_model().to_string();
+            (Some(provider), Some(sonnet), Some(opus))
+        } else {
+            (None, None, None)
+        };
+
     println!();
     println!("{}", "Creating thoughts structure:".yellow());
     println!("  {}{SEP}", thoughts_repo.cyan());
@@ -201,6 +229,9 @@ fn load_or_create_config(config: &crate::cli::ConfigArgs) -> Result<ThoughtsConf
         global_dir,
         user,
         agent_tool: Some(agent_tool),
+        opencode_provider,
+        opencode_sonnet_model,
+        opencode_opus_model,
         repo_mappings: Default::default(),
         profiles: Default::default(),
     })
@@ -236,6 +267,20 @@ fn prompt_for_agent_tool(theme: &ColorfulTheme) -> Result<AgentTool> {
         .interact()?;
 
     Ok(AgentTool::ALL[selection].clone())
+}
+
+fn prompt_for_opencode_provider(theme: &ColorfulTheme) -> Result<OpenCodeProvider> {
+    let options: Vec<String> = OpenCodeProvider::ALL
+        .iter()
+        .map(|p| p.to_string())
+        .collect();
+    let selection = Select::with_theme(theme)
+        .with_prompt("Which OpenCode provider do you want to use?")
+        .items(&options)
+        .default(0)
+        .interact()?;
+
+    Ok(OpenCodeProvider::ALL[selection].clone())
 }
 
 fn check_existing_setup(current_repo: &Path, force: bool) -> Result<bool> {
@@ -520,9 +565,14 @@ fn print_summary(ctx: &InitContext) {
     );
     if let Some(ref agent_tool) = ctx.thoughts_config.agent_tool {
         println!();
+        let agent_display = match (agent_tool, &ctx.thoughts_config.opencode_provider) {
+            (AgentTool::OpenCode, Some(provider)) => format!("{} ({})", agent_tool, provider),
+            _ => agent_tool.to_string(),
+        };
+
         println!(
             "AI Tool: {} (agents installed to {})",
-            agent_tool.to_string().cyan(),
+            agent_display.cyan(),
             agent_tool.dest_display().cyan()
         );
     }

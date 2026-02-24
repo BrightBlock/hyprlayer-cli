@@ -9,12 +9,68 @@ use std::process::Command;
 const REPO: &str = "BrightBlock/hyprlayer-cli";
 const BRANCH: &str = "master";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentTool {
     Claude,
     Copilot,
     OpenCode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum OpenCodeProvider {
+    GithubCopilot,
+    Anthropic,
+    Abacus,
+}
+
+impl fmt::Display for OpenCodeProvider {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::GithubCopilot => write!(f, "GitHub Copilot"),
+            Self::Anthropic => write!(f, "Anthropic"),
+            Self::Abacus => write!(f, "Abacus"),
+        }
+    }
+}
+
+impl OpenCodeProvider {
+    /// All available providers for selection prompts
+    pub const ALL: &[OpenCodeProvider] = &[
+        OpenCodeProvider::GithubCopilot,
+        OpenCodeProvider::Anthropic,
+        OpenCodeProvider::Abacus,
+    ];
+
+    /// Get the default sonnet model string for this provider
+    /// Used for most commands and all agents
+    pub fn default_sonnet_model(&self) -> &str {
+        match self {
+            Self::GithubCopilot => "github-copilot/claude-sonnet-4.5",
+            Self::Anthropic => "anthropic/claude-sonnet-4-5",
+            Self::Abacus => "abacus/claude-sonnet-4-5-20250929",
+        }
+    }
+
+    /// Get the default opus model string for this provider
+    /// Used for research_codebase, create_plan, and iterate_plan commands
+    pub fn default_opus_model(&self) -> &str {
+        match self {
+            Self::GithubCopilot => "github-copilot/claude-opus-4.5",
+            Self::Anthropic => "anthropic/claude-opus-4-5",
+            Self::Abacus => "abacus/claude-opus-4-5-20251101",
+        }
+    }
+
+    /// Get the provider prefix for model strings
+    pub fn provider_prefix(&self) -> &str {
+        match self {
+            Self::GithubCopilot => "github-copilot",
+            Self::Anthropic => "anthropic",
+            Self::Abacus => "abacus",
+        }
+    }
 }
 
 impl fmt::Display for AgentTool {
@@ -91,8 +147,8 @@ impl AgentTool {
     }
 
     /// Download agent files from GitHub and install to the destination.
-    /// Uses the GitHub Contents API to fetch only the specific directory needed.
-    pub fn install(&self) -> Result<()> {
+    /// For OpenCode, optionally update model fields with provider-specific model.
+    pub fn install(&self, opencode_provider: Option<&OpenCodeProvider>) -> Result<()> {
         let dest = self.dest_dir()?;
         fs::create_dir_all(&dest)?;
 
@@ -106,6 +162,15 @@ impl AgentTool {
         let mut count = 0;
         download_directory(&token, self.repo_dir(), &dest, &mut count)?;
         println!("  {:<60}", format!("Downloaded {} files", count));
+
+        // Update model fields if OpenCode and provider specified
+        if matches!(self, AgentTool::OpenCode)
+            && let Some(provider) = opencode_provider
+        {
+            println!("Configuring models for {}...", provider);
+            let updated = update_opencode_models(&dest, provider)?;
+            println!("  {:<60}", format!("Updated {} files", updated));
+        }
 
         Ok(())
     }
@@ -236,6 +301,45 @@ fn curl_download_file(url: &str, dest: &Path, token: &str) -> Result<()> {
     Ok(())
 }
 
+/// Template placeholders used in OpenCode agent/command files
+const SONNET_MODEL_PLACEHOLDER: &str = "{{SONNET_MODEL}}";
+const OPUS_MODEL_PLACEHOLDER: &str = "{{OPUS_MODEL}}";
+
+/// Replace model placeholders in a file with provider-specific values.
+/// Returns true if any replacements were made.
+fn replace_model_placeholders(path: &Path, provider: &OpenCodeProvider) -> Result<bool> {
+    let content = fs::read_to_string(path)?;
+
+    if !content.contains(SONNET_MODEL_PLACEHOLDER) && !content.contains(OPUS_MODEL_PLACEHOLDER) {
+        return Ok(false);
+    }
+
+    let updated = content
+        .replace(SONNET_MODEL_PLACEHOLDER, provider.default_sonnet_model())
+        .replace(OPUS_MODEL_PLACEHOLDER, provider.default_opus_model());
+
+    fs::write(path, updated)?;
+    Ok(true)
+}
+
+/// Update all model placeholders in OpenCode agent/command files.
+/// Files use {{SONNET_MODEL}} and {{OPUS_MODEL}} placeholders.
+fn update_opencode_models(dest_dir: &Path, provider: &OpenCodeProvider) -> Result<usize> {
+    let dirs = ["agents", "commands"];
+
+    dirs.iter()
+        .filter_map(|dir| {
+            let path = dest_dir.join(dir);
+            path.is_dir().then_some(path)
+        })
+        .flat_map(|dir| fs::read_dir(dir).into_iter().flatten().flatten())
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "md"))
+        .try_fold(0, |count, entry| {
+            let updated = replace_model_placeholders(&entry.path(), provider)?;
+            Ok::<_, anyhow::Error>(count + usize::from(updated))
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,5 +384,190 @@ mod tests {
             SEP,
             display
         );
+    }
+
+    #[test]
+    fn opencode_provider_serializes_to_kebab_case() {
+        let json = serde_json::to_string(&OpenCodeProvider::GithubCopilot).unwrap();
+        assert_eq!(json, "\"github-copilot\"");
+
+        let json = serde_json::to_string(&OpenCodeProvider::Anthropic).unwrap();
+        assert_eq!(json, "\"anthropic\"");
+
+        let json = serde_json::to_string(&OpenCodeProvider::Abacus).unwrap();
+        assert_eq!(json, "\"abacus\"");
+    }
+
+    #[test]
+    fn opencode_provider_deserializes_from_kebab_case() {
+        let provider: OpenCodeProvider = serde_json::from_str("\"github-copilot\"").unwrap();
+        assert_eq!(provider, OpenCodeProvider::GithubCopilot);
+
+        let provider: OpenCodeProvider = serde_json::from_str("\"anthropic\"").unwrap();
+        assert_eq!(provider, OpenCodeProvider::Anthropic);
+
+        let provider: OpenCodeProvider = serde_json::from_str("\"abacus\"").unwrap();
+        assert_eq!(provider, OpenCodeProvider::Abacus);
+    }
+
+    #[test]
+    fn opencode_provider_display_names() {
+        assert_eq!(OpenCodeProvider::GithubCopilot.to_string(), "GitHub Copilot");
+        assert_eq!(OpenCodeProvider::Anthropic.to_string(), "Anthropic");
+        assert_eq!(OpenCodeProvider::Abacus.to_string(), "Abacus");
+    }
+
+    #[test]
+    fn opencode_provider_sonnet_models() {
+        assert_eq!(
+            OpenCodeProvider::GithubCopilot.default_sonnet_model(),
+            "github-copilot/claude-sonnet-4.5"
+        );
+        assert_eq!(
+            OpenCodeProvider::Anthropic.default_sonnet_model(),
+            "anthropic/claude-sonnet-4-5"
+        );
+        assert_eq!(
+            OpenCodeProvider::Abacus.default_sonnet_model(),
+            "abacus/claude-sonnet-4-5-20250929"
+        );
+    }
+
+    #[test]
+    fn opencode_provider_opus_models() {
+        assert_eq!(
+            OpenCodeProvider::GithubCopilot.default_opus_model(),
+            "github-copilot/claude-opus-4.5"
+        );
+        assert_eq!(
+            OpenCodeProvider::Anthropic.default_opus_model(),
+            "anthropic/claude-opus-4-5"
+        );
+        assert_eq!(
+            OpenCodeProvider::Abacus.default_opus_model(),
+            "abacus/claude-opus-4-5-20251101"
+        );
+    }
+
+    #[test]
+    fn opencode_provider_prefixes() {
+        assert_eq!(OpenCodeProvider::GithubCopilot.provider_prefix(), "github-copilot");
+        assert_eq!(OpenCodeProvider::Anthropic.provider_prefix(), "anthropic");
+        assert_eq!(OpenCodeProvider::Abacus.provider_prefix(), "abacus");
+    }
+
+    #[test]
+    fn replace_model_placeholders_replaces_sonnet() {
+        let temp_dir = std::env::temp_dir().join("hyprlayer_test_sonnet_placeholder");
+        fs::create_dir_all(&temp_dir).unwrap();
+        let file_path = temp_dir.join("test_agent.md");
+
+        let content = "---\nmodel: {{SONNET_MODEL}}\n---\n# Agent";
+        fs::write(&file_path, content).unwrap();
+
+        let updated = replace_model_placeholders(&file_path, &OpenCodeProvider::GithubCopilot).unwrap();
+        assert!(updated);
+
+        let result = fs::read_to_string(&file_path).unwrap();
+        assert!(result.contains("model: github-copilot/claude-sonnet-4.5"));
+        assert!(!result.contains("{{SONNET_MODEL}}"));
+
+        fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn replace_model_placeholders_replaces_opus() {
+        let temp_dir = std::env::temp_dir().join("hyprlayer_test_opus_placeholder");
+        fs::create_dir_all(&temp_dir).unwrap();
+        let file_path = temp_dir.join("research.md");
+
+        let content = "---\nmodel: {{OPUS_MODEL}}\n---\n# Research";
+        fs::write(&file_path, content).unwrap();
+
+        let updated = replace_model_placeholders(&file_path, &OpenCodeProvider::Abacus).unwrap();
+        assert!(updated);
+
+        let result = fs::read_to_string(&file_path).unwrap();
+        assert!(result.contains("model: abacus/claude-opus-4-5-20251101"));
+        assert!(!result.contains("{{OPUS_MODEL}}"));
+
+        fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn replace_model_placeholders_skips_files_without_placeholders() {
+        let temp_dir = std::env::temp_dir().join("hyprlayer_test_no_placeholder");
+        fs::create_dir_all(&temp_dir).unwrap();
+        let file_path = temp_dir.join("no_placeholder.md");
+
+        let content = "---\ndescription: No model field\n---\n# Test";
+        fs::write(&file_path, content).unwrap();
+
+        let updated = replace_model_placeholders(&file_path, &OpenCodeProvider::Anthropic).unwrap();
+        assert!(!updated);
+
+        let result = fs::read_to_string(&file_path).unwrap();
+        assert_eq!(result, content);
+
+        fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn update_opencode_models_replaces_placeholders() {
+        let temp_dir = std::env::temp_dir().join("hyprlayer_test_opencode_placeholders");
+        let agents_dir = temp_dir.join("agents");
+        let commands_dir = temp_dir.join("commands");
+        fs::create_dir_all(&agents_dir).unwrap();
+        fs::create_dir_all(&commands_dir).unwrap();
+
+        // Agent with sonnet placeholder
+        fs::write(
+            agents_dir.join("analyzer.md"),
+            "---\nmodel: {{SONNET_MODEL}}\n---\n# Analyzer",
+        ).unwrap();
+
+        // Command with opus placeholder
+        fs::write(
+            commands_dir.join("research.md"),
+            "---\nmodel: {{OPUS_MODEL}}\n---\n# Research",
+        ).unwrap();
+
+        // Command without placeholder (should not count)
+        fs::write(
+            commands_dir.join("commit.md"),
+            "---\ndescription: Commit\n---\n# Commit",
+        ).unwrap();
+
+        let count = update_opencode_models(&temp_dir, &OpenCodeProvider::GithubCopilot).unwrap();
+        assert_eq!(count, 2); // Only files with placeholders
+
+        let agent = fs::read_to_string(agents_dir.join("analyzer.md")).unwrap();
+        assert!(agent.contains("model: github-copilot/claude-sonnet-4.5"));
+
+        let research = fs::read_to_string(commands_dir.join("research.md")).unwrap();
+        assert!(research.contains("model: github-copilot/claude-opus-4.5"));
+
+        fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn update_opencode_models_with_different_providers() {
+        let temp_dir = std::env::temp_dir().join("hyprlayer_test_providers");
+        let commands_dir = temp_dir.join("commands");
+        fs::create_dir_all(&commands_dir).unwrap();
+
+        // Test with Anthropic
+        fs::write(
+            commands_dir.join("test.md"),
+            "---\nmodel: {{SONNET_MODEL}}\nopus: {{OPUS_MODEL}}\n---\n# Test",
+        ).unwrap();
+
+        update_opencode_models(&temp_dir, &OpenCodeProvider::Anthropic).unwrap();
+
+        let result = fs::read_to_string(commands_dir.join("test.md")).unwrap();
+        assert!(result.contains("model: anthropic/claude-sonnet-4-5"));
+        assert!(result.contains("opus: anthropic/claude-opus-4-5"));
+
+        fs::remove_dir_all(&temp_dir).ok();
     }
 }
