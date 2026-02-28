@@ -4,7 +4,11 @@ use colored::Colorize;
 use crate::cli::ProfileShowArgs;
 
 pub fn show(args: ProfileShowArgs) -> Result<()> {
-    let ProfileShowArgs { name: profile_name, json, config } = args;
+    let ProfileShowArgs {
+        name: profile_name,
+        json,
+        config,
+    } = args;
     let (_, config_json) = config.load_raw()?;
 
     if json {
