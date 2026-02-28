@@ -2,14 +2,14 @@
 use anyhow::Context;
 use anyhow::Result;
 use colored::Colorize;
-use dialoguer::{Input, Select, theme::ColorfulTheme};
+use dialoguer::{theme::ColorfulTheme, Input, Select};
 use std::fs;
-use std::path::{MAIN_SEPARATOR_STR as SEP, Path, PathBuf};
+use std::path::{Path, PathBuf, MAIN_SEPARATOR_STR as SEP};
 
 use crate::cli::InitArgs;
 use crate::config::{
-    ProfileConfig, RepoMapping, ThoughtsConfig, expand_path, get_current_repo_path,
-    get_default_thoughts_repo, get_repo_name_from_path, sanitize_directory_name,
+    expand_path, get_current_repo_path, get_default_thoughts_repo, get_repo_name_from_path,
+    sanitize_directory_name, ProfileConfig, RepoMapping, ThoughtsConfig,
 };
 use crate::git_ops::GitRepo;
 use crate::hooks;
@@ -203,6 +203,8 @@ fn load_or_create_config(config: &crate::cli::ConfigArgs) -> Result<ThoughtsConf
         opencode_opus_model: None,
         repo_mappings: Default::default(),
         profiles: Default::default(),
+        last_version_check: None,
+        disable_update_check: false,
     })
 }
 
