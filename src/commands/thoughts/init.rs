@@ -2,15 +2,14 @@
 use anyhow::Context;
 use anyhow::Result;
 use colored::Colorize;
-use dialoguer::{theme::ColorfulTheme, Input, Select};
+use dialoguer::{Input, Select, theme::ColorfulTheme};
 use std::fs;
-use std::path::{Path, PathBuf, MAIN_SEPARATOR_STR as SEP};
+use std::path::{MAIN_SEPARATOR_STR as SEP, Path, PathBuf};
 
-use crate::agents::{AgentTool, OpenCodeProvider};
 use crate::cli::InitArgs;
 use crate::config::{
-    expand_path, get_current_repo_path, get_default_thoughts_repo, get_repo_name_from_path,
-    sanitize_directory_name, ProfileConfig, RepoMapping, ThoughtsConfig,
+    ProfileConfig, RepoMapping, ThoughtsConfig, expand_path, get_current_repo_path,
+    get_default_thoughts_repo, get_repo_name_from_path, sanitize_directory_name,
 };
 use crate::git_ops::GitRepo;
 use crate::hooks;
@@ -42,6 +41,13 @@ pub fn init(args: InitArgs) -> Result<()> {
     let config_path = config.path()?;
     let mut thoughts_config = load_or_create_config(&config)?;
 
+    // Require AI to be configured first
+    if thoughts_config.agent_tool.is_none() {
+        return Err(anyhow::anyhow!(
+            "AI tool not configured. Run 'hyprlayer ai configure' first."
+        ));
+    }
+
     // Check for stale repo mappings (paths that no longer exist on disk)
     let orphaned = thoughts_config.find_orphaned_mappings();
     if !orphaned.is_empty() {
@@ -63,26 +69,7 @@ pub fn init(args: InitArgs) -> Result<()> {
         }
     }
 
-    // Prompt for agent tool if not yet set, or allow changing with --force
-    if thoughts_config.agent_tool.is_none() || force {
-        let agent_tool = prompt_for_agent_tool(&ColorfulTheme::default())?;
-        thoughts_config.agent_tool = Some(agent_tool.clone());
-
-        // If OpenCode is selected, prompt for provider and set model strings
-        if agent_tool == AgentTool::OpenCode {
-            let provider = prompt_for_opencode_provider(&ColorfulTheme::default())?;
-            thoughts_config.opencode_sonnet_model =
-                Some(provider.default_sonnet_model().to_string());
-            thoughts_config.opencode_opus_model = Some(provider.default_opus_model().to_string());
-            thoughts_config.opencode_provider = Some(provider);
-        }
-
-        thoughts_config.save(&config_path)?;
-    }
-
     // Install agent files if not already present, or if --force is used.
-    // This runs before check_existing_setup() so agent files are
-    // restored even if the user declines thoughts reconfiguration.
     if let Some(ref agent_tool) = thoughts_config.agent_tool {
         if force || !agent_tool.is_installed() {
             let provider = thoughts_config.opencode_provider.as_ref();
@@ -96,12 +83,6 @@ pub fn init(args: InitArgs) -> Result<()> {
                 )
                 .green()
             );
-
-            if matches!(agent_tool, AgentTool::OpenCode)
-                && let Some(p) = provider
-            {
-                println!("{}", format!("  Configured for {} provider", p).green());
-            }
         } else {
             println!(
                 "{}",
@@ -195,18 +176,6 @@ fn load_or_create_config(config: &crate::cli::ConfigArgs) -> Result<ThoughtsConf
         .interact()?;
 
     let user = prompt_for_username(&theme)?;
-    let agent_tool = prompt_for_agent_tool(&theme)?;
-
-    // If OpenCode is selected, prompt for provider
-    let (opencode_provider, opencode_sonnet_model, opencode_opus_model) =
-        if agent_tool == AgentTool::OpenCode {
-            let provider = prompt_for_opencode_provider(&theme)?;
-            let sonnet = provider.default_sonnet_model().to_string();
-            let opus = provider.default_opus_model().to_string();
-            (Some(provider), Some(sonnet), Some(opus))
-        } else {
-            (None, None, None)
-        };
 
     println!();
     println!("{}", "Creating thoughts structure:".yellow());
@@ -228,10 +197,10 @@ fn load_or_create_config(config: &crate::cli::ConfigArgs) -> Result<ThoughtsConf
         repos_dir,
         global_dir,
         user,
-        agent_tool: Some(agent_tool),
-        opencode_provider,
-        opencode_sonnet_model,
-        opencode_opus_model,
+        agent_tool: None, // Will be set by `ai configure`
+        opencode_provider: None,
+        opencode_sonnet_model: None,
+        opencode_opus_model: None,
         repo_mappings: Default::default(),
         profiles: Default::default(),
     })
@@ -256,31 +225,6 @@ fn prompt_for_username(theme: &ColorfulTheme) -> Result<String> {
             "Username cannot be \"global\" as it's reserved for cross-project thoughts.".red()
         );
     }
-}
-
-fn prompt_for_agent_tool(theme: &ColorfulTheme) -> Result<AgentTool> {
-    let options: Vec<String> = AgentTool::ALL.iter().map(|t| t.to_string()).collect();
-    let selection = Select::with_theme(theme)
-        .with_prompt("Which AI tool do you use?")
-        .items(&options)
-        .default(0)
-        .interact()?;
-
-    Ok(AgentTool::ALL[selection].clone())
-}
-
-fn prompt_for_opencode_provider(theme: &ColorfulTheme) -> Result<OpenCodeProvider> {
-    let options: Vec<String> = OpenCodeProvider::ALL
-        .iter()
-        .map(|p| p.to_string())
-        .collect();
-    let selection = Select::with_theme(theme)
-        .with_prompt("Which OpenCode provider do you want to use?")
-        .items(&options)
-        .default(0)
-        .interact()?;
-
-    Ok(OpenCodeProvider::ALL[selection].clone())
 }
 
 fn check_existing_setup(current_repo: &Path, force: bool) -> Result<bool> {
@@ -563,19 +507,6 @@ fn print_summary(ctx: &InitContext) {
         ctx.thoughts_repo.cyan(),
         ctx.global_dir.cyan(),
     );
-    if let Some(ref agent_tool) = ctx.thoughts_config.agent_tool {
-        println!();
-        let agent_display = match (agent_tool, &ctx.thoughts_config.opencode_provider) {
-            (AgentTool::OpenCode, Some(provider)) => format!("{} ({})", agent_tool, provider),
-            _ => agent_tool.to_string(),
-        };
-
-        println!(
-            "AI Tool: {} (agents installed to {})",
-            agent_display.cyan(),
-            agent_tool.dest_display().cyan()
-        );
-    }
     println!();
     println!("Protection enabled:");
     println!(

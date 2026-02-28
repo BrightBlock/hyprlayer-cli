@@ -54,7 +54,9 @@ impl GitRepo {
                     _ if s.contains(Status::WT_NEW) => "untracked",
                     _ if s.contains(Status::WT_MODIFIED) => "modified",
                     _ if s.contains(Status::INDEX_NEW) => "added",
-                    _ if s.contains(Status::INDEX_DELETED) || s.contains(Status::WT_DELETED) => "deleted",
+                    _ if s.contains(Status::INDEX_DELETED) || s.contains(Status::WT_DELETED) => {
+                        "deleted"
+                    }
                     _ => "unknown",
                 };
                 let _ = writeln!(result, "  {:<10} {}", label, path);

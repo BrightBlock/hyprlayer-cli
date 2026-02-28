@@ -54,7 +54,10 @@ pub fn list(args: ProfileListArgs) -> Result<()> {
             |key: &str| profile.get(key).and_then(|v| v.as_str()).unwrap_or("N/A");
 
         println!("  {}:", name.cyan());
-        println!("    Thoughts repository: {}", get_profile_str("thoughtsRepo"));
+        println!(
+            "    Thoughts repository: {}",
+            get_profile_str("thoughtsRepo")
+        );
         println!("    Repos directory: {}", get_profile_str("reposDir"));
         println!("    Global directory: {}", get_profile_str("globalDir"));
         println!();

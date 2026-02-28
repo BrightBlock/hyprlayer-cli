@@ -3,12 +3,7 @@ pub mod commands;
 use clap::{Parser, Subcommand};
 pub use commands::*;
 
-const VERSION: &str = concat!(
-    env!("CARGO_PKG_VERSION"),
-    " (",
-    env!("GIT_COMMIT"),
-    ")"
-);
+const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("GIT_COMMIT"), ")");
 
 #[derive(Parser, Debug)]
 #[command(name = "hyprlayer")]
@@ -20,6 +15,18 @@ pub enum Cli {
         #[command(subcommand)]
         command: ThoughtsCommands,
     },
+    /// Manage AI tool configuration
+    Ai {
+        #[command(subcommand)]
+        command: AiCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AiCommands {
+    Configure(AiConfigureArgs),
+    Status(AiStatusArgs),
+    Reinstall(AiReinstallArgs),
 }
 
 #[derive(Subcommand, Debug)]
