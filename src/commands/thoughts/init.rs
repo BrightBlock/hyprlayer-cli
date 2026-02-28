@@ -197,14 +197,7 @@ fn load_or_create_config(config: &crate::cli::ConfigArgs) -> Result<ThoughtsConf
         repos_dir,
         global_dir,
         user,
-        agent_tool: None, // Will be set by `ai configure`
-        opencode_provider: None,
-        opencode_sonnet_model: None,
-        opencode_opus_model: None,
-        repo_mappings: Default::default(),
-        profiles: Default::default(),
-        last_version_check: None,
-        disable_update_check: false,
+        ..Default::default()
     })
 }
 

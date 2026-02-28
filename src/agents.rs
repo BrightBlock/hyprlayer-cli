@@ -246,7 +246,7 @@ impl AgentTool {
 fn download_directory(repo_path: &str, dest: &Path, count: &mut usize) -> Result<()> {
     let api_url = format!("https://api.github.com/repos/{REPO}/contents/{repo_path}?ref={BRANCH}");
 
-    let json = curl_get_json(&api_url)?;
+    let json = curl_get_json(&api_url, None)?;
 
     // The API returns a JSON object with a "message" field on errors (e.g. 404)
     if let Ok(err) = serde_json::from_str::<GitHubError>(&json)
@@ -300,19 +300,28 @@ struct GitHubEntry {
 }
 
 /// GET a URL and return the response body as a string.
-fn curl_get_json(url: &str) -> Result<String> {
+/// Optionally applies a timeout (in seconds) via curl's `--max-time`.
+pub(crate) fn curl_get_json(url: &str, timeout_secs: Option<u32>) -> Result<String> {
+    let timeout_str = timeout_secs.map(|s| s.to_string());
+    let mut args = vec![
+        "-sL",
+        "-H",
+        "Accept: application/vnd.github.v3+json",
+        "-H",
+        "User-Agent: hyprlayer-cli",
+    ];
+    if let Some(ref t) = timeout_str {
+        args.extend(["--max-time", t]);
+    }
+    args.push(url);
+
     let output = Command::new("curl")
-        .args([
-            "-sL",
-            "-H",
-            "Accept: application/vnd.github.v3+json",
-            url,
-        ])
+        .args(&args)
         .output()
         .context("curl not found — install curl to download agent files")?;
 
     if !output.status.success() {
-        return Err(anyhow::anyhow!("GitHub API request failed"));
+        anyhow::bail!("GitHub API request failed");
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
