@@ -70,6 +70,12 @@ pub struct ThoughtsConfig {
     pub repo_mappings: HashMap<String, RepoMapping>,
     #[serde(default)]
     pub profiles: HashMap<String, ProfileConfig>,
+    /// Timestamp of last version check (Unix epoch seconds)
+    #[serde(default)]
+    pub last_version_check: Option<i64>,
+    /// Disable automatic update checking
+    #[serde(default)]
+    pub disable_update_check: bool,
 }
 
 /// Effective configuration for a specific repository

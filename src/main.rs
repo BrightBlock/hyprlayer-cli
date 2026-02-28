@@ -7,6 +7,7 @@ mod commands;
 mod config;
 mod git_ops;
 mod hooks;
+mod version;
 
 use cli::{AiCommands, ProfileCommands, ThoughtsCommands};
 use commands::ai::{configure as ai_configure, reinstall as ai_reinstall, status as ai_status};
@@ -16,6 +17,9 @@ use commands::thoughts::profile::{
 use commands::thoughts::{config_cmd, init, status, sync, uninit};
 
 fn main() -> Result<()> {
+    // Check for updates before running command
+    version::maybe_check_for_updates();
+
     match cli::Cli::parse() {
         cli::Cli::Thoughts { command } => match command {
             ThoughtsCommands::Init(args) => init::init(args)?,
