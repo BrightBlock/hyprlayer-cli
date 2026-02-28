@@ -135,6 +135,8 @@ fn load_or_create_minimal_config(config_path: &Path) -> Result<ThoughtsConfig> {
         opencode_opus_model: None,
         repo_mappings: Default::default(),
         profiles: Default::default(),
+        last_version_check: None,
+        disable_update_check: false,
     })
 }
 
