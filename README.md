@@ -21,20 +21,17 @@ Use `/iterate_plan` to refine plans based on feedback and `/research_codebase` t
 
 ### Homebrew (macOS and Linux)
 
-Requires the [GitHub CLI](https://cli.github.com/) (`gh`) to be installed and authenticated.
-
 ```bash
-export HOMEBREW_GITHUB_API_TOKEN=$(gh auth token)
 brew tap brightblock/tap
 brew install hyprlayer
 ```
 
 ### Windows
 
-Requires the [GitHub CLI](https://cli.github.com/) (`gh`) to be installed and authenticated. Install the [Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe) if not already present.
+Install the [Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe) if not already present.
 
 ```powershell
-iex "& { $(irm -Headers @{Authorization='token '+(gh auth token)} https://raw.githubusercontent.com/BrightBlock/hyprlayer-cli/master/install.ps1) }"
+iex "& { $(irm https://raw.githubusercontent.com/BrightBlock/hyprlayer-cli/master/install.ps1) }"
 ```
 
 ### Cargo
@@ -48,7 +45,7 @@ cargo install --git https://github.com/BrightBlock/hyprlayer-cli.git
 1. Clone your team's thoughts repository:
 
 ```bash
-gh repo clone <org>/<thoughts-repo> ~/hyprlayer-thoughts
+gh repo clone <org>/<thoughts-repo> ~/thoughts
 ```
 
 2. Create a profile pointing to it:
@@ -90,3 +87,7 @@ Most commands have `_nt` variants that skip thoughts directory integration for r
 cargo build
 cargo test
 ```
+
+## Acknowledgements
+
+Inspired by [HumanLayer](https://humanlayer.dev).
