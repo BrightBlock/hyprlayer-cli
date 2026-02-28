@@ -55,7 +55,7 @@ Then wait for the user's input.
 
    These agents will:
    - Find relevant source files, configs, and tests
-   - Identify the specific directories to focus on (e.g., if WUI is mentioned, they'll focus on humanlayer-wui/)
+    - Identify the specific directories to focus on (e.g., if CLI is mentioned, they'll focus on src/)
    - Trace data flow and key functions
    - Return detailed explanations with file:line references
 
@@ -312,7 +312,7 @@ After structure approval:
    - Research actual code patterns using parallel sub-tasks
    - Include specific file paths and line numbers
    - Write measurable success criteria with clear automated vs manual distinction
-   - automated steps should use `make` whenever possible - for example `make -C humanlayer-wui check` instead of `cd humanlayer-wui && bun run fmt`
+    - automated steps should use `cargo` whenever possible - for example `cargo check`, `cargo test`, `cargo clippy`, `cargo fmt --check`
 
 4. **Be Practical**:
    - Focus on incremental, testable changes
@@ -399,9 +399,9 @@ When spawning research sub-tasks:
    - What information to extract
    - Expected output format
 4. **Be EXTREMELY specific about directories**:
-   - If the ticket mentions "WUI", specify `humanlayer-wui/` directory
-   - If it mentions "daemon", specify `hld/` directory
-   - Never use generic terms like "UI" when you mean "WUI"
+    - If the ticket mentions "CLI", specify `src/` directory
+    - If it mentions "daemon", specify `hld/` directory
+    - Never use generic terms - be specific about which module or crate
    - Include the full path context in your prompts
 5. **Specify read-only tools** to use
 6. **Request specific file:line references** in responses
