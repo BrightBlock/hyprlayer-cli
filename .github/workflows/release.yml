@@ -90,7 +90,7 @@ jobs:
     steps:
       - name: Download release assets
         env:
-          GH_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           gh release download "v${VERSION}" \

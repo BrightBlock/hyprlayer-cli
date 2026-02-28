@@ -11,26 +11,10 @@ $BinDir = "$InstallDir\bin"
 $Repo = "BrightBlock/hyprlayer-cli"
 $GitHubAPI = "https://api.github.com/repos/$Repo/releases/latest"
 
-# Auth header for private repos
-# Try GITHUB_TOKEN env var first, then gh CLI
-$Token = $env:GITHUB_TOKEN
-if (-not $Token) {
-    try {
-        $Token = (gh auth token 2>$null)
-    } catch {
-        # gh CLI not available or not authenticated
-    }
-}
-
-$Headers = @{}
-if ($Token) {
-    $Headers["Authorization"] = "token $Token"
-}
-
 Write-Host "Fetching latest release..." -ForegroundColor Cyan
 
 try {
-    $Release = Invoke-RestMethod -Uri $GitHubAPI -Headers $Headers
+    $Release = Invoke-RestMethod -Uri $GitHubAPI
 } catch {
     Write-Host "Error: Could not fetch release information" -ForegroundColor Red
     Write-Host $_.Exception.Message -ForegroundColor Red
@@ -65,21 +49,8 @@ New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
 # Download binary
 Write-Host "Downloading $Binary ($Version)..." -ForegroundColor Cyan
 
-if ($Token) {
-    # Private repo: download via API
-    $Asset = $Release.assets | Where-Object { $_.name -eq $Binary }
-    if (-not $Asset) {
-        Write-Host "Error: Could not find asset $Binary in release $Version" -ForegroundColor Red
-        exit 1
-    }
-    $DownloadHeaders = $Headers.Clone()
-    $DownloadHeaders["Accept"] = "application/octet-stream"
-    Invoke-WebRequest -Uri $Asset.url -Headers $DownloadHeaders -OutFile "$BinDir\hyprlayer.exe"
-} else {
-    # Public repo: direct download
-    $DownloadUrl = "https://github.com/$Repo/releases/download/$Version/$Binary"
-    Invoke-WebRequest -Uri $DownloadUrl -OutFile "$BinDir\hyprlayer.exe"
-}
+$DownloadUrl = "https://github.com/$Repo/releases/download/$Version/$Binary"
+Invoke-WebRequest -Uri $DownloadUrl -OutFile "$BinDir\hyprlayer.exe"
 
 # Agent files are now installed by `hyprlayer thoughts init`
 Write-Host ""

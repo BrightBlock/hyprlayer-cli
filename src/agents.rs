@@ -152,15 +152,9 @@ impl AgentTool {
         let dest = self.dest_dir()?;
         fs::create_dir_all(&dest)?;
 
-        let token = get_github_token().ok_or_else(|| {
-            anyhow::anyhow!(
-                "GitHub authentication required. Set GITHUB_TOKEN or run `gh auth login`."
-            )
-        })?;
-
         println!("Downloading {} agent files...", self);
         let mut count = 0;
-        download_directory(&token, self.repo_dir(), &dest, &mut count)?;
+        download_directory(self.repo_dir(), &dest, &mut count)?;
         println!("  {:<60}", format!("Downloaded {} files", count));
 
         // Update model fields if OpenCode and provider specified
@@ -176,34 +170,17 @@ impl AgentTool {
     }
 }
 
-/// Resolve a GitHub auth token.
-/// Mirrors the installer: try GITHUB_TOKEN env var first, then `gh auth token`.
-fn get_github_token() -> Option<String> {
-    std::env::var("GITHUB_TOKEN")
-        .ok()
-        .filter(|t| !t.is_empty())
-        .or_else(|| {
-            Command::new("gh")
-                .args(["auth", "token"])
-                .output()
-                .ok()
-                .filter(|o| o.status.success())
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                .filter(|t| !t.is_empty())
-        })
-}
-
 /// Download a directory from the repo using the GitHub Contents API.
 /// Recursively fetches subdirectories and downloads each file individually.
 ///
 /// API: GET /repos/{owner}/{repo}/contents/{path}?ref={branch}
 /// Returns JSON array of entries with `type` ("file"|"dir"), `path`, and `download_url`.
-fn download_directory(token: &str, repo_path: &str, dest: &Path, count: &mut usize) -> Result<()> {
+fn download_directory(repo_path: &str, dest: &Path, count: &mut usize) -> Result<()> {
     let api_url = format!(
         "https://api.github.com/repos/{REPO}/contents/{repo_path}?ref={BRANCH}"
     );
 
-    let json = curl_get_json(&api_url, token)?;
+    let json = curl_get_json(&api_url)?;
 
     // The API returns a JSON object with a "message" field on errors (e.g. 404)
     if let Ok(err) = serde_json::from_str::<GitHubError>(&json)
@@ -228,12 +205,12 @@ fn download_directory(token: &str, repo_path: &str, dest: &Path, count: &mut usi
                     .ok_or_else(|| anyhow::anyhow!("No download URL for {}", entry.path))?;
                 print!("  {:<60}\r", entry.path);
                 std::io::stdout().flush().ok();
-                curl_download_file(&url, &dest_path, token)?;
+                curl_download_file(&url, &dest_path)?;
                 *count += 1;
             }
             "dir" => {
                 fs::create_dir_all(&dest_path)?;
-                download_directory(token, &entry.path, &dest_path, count)?;
+                download_directory(&entry.path, &dest_path, count)?;
             }
             _ => {} // skip symlinks, submodules, etc.
         }
@@ -257,12 +234,10 @@ struct GitHubEntry {
 }
 
 /// GET a URL and return the response body as a string.
-fn curl_get_json(url: &str, token: &str) -> Result<String> {
+fn curl_get_json(url: &str) -> Result<String> {
     let output = Command::new("curl")
         .args([
             "-sL",
-            "-H",
-            &format!("Authorization: token {token}"),
             "-H",
             "Accept: application/vnd.github.v3+json",
             url,
@@ -278,7 +253,7 @@ fn curl_get_json(url: &str, token: &str) -> Result<String> {
 }
 
 /// Download a single file to disk.
-fn curl_download_file(url: &str, dest: &Path, token: &str) -> Result<()> {
+fn curl_download_file(url: &str, dest: &Path) -> Result<()> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -286,8 +261,6 @@ fn curl_download_file(url: &str, dest: &Path, token: &str) -> Result<()> {
     let status = Command::new("curl")
         .args([
             "-sL",
-            "-H",
-            &format!("Authorization: token {token}"),
             "-o",
             &dest.display().to_string(),
             url,
