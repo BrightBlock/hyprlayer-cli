@@ -110,8 +110,8 @@ impl ThoughtsConfig {
     pub fn load(config_path: &Path) -> Result<Self> {
         let content = fs::read_to_string(config_path)
             .with_context(|| format!("Failed to read config file: {}", config_path.display()))?;
-        let config_file: ConfigFile = serde_json::from_str(&content)
-            .with_context(|| "Failed to parse config file")?;
+        let config_file: ConfigFile =
+            serde_json::from_str(&content).with_context(|| "Failed to parse config file")?;
         config_file
             .thoughts
             .ok_or_else(|| anyhow::anyhow!("No thoughts configuration found in config file"))
@@ -120,8 +120,9 @@ impl ThoughtsConfig {
     /// Save config to a file path
     pub fn save(&self, config_path: &Path) -> Result<()> {
         if let Some(parent) = config_path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create config directory: {}", parent.display()))?;
+            fs::create_dir_all(parent).with_context(|| {
+                format!("Failed to create config directory: {}", parent.display())
+            })?;
         }
         let content = serde_json::json!({ "thoughts": self });
         let json = serde_json::to_string_pretty(&content)?;
@@ -205,4 +206,3 @@ pub fn get_repo_name_from_path(path: &Path) -> String {
 pub fn sanitize_directory_name(name: &str) -> String {
     name.replace(|c: char| !c.is_alphanumeric() && c != '_' && c != '-', "_")
 }
-

@@ -8,7 +8,8 @@ mod config;
 mod git_ops;
 mod hooks;
 
-use cli::{ProfileCommands, ThoughtsCommands};
+use cli::{AiCommands, ProfileCommands, ThoughtsCommands};
+use commands::ai::{configure as ai_configure, reinstall as ai_reinstall, status as ai_status};
 use commands::thoughts::profile::{
     create as profile_create, delete as profile_delete, list as profile_list, show as profile_show,
 };
@@ -28,6 +29,11 @@ fn main() -> Result<()> {
                 ProfileCommands::Show(args) => profile_show::show(args)?,
                 ProfileCommands::Delete(args) => profile_delete::delete(args)?,
             },
+        },
+        cli::Cli::Ai { command } => match command {
+            AiCommands::Configure(args) => ai_configure::configure(args)?,
+            AiCommands::Status(args) => ai_status::status(args)?,
+            AiCommands::Reinstall(args) => ai_reinstall::reinstall(args)?,
         },
     }
 

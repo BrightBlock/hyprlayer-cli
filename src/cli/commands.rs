@@ -3,7 +3,7 @@ use clap::Args;
 use std::fs;
 use std::path::PathBuf;
 
-use crate::config::{expand_path, get_default_config_path, ThoughtsConfig};
+use crate::config::{ThoughtsConfig, expand_path, get_default_config_path};
 
 /// Common config file argument shared across commands
 #[derive(Debug, Clone, Args)]
@@ -22,8 +22,9 @@ impl ConfigArgs {
 
     /// Load existing config, error if not found
     pub fn load(&self) -> Result<ThoughtsConfig> {
-        self.load_if_exists()?
-            .ok_or_else(|| anyhow::anyhow!("No thoughts configuration found. Run 'hyprlayer thoughts init' first."))
+        self.load_if_exists()?.ok_or_else(|| {
+            anyhow::anyhow!("No thoughts configuration found. Run 'hyprlayer thoughts init' first.")
+        })
     }
 
     /// Load config if exists, returns None if config file doesn't exist
@@ -64,7 +65,10 @@ pub struct InitArgs {
 }
 
 #[derive(Debug, Args)]
-#[command(name = "uninit", about = "Remove thoughts setup from current repository")]
+#[command(
+    name = "uninit",
+    about = "Remove thoughts setup from current repository"
+)]
 pub struct UninitArgs {
     #[arg(long, help = "Force removal even if not in configuration")]
     pub force: bool,
@@ -138,6 +142,36 @@ pub struct ProfileDeleteArgs {
     pub name: String,
     #[arg(long, help = "Force deletion even if in use")]
     pub force: bool,
+    #[command(flatten)]
+    pub config: ConfigArgs,
+}
+
+// AI command argument structs
+
+#[derive(Debug, Args)]
+#[command(
+    name = "configure",
+    about = "Configure AI tool and install agent files"
+)]
+pub struct AiConfigureArgs {
+    #[arg(long, help = "Force reconfiguration even if already set up")]
+    pub force: bool,
+    #[command(flatten)]
+    pub config: ConfigArgs,
+}
+
+#[derive(Debug, Args)]
+#[command(name = "status", about = "Show current AI tool configuration")]
+pub struct AiStatusArgs {
+    #[arg(long, help = "Output as JSON")]
+    pub json: bool,
+    #[command(flatten)]
+    pub config: ConfigArgs,
+}
+
+#[derive(Debug, Args)]
+#[command(name = "reinstall", about = "Reinstall AI agent files")]
+pub struct AiReinstallArgs {
     #[command(flatten)]
     pub config: ConfigArgs,
 }

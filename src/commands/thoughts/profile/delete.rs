@@ -32,7 +32,11 @@ fn check_profile_not_in_use(config: &serde_json::Value, profile_name: &str) -> R
 }
 
 pub fn delete(args: ProfileDeleteArgs) -> Result<()> {
-    let ProfileDeleteArgs { name: profile_name, force, config } = args;
+    let ProfileDeleteArgs {
+        name: profile_name,
+        force,
+        config,
+    } = args;
     let (config_path, mut config_json) = config.load_raw()?;
 
     // Check if profile is in use (unless force)

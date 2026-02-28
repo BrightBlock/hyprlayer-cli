@@ -42,26 +42,52 @@ cargo install --git https://github.com/BrightBlock/hyprlayer-cli.git
 
 ## Getting Started
 
-1. Clone your team's thoughts repository:
+1. Configure your AI tool:
+
+```bash
+hyprlayer ai configure
+```
+
+2. Clone your team's thoughts repository:
 
 ```bash
 gh repo clone <org>/<thoughts-repo> ~/thoughts
 ```
 
-2. Create a profile pointing to it:
+3. Optional: Create a profile pointing to it:
 
 ```bash
 hyprlayer thoughts profile create <PROFILE_NAME>
 ```
 
-3. Initialize thoughts in any project:
+4. Initialize thoughts in any project:
 
 ```bash
 cd ~/Projects/my-project
 hyprlayer thoughts init --profile <PROFILE_NAME>
+# or without a profile:
+hyprlayer thoughts init
 ```
 
 This creates a `thoughts/` symlink structure in your project that connects to the shared repository. Repeat for each project.
+
+## AI Configuration
+
+Hyprlayer requires AI tool configuration before initializing thoughts in a repository.
+
+| Command | Description |
+|---|---|
+| `hyprlayer ai configure` | Configure AI tool and install agent files |
+| `hyprlayer ai status` | Show current AI configuration |
+| `hyprlayer ai reinstall` | Force reinstall agent files |
+
+### Supported AI Tools
+
+- **Claude Code** - Anthropic's Claude Code CLI
+- **GitHub Copilot** - GitHub Copilot in VS Code
+- **OpenCode** - OpenCode CLI with provider selection (GitHub Copilot, Anthropic, or Abacus)
+
+Use `hyprlayer ai configure --force` to change your AI tool or provider after initial setup.
 
 ## Commands
 

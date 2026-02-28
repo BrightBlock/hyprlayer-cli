@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf, MAIN_SEPARATOR_STR as SEP};
+use std::path::{MAIN_SEPARATOR_STR as SEP, Path, PathBuf};
 use std::process::Command;
 
 const REPO: &str = "BrightBlock/hyprlayer-cli";
@@ -123,7 +123,9 @@ impl AgentTool {
             #[cfg(target_os = "linux")]
             Self::Copilot => format!("~{SEP}.config{SEP}Code{SEP}User{SEP}"),
             #[cfg(target_os = "macos")]
-            Self::Copilot => format!("~{SEP}Library{SEP}Application Support{SEP}Code{SEP}User{SEP}"),
+            Self::Copilot => {
+                format!("~{SEP}Library{SEP}Application Support{SEP}Code{SEP}User{SEP}")
+            }
             #[cfg(target_os = "windows")]
             Self::Copilot => format!("%APPDATA%{SEP}Code{SEP}User{SEP}"),
             Self::OpenCode => format!("~{SEP}.config{SEP}opencode{SEP}"),
@@ -140,9 +142,75 @@ impl AgentTool {
             Self::Claude | Self::OpenCode => {
                 dest.join("commands").is_dir() && dest.join("agents").is_dir()
             }
-            Self::Copilot => {
-                dest.join("prompts").is_dir() && dest.join("agents").is_dir()
+            Self::Copilot => dest.join("prompts").is_dir() && dest.join("agents").is_dir(),
+        }
+    }
+
+    /// Print status information for this agent tool.
+    /// OpenCode includes provider and model details from config.
+    pub fn print_status(&self, config: &crate::config::ThoughtsConfig) {
+        use colored::Colorize;
+
+        println!("  AI Tool: {}", self.to_string().cyan());
+
+        let status = if self.is_installed() {
+            "installed".green()
+        } else {
+            "not installed".red()
+        };
+        println!("  Status: {}", status);
+        println!("  Location: {}", self.dest_display().cyan());
+
+        match self {
+            Self::OpenCode => {
+                println!();
+                println!("  {}", "OpenCode Settings:".yellow());
+                println!(
+                    "    Provider: {}",
+                    config
+                        .opencode_provider
+                        .as_ref()
+                        .map(|p| p.to_string())
+                        .unwrap_or_else(|| "not set".to_string())
+                        .cyan()
+                );
+                println!(
+                    "    Sonnet Model: {}",
+                    config
+                        .opencode_sonnet_model
+                        .as_deref()
+                        .unwrap_or("not set")
+                        .cyan()
+                );
+                println!(
+                    "    Opus Model: {}",
+                    config
+                        .opencode_opus_model
+                        .as_deref()
+                        .unwrap_or("not set")
+                        .cyan()
+                );
             }
+            Self::Claude | Self::Copilot => {}
+        }
+    }
+
+    /// Return status as JSON-serializable struct for --json output.
+    pub fn status_json(&self, config: &crate::config::ThoughtsConfig) -> serde_json::Value {
+        match self {
+            Self::OpenCode => serde_json::json!({
+                "agentTool": self.to_string(),
+                "installed": self.is_installed(),
+                "location": self.dest_display(),
+                "opencodeProvider": config.opencode_provider.as_ref().map(|p| p.to_string()),
+                "opencodeSonnetModel": config.opencode_sonnet_model.clone(),
+                "opencodeOpusModel": config.opencode_opus_model.clone(),
+            }),
+            Self::Claude | Self::Copilot => serde_json::json!({
+                "agentTool": self.to_string(),
+                "installed": self.is_installed(),
+                "location": self.dest_display(),
+            }),
         }
     }
 
@@ -176,9 +244,7 @@ impl AgentTool {
 /// API: GET /repos/{owner}/{repo}/contents/{path}?ref={branch}
 /// Returns JSON array of entries with `type` ("file"|"dir"), `path`, and `download_url`.
 fn download_directory(repo_path: &str, dest: &Path, count: &mut usize) -> Result<()> {
-    let api_url = format!(
-        "https://api.github.com/repos/{REPO}/contents/{repo_path}?ref={BRANCH}"
-    );
+    let api_url = format!("https://api.github.com/repos/{REPO}/contents/{repo_path}?ref={BRANCH}");
 
     let json = curl_get_json(&api_url)?;
 
@@ -339,13 +405,21 @@ mod tests {
     #[test]
     fn dest_display_claude_contains_claude_dir() {
         let display = AgentTool::Claude.dest_display();
-        assert!(display.contains(".claude"), "Expected .claude in: {}", display);
+        assert!(
+            display.contains(".claude"),
+            "Expected .claude in: {}",
+            display
+        );
     }
 
     #[test]
     fn dest_display_opencode_contains_opencode_dir() {
         let display = AgentTool::OpenCode.dest_display();
-        assert!(display.contains("opencode"), "Expected opencode in: {}", display);
+        assert!(
+            display.contains("opencode"),
+            "Expected opencode in: {}",
+            display
+        );
     }
 
     #[test]
@@ -385,7 +459,10 @@ mod tests {
 
     #[test]
     fn opencode_provider_display_names() {
-        assert_eq!(OpenCodeProvider::GithubCopilot.to_string(), "GitHub Copilot");
+        assert_eq!(
+            OpenCodeProvider::GithubCopilot.to_string(),
+            "GitHub Copilot"
+        );
         assert_eq!(OpenCodeProvider::Anthropic.to_string(), "Anthropic");
         assert_eq!(OpenCodeProvider::Abacus.to_string(), "Abacus");
     }
@@ -424,7 +501,10 @@ mod tests {
 
     #[test]
     fn opencode_provider_prefixes() {
-        assert_eq!(OpenCodeProvider::GithubCopilot.provider_prefix(), "github-copilot");
+        assert_eq!(
+            OpenCodeProvider::GithubCopilot.provider_prefix(),
+            "github-copilot"
+        );
         assert_eq!(OpenCodeProvider::Anthropic.provider_prefix(), "anthropic");
         assert_eq!(OpenCodeProvider::Abacus.provider_prefix(), "abacus");
     }
@@ -438,7 +518,8 @@ mod tests {
         let content = "---\nmodel: {{SONNET_MODEL}}\n---\n# Agent";
         fs::write(&file_path, content).unwrap();
 
-        let updated = replace_model_placeholders(&file_path, &OpenCodeProvider::GithubCopilot).unwrap();
+        let updated =
+            replace_model_placeholders(&file_path, &OpenCodeProvider::GithubCopilot).unwrap();
         assert!(updated);
 
         let result = fs::read_to_string(&file_path).unwrap();
@@ -497,19 +578,22 @@ mod tests {
         fs::write(
             agents_dir.join("analyzer.md"),
             "---\nmodel: {{SONNET_MODEL}}\n---\n# Analyzer",
-        ).unwrap();
+        )
+        .unwrap();
 
         // Command with opus placeholder
         fs::write(
             commands_dir.join("research.md"),
             "---\nmodel: {{OPUS_MODEL}}\n---\n# Research",
-        ).unwrap();
+        )
+        .unwrap();
 
         // Command without placeholder (should not count)
         fs::write(
             commands_dir.join("commit.md"),
             "---\ndescription: Commit\n---\n# Commit",
-        ).unwrap();
+        )
+        .unwrap();
 
         let count = update_opencode_models(&temp_dir, &OpenCodeProvider::GithubCopilot).unwrap();
         assert_eq!(count, 2); // Only files with placeholders
@@ -533,7 +617,8 @@ mod tests {
         fs::write(
             commands_dir.join("test.md"),
             "---\nmodel: {{SONNET_MODEL}}\nopus: {{OPUS_MODEL}}\n---\n# Test",
-        ).unwrap();
+        )
+        .unwrap();
 
         update_opencode_models(&temp_dir, &OpenCodeProvider::Anthropic).unwrap();
 

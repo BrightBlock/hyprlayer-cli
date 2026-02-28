@@ -1,11 +1,11 @@
 use anyhow::Result;
 use colored::Colorize;
-use dialoguer::{theme::ColorfulTheme, Input};
+use dialoguer::{Input, theme::ColorfulTheme};
 use std::fs;
-use std::path::{Path, MAIN_SEPARATOR_STR as SEP};
+use std::path::{MAIN_SEPARATOR_STR as SEP, Path};
 
 use crate::cli::UninitArgs;
-use crate::config::{get_current_repo_path, EffectiveConfig, ThoughtsConfig};
+use crate::config::{EffectiveConfig, ThoughtsConfig, get_current_repo_path};
 
 fn remove_from_config(config_path: &Path, repo_key: &str) -> Result<()> {
     let mut config = ThoughtsConfig::load(config_path)?;
