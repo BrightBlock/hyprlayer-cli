@@ -3,9 +3,9 @@
 use anyhow::Result;
 use serde::Deserialize;
 use std::env;
-use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::agents;
 use crate::config;
 
 /// GitHub Release API response (minimal fields needed)
@@ -84,15 +84,14 @@ fn check_for_updates_inner() -> Result<Option<UpdateInfo>> {
 
     // Fetch latest release from GitHub
     let url = "https://api.github.com/repos/BrightBlock/hyprlayer-cli/releases/latest";
-    let json = curl_get_json(url)?;
+    let json = agents::curl_get_json(url, Some(5))?;
 
     let release: GitHubRelease = serde_json::from_str(&json)?;
 
     // Strip 'v' prefix if present (e.g., "v1.5.0" -> "1.5.0")
     let latest = release.tag_name.trim_start_matches('v');
 
-    // Simple string comparison works for semver (1.4.0 < 1.5.0)
-    if latest > current {
+    if is_newer_version(latest, current) {
         Ok(Some(UpdateInfo {
             current: current.to_string(),
             latest: latest.to_string(),
@@ -104,27 +103,16 @@ fn check_for_updates_inner() -> Result<Option<UpdateInfo>> {
     }
 }
 
-/// GET a URL and return the response body as a string.
-/// Timeout after 5 seconds to avoid blocking CLI startup.
-fn curl_get_json(url: &str) -> Result<String> {
-    let output = Command::new("curl")
-        .args([
-            "-sL",
-            "--max-time",
-            "5", // 5 second timeout
-            "-H",
-            "Accept: application/vnd.github.v3+json",
-            "-H",
-            "User-Agent: hyprlayer-cli",
-            url,
-        ])
-        .output()?;
-
-    if !output.status.success() {
-        anyhow::bail!("GitHub API request failed");
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+/// Compare two semver version strings numerically.
+/// Returns true if `a` is newer than `b`.
+/// Pre-release suffixes (e.g., "-beta.1") are stripped before comparison.
+fn is_newer_version(a: &str, b: &str) -> bool {
+    let parse = |v: &str| -> Vec<u64> {
+        // Strip pre-release suffix: "1.5.0-beta.1" -> "1.5.0"
+        let base = v.split('-').next().unwrap_or(v);
+        base.split('.').filter_map(|s| s.parse().ok()).collect()
+    };
+    parse(a) > parse(b)
 }
 
 /// Check for updates if enough time has passed since last check.
@@ -208,12 +196,39 @@ mod tests {
 
     #[test]
     fn version_comparison_works() {
-        // Basic semver string comparison
-        assert!("1.5.0" > "1.4.0");
-        assert!("1.4.1" > "1.4.0");
-        assert!("2.0.0" > "1.9.9");
-        assert!(!("1.4.0" > "1.4.0")); // equal
-        assert!(!("1.3.0" > "1.4.0")); // older
+        assert!(is_newer_version("1.5.0", "1.4.0"));
+        assert!(is_newer_version("1.4.1", "1.4.0"));
+        assert!(is_newer_version("2.0.0", "1.9.9"));
+        assert!(is_newer_version("1.10.0", "1.9.0")); // double-digit segment
+        assert!(!is_newer_version("1.4.0", "1.4.0")); // equal
+        assert!(!is_newer_version("1.3.0", "1.4.0")); // older
+    }
+
+    #[test]
+    fn version_comparison_prerelease() {
+        // Pre-release of same version is not newer
+        assert!(!is_newer_version("1.5.0-beta.1", "1.5.0"));
+        // Pre-release of newer version is still newer
+        assert!(is_newer_version("1.6.0-rc.1", "1.5.0"));
+        // Two pre-releases of same version are equal (suffix stripped)
+        assert!(!is_newer_version("1.5.0-beta.1", "1.5.0-beta.2"));
+    }
+
+    #[test]
+    fn version_comparison_mismatched_segments() {
+        // Shorter version treated as less if it's a prefix
+        assert!(is_newer_version("1.4.1", "1.4"));
+        assert!(!is_newer_version("1.4", "1.4.0"));
+        // Two-segment vs three-segment
+        assert!(is_newer_version("1.5", "1.4.9"));
+    }
+
+    #[test]
+    fn version_comparison_empty_and_malformed() {
+        assert!(!is_newer_version("", "1.0.0"));
+        assert!(!is_newer_version("", ""));
+        assert!(is_newer_version("1.0.0", ""));
+        assert!(!is_newer_version("nightly", "1.0.0"));
     }
 
     #[test]

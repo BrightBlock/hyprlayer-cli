@@ -124,20 +124,7 @@ fn load_or_create_minimal_config(config_path: &Path) -> Result<ThoughtsConfig> {
         }
     }
 
-    Ok(ThoughtsConfig {
-        thoughts_repo: String::new(),
-        repos_dir: String::new(),
-        global_dir: String::new(),
-        user: String::new(),
-        agent_tool: None,
-        opencode_provider: None,
-        opencode_sonnet_model: None,
-        opencode_opus_model: None,
-        repo_mappings: Default::default(),
-        profiles: Default::default(),
-        last_version_check: None,
-        disable_update_check: false,
-    })
+    Ok(ThoughtsConfig::default())
 }
 
 fn save_config(config_path: &Path, thoughts_config: &ThoughtsConfig) -> Result<()> {

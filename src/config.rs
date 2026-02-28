@@ -51,7 +51,7 @@ impl RepoMapping {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThoughtsConfig {
     pub thoughts_repo: String,
@@ -211,4 +211,96 @@ pub fn get_repo_name_from_path(path: &Path) -> String {
 
 pub fn sanitize_directory_name(name: &str) -> String {
     name.replace(|c: char| !c.is_alphanumeric() && c != '_' && c != '-', "_")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn thoughts_config_default_values() {
+        let config = ThoughtsConfig::default();
+        assert_eq!(config.thoughts_repo, "");
+        assert_eq!(config.repos_dir, "");
+        assert_eq!(config.global_dir, "");
+        assert_eq!(config.user, "");
+        assert!(config.agent_tool.is_none());
+        assert!(config.opencode_provider.is_none());
+        assert!(config.opencode_sonnet_model.is_none());
+        assert!(config.opencode_opus_model.is_none());
+        assert!(config.repo_mappings.is_empty());
+        assert!(config.profiles.is_empty());
+        assert!(config.last_version_check.is_none());
+        assert!(!config.disable_update_check);
+    }
+
+    #[test]
+    fn thoughts_config_save_load_round_trip() {
+        let temp_dir = std::env::temp_dir().join("hyprlayer_test_config_round_trip");
+        let config_path = temp_dir.join("config.json");
+
+        let config = ThoughtsConfig {
+            thoughts_repo: "~/thoughts".to_string(),
+            repos_dir: "repos".to_string(),
+            global_dir: "global".to_string(),
+            user: "testuser".to_string(),
+            last_version_check: Some(1700000000),
+            disable_update_check: true,
+            ..Default::default()
+        };
+
+        config.save(&config_path).unwrap();
+        let loaded = ThoughtsConfig::load(&config_path).unwrap();
+
+        assert_eq!(loaded.thoughts_repo, "~/thoughts");
+        assert_eq!(loaded.user, "testuser");
+        assert_eq!(loaded.last_version_check, Some(1700000000));
+        assert!(loaded.disable_update_check);
+        assert!(loaded.agent_tool.is_none());
+        assert!(loaded.repo_mappings.is_empty());
+
+        fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn thoughts_config_deserializes_without_version_fields() {
+        // Config files created before version checking was added won't have these fields
+        let json = r#"{"thoughts": {"thoughtsRepo": "~/t", "reposDir": "r", "globalDir": "g", "user": "u"}}"#;
+        let config_file: ConfigFile = serde_json::from_str(json).unwrap();
+        let config = config_file.thoughts.unwrap();
+        assert!(config.last_version_check.is_none());
+        assert!(!config.disable_update_check);
+    }
+
+    #[test]
+    fn sanitize_directory_name_replaces_special_chars() {
+        assert_eq!(sanitize_directory_name("my-project"), "my-project");
+        assert_eq!(sanitize_directory_name("my_project"), "my_project");
+        assert_eq!(sanitize_directory_name("my project"), "my_project");
+        assert_eq!(sanitize_directory_name("my/project"), "my_project");
+        assert_eq!(sanitize_directory_name("my.project.rs"), "my_project_rs");
+    }
+
+    #[test]
+    fn get_repo_name_from_path_extracts_last_component() {
+        assert_eq!(
+            get_repo_name_from_path(Path::new("/home/user/projects/myrepo")),
+            "myrepo"
+        );
+        assert_eq!(get_repo_name_from_path(Path::new("/")), "unnamed_repo");
+    }
+
+    #[test]
+    fn repo_mapping_string_variant() {
+        let mapping = RepoMapping::new("my-repo", &None);
+        assert_eq!(mapping.repo(), "my-repo");
+        assert!(mapping.profile().is_none());
+    }
+
+    #[test]
+    fn repo_mapping_object_variant_with_profile() {
+        let mapping = RepoMapping::new("my-repo", &Some("work".to_string()));
+        assert_eq!(mapping.repo(), "my-repo");
+        assert_eq!(mapping.profile(), Some("work"));
+    }
 }
