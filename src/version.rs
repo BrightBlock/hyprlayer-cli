@@ -161,33 +161,18 @@ pub fn maybe_check_for_updates() {
     let _ = thoughts_config.save(&config_path);
 }
 
-/// Print update notification in npm-style box with install-method-specific hint
+/// Print update notification with install-method-specific hint
 fn print_update_notification(info: &UpdateInfo) {
     use colored::Colorize;
 
-    let message = format!(
-        "Update available: {} → {}",
-        info.current,
-        info.latest.green()
-    );
     let hint = info.install_method.upgrade_hint();
-
-    // Calculate box width (ensure it fits the hint)
-    let content_width = 60;
-    let border = "─".repeat(content_width);
-
-    println!();
-    println!("{}", format!("╭{}╮", border).yellow());
     println!(
-        "{}",
-        format!("│  {:<width$}│", message, width = content_width - 2).yellow()
+        "\n{} {} → {} ({})\n",
+        "Update available:".yellow(),
+        info.current,
+        info.latest.green(),
+        hint
     );
-    println!(
-        "{}",
-        format!("│  {:<width$}│", hint, width = content_width - 2).yellow()
-    );
-    println!("{}", format!("╰{}╯", border).yellow());
-    println!();
 }
 
 #[cfg(test)]
