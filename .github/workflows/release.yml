@@ -83,6 +83,18 @@ jobs:
           generate_release_notes: true
           files: artifacts/*
 
+  update-winget:
+    name: Update WinGet
+    needs: release
+    runs-on: windows-latest
+    steps:
+      - name: Publish to Windows Package Manager
+        uses: vedantmgoyal9/winget-releaser@v2
+        with:
+          identifier: BrightBlock.Hyprlayer
+          installers-regex: '\.exe$'
+          token: ${{ secrets.WINGET_TOKEN }}
+
   update-homebrew:
     name: Update Homebrew Tap
     needs: release
