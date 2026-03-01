@@ -20,6 +20,7 @@ struct GitHubRelease {
 pub enum InstallMethod {
     Homebrew,
     Cargo,
+    Winget,
     WindowsInstaller,
     Unknown,
 }
@@ -44,6 +45,11 @@ impl InstallMethod {
             return Self::Cargo;
         }
 
+        // WinGet: %LOCALAPPDATA%\Microsoft\WinGet\Packages\
+        if path_str.contains("WinGet\\Packages") || path_str.contains("WinGet/Packages") {
+            return Self::Winget;
+        }
+
         // Windows installer: %USERPROFILE%\.hyprlayer\bin
         if path_str.contains(".hyprlayer\\bin") || path_str.contains(".hyprlayer/bin") {
             return Self::WindowsInstaller;
@@ -57,6 +63,7 @@ impl InstallMethod {
         match self {
             Self::Homebrew => "Run 'brew upgrade hyprlayer' to upgrade",
             Self::Cargo => "Run 'cargo install hyprlayer' to upgrade",
+            Self::Winget => "Run 'winget upgrade BrightBlock.Hyprlayer' to upgrade",
             Self::WindowsInstaller => "Re-run the install script to upgrade",
             Self::Unknown => "Download the latest release from GitHub",
         }
@@ -232,6 +239,10 @@ mod tests {
         assert_eq!(
             InstallMethod::Cargo.upgrade_hint(),
             "Run 'cargo install hyprlayer' to upgrade"
+        );
+        assert_eq!(
+            InstallMethod::Winget.upgrade_hint(),
+            "Run 'winget upgrade BrightBlock.Hyprlayer' to upgrade"
         );
         assert_eq!(
             InstallMethod::WindowsInstaller.upgrade_hint(),
