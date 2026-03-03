@@ -156,3 +156,21 @@ jobs:
           git diff --cached --quiet && exit 0
           git commit -m "Update hyprlayer to ${VERSION}"
           git push
+
+  update-aur:
+    name: Update AUR
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Publish hyprlayer-bin to AUR
+        uses: KSXGitHub/github-actions-deploy-aur@v3.0.1
+        with:
+          pkgname: hyprlayer-bin
+          pkgbuild: ./PKGBUILD-bin
+          commit_username: jtsiros
+          commit_email: jon@brightblock.ai
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "Update to ${{ github.ref_name }}"
+          ssh_keyscan_types: ed25519,rsa
