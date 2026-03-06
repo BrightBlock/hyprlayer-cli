@@ -1,5 +1,6 @@
 ---
 description: Generate comprehensive PR descriptions following repository templates
+model: {{SONNET_MODEL}}
 subtask: false
 ---
 
