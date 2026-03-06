@@ -1,5 +1,6 @@
 ---
 description: Create git commits for session changes with clear, atomic messages
+model: {{SONNET_MODEL}}
 subtask: false
 ---
 
