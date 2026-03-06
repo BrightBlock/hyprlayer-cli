@@ -39,23 +39,19 @@ fn find_files_following_symlinks(
 
         let file_type = entry.file_type()?;
 
-        if file_type.is_dir() {
+        // Resolve effective type: follow symlinks to their target
+        let (is_dir, is_file) = if file_type.is_symlink() {
+            fs::metadata(&path)
+                .map(|m| (m.is_dir(), m.is_file()))
+                .unwrap_or((false, false))
+        } else {
+            (file_type.is_dir(), file_type.is_file())
+        };
+
+        if is_dir {
             files.extend(find_files_following_symlinks(&path, base_dir, visited)?);
-        } else if file_type.is_symlink() {
-            // Follow symlink and check what it points to
-            if let Ok(metadata) = fs::metadata(&path) {
-                if metadata.is_dir() {
-                    files.extend(find_files_following_symlinks(&path, base_dir, visited)?);
-                } else if metadata.is_file()
-                    && let Ok(rel_path) = path.strip_prefix(base_dir)
-                {
-                    files.push(rel_path.to_path_buf());
-                }
-            }
-        } else if file_type.is_file()
-            && let Ok(rel_path) = path.strip_prefix(base_dir)
-        {
-            files.push(rel_path.to_path_buf());
+        } else if is_file {
+            files.extend(path.strip_prefix(base_dir).ok().map(Path::to_path_buf));
         }
     }
 
@@ -97,13 +93,10 @@ fn create_search_directory(thoughts_dir: &Path) -> Result<()> {
             fs::create_dir_all(parent)?;
         }
 
-        // Resolve symlink to get real file path
-        if let Ok(real_source) = fs::canonicalize(&source_path) {
-            // Create hard link
-            if fs::hard_link(&real_source, &target_path).is_ok() {
-                linked_count += 1;
-            }
-        }
+        let linked = fs::canonicalize(&source_path)
+            .and_then(|real| fs::hard_link(real, &target_path))
+            .is_ok();
+        linked_count += usize::from(linked);
     }
 
     println!(

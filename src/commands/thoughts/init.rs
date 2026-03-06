@@ -70,8 +70,8 @@ pub fn init(args: InitArgs) -> Result<()> {
     }
 
     // Install agent files if not already present, or if --force is used.
-    if let Some(ref agent_tool) = thoughts_config.agent_tool {
-        if force || !agent_tool.is_installed() {
+    match thoughts_config.agent_tool {
+        Some(ref agent_tool) if force || !agent_tool.is_installed() => {
             let provider = thoughts_config.opencode_provider.as_ref();
             agent_tool.install(provider)?;
             println!(
@@ -83,7 +83,8 @@ pub fn init(args: InitArgs) -> Result<()> {
                 )
                 .green()
             );
-        } else {
+        }
+        Some(ref agent_tool) => {
             println!(
                 "{}",
                 format!(
@@ -93,6 +94,7 @@ pub fn init(args: InitArgs) -> Result<()> {
                 .bright_black()
             );
         }
+        _ => {}
     }
 
     thoughts_config.validate_profile(&profile)?;

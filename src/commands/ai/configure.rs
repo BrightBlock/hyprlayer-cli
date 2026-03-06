@@ -14,25 +14,26 @@ pub fn configure(args: AiConfigureArgs) -> Result<()> {
 
     let mut thoughts_config = load_or_create_minimal_config(&config_path)?;
 
-    if let Some(ref agent) = thoughts_config.agent_tool
-        && !force
-    {
-        println!(
-            "{}",
-            format!("AI tool already configured: {}", agent).yellow()
-        );
-        println!("{}", "Use --force to reconfigure.".bright_black());
-
-        if !agent.is_installed() {
-            println!();
-            println!("{}", "Agent files not found. Installing...".yellow());
-            agent.install(thoughts_config.opencode_provider.as_ref())?;
+    match (&thoughts_config.agent_tool, force) {
+        (Some(agent), false) => {
             println!(
                 "{}",
-                format!("Agent files installed to {}", agent.dest_display()).green()
+                format!("AI tool already configured: {}", agent).yellow()
             );
+            println!("{}", "Use --force to reconfigure.".bright_black());
+
+            if !agent.is_installed() {
+                println!();
+                println!("{}", "Agent files not found. Installing...".yellow());
+                agent.install(thoughts_config.opencode_provider.as_ref())?;
+                println!(
+                    "{}",
+                    format!("Agent files installed to {}", agent.dest_display()).green()
+                );
+            }
+            return Ok(());
         }
-        return Ok(());
+        _ => {}
     }
 
     let theme = ColorfulTheme::default();

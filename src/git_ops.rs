@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use git2::{Repository, Status, StatusOptions};
-use std::fmt::Write;
 use std::process::Command;
 use std::time::UNIX_EPOCH;
 
@@ -46,9 +45,10 @@ impl GitRepo {
             return Ok("No changes to commit".to_string());
         }
 
-        let mut result = String::new();
-        for entry in statuses.iter() {
-            if let Some(path) = entry.path() {
+        let result: String = statuses
+            .iter()
+            .filter_map(|entry| {
+                let path = entry.path()?;
                 let s = entry.status();
                 let label = match s {
                     _ if s.contains(Status::WT_NEW) => "untracked",
@@ -59,9 +59,10 @@ impl GitRepo {
                     }
                     _ => "unknown",
                 };
-                let _ = writeln!(result, "  {:<10} {}", label, path);
-            }
-        }
+                Some(format!("  {:<10} {}\n", label, path))
+            })
+            .collect();
+
         Ok(result)
     }
 
@@ -141,21 +142,23 @@ impl GitRepo {
             .output()
             .context("Failed to execute git pull --rebase")?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("CONFLICT")
-                || stderr.contains("Automatic merge failed")
-                || stderr.contains("Patch failed")
-            {
-                return Err(anyhow::anyhow!(
-                    "Merge conflict detected. Please resolve conflicts manually in {:?}",
-                    self.path
-                ));
-            }
-            return Err(anyhow::anyhow!("git pull --rebase failed: {}", stderr));
+        if output.status.success() {
+            return Ok(());
         }
 
-        Ok(())
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let is_conflict = ["CONFLICT", "Automatic merge failed", "Patch failed"]
+            .iter()
+            .any(|s| stderr.contains(s));
+
+        if is_conflict {
+            anyhow::bail!(
+                "Merge conflict detected. Please resolve conflicts manually in {:?}",
+                self.path
+            );
+        }
+
+        anyhow::bail!("git pull --rebase failed: {}", stderr);
     }
 
     pub fn push(&self) -> Result<()> {
