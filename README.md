@@ -28,7 +28,11 @@ brew install hyprlayer
 
 ### Windows
 
-Install the [Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe) if not already present.
+```powershell
+winget install BrightBlock.Hyprlayer
+```
+
+Or install manually with the PowerShell script:
 
 ```powershell
 iex "& { $(irm https://raw.githubusercontent.com/BrightBlock/hyprlayer-cli/master/install.ps1) }"
