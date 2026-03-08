@@ -1,5 +1,4 @@
 ---
-name: cost-estimate
 description: Estimate development cost of a codebase based on lines of code and complexity
 ---
 
