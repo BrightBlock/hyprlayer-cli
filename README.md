@@ -1,115 +1,61 @@
-# Hyprlayer AI
+# Hyprlayer
 
-AI-assisted spec-driven development. Hyprlayer provides a structured workflow where AI agents research your codebase, build implementation plans, execute them phase-by-phase, and validate the results -- all grounded in shared team knowledge through a persistent thoughts directory.
+AI-assisted spec-driven development.
 
-## How It Works
+**[Documentation](https://brightblock.ai/hyprlayer/)**
 
-Hyprlayer installs a CLI (`hyprlayer`) and a suite of AI agent commands for Claude Code and GitHub Copilot. The CLI manages a shared thoughts repository that gives AI agents persistent context about your codebase across sessions and team members.
+Hyprlayer provides a structured workflow where AI agents research your codebase, build implementation plans, execute them phase-by-phase, and validate the results -- all grounded in shared team knowledge through a persistent thoughts directory.
 
-The development workflow:
+## Quick Start
+
+```bash
+# Install
+brew tap brightblock/tap && brew install hyprlayer  # macOS/Linux
+winget install BrightBlock.Hyprlayer                 # Windows
+
+# Configure your AI tool
+hyprlayer ai configure
+
+# Initialize thoughts in a project
+cd ~/Projects/my-project
+hyprlayer thoughts init
+```
+
+See the [Getting Started guide](https://brightblock.ai/hyprlayer/getting-started/installation/) for full setup instructions.
+
+## Workflow
 
 1. **Research** (`/research_codebase`) -- Explore and document how existing code works
 2. **Plan** (`/create_plan`) -- Build a phased implementation plan with success criteria
 3. **Implement** (`/implement_plan`) -- Execute the plan phase-by-phase with verification
-4. **Commit** (`/commit`) -- Create atomic commits for changes
-5. **Validate** (`/validate_plan`) -- Verify the implementation against the plan
+4. **Validate** (`/validate_plan`) -- Verify the implementation against the plan
+5. **Commit** (`/commit`) -- Create atomic commits for changes
 6. **Ship** (`/describe_pr`) -- Generate a PR description
 
-Use `/iterate_plan` to refine plans based on feedback and `/research_codebase` to document unfamiliar areas of code.
+## Supported AI Tools
 
-## Installation
-
-### Homebrew (macOS and Linux)
-
-```bash
-brew tap brightblock/tap
-brew install hyprlayer
-```
-
-### Windows
-
-```powershell
-winget install BrightBlock.Hyprlayer
-```
-
-Or install manually with the PowerShell script:
-
-```powershell
-iex "& { $(irm https://raw.githubusercontent.com/BrightBlock/hyprlayer-cli/master/install.ps1) }"
-```
-
-### Cargo
-
-```bash
-cargo install --git https://github.com/BrightBlock/hyprlayer-cli.git
-```
-
-## Getting Started
-
-1. Configure your AI tool:
-
-```bash
-hyprlayer ai configure
-```
-
-2. Clone your team's thoughts repository:
-
-```bash
-gh repo clone <org>/<thoughts-repo> ~/thoughts
-```
-
-3. Optional: Create a profile pointing to it:
-
-```bash
-hyprlayer thoughts profile create <PROFILE_NAME>
-```
-
-4. Initialize thoughts in any project:
-
-```bash
-cd ~/Projects/my-project
-hyprlayer thoughts init --profile <PROFILE_NAME>
-# or without a profile:
-hyprlayer thoughts init
-```
-
-This creates a `thoughts/` symlink structure in your project that connects to the shared repository. Repeat for each project.
-
-## AI Configuration
-
-Hyprlayer requires AI tool configuration before initializing thoughts in a repository.
-
-| Command | Description |
-|---|---|
-| `hyprlayer ai configure` | Configure AI tool and install agent files |
-| `hyprlayer ai status` | Show current AI configuration |
-| `hyprlayer ai reinstall` | Force reinstall agent files |
-
-### Supported AI Tools
-
-- **Claude Code** - Anthropic's Claude Code CLI
-- **GitHub Copilot** - GitHub Copilot in VS Code
-- **OpenCode** - OpenCode CLI with provider selection (GitHub Copilot, Anthropic, or Abacus)
-
-Use `hyprlayer ai configure --force` to change your AI tool or provider after initial setup.
+- **Claude Code** -- Anthropic's Claude Code CLI
+- **GitHub Copilot** -- GitHub Copilot in VS Code
+- **OpenCode** -- OpenCode CLI (GitHub Copilot, Anthropic, or Abacus providers)
 
 ## Commands
 
 | Command | Description |
 |---|---|
-| `/create_plan` | Create an implementation plan through interactive research |
-| `/iterate_plan` | Refine an existing plan based on new information or feedback |
-| `/implement_plan` | Execute a plan phase-by-phase |
-| `/validate_plan` | Verify implementation against plan success criteria |
-| `/research_codebase` | Document how existing code works |
-| `/describe_pr` | Generate a PR description from branch changes |
-| `/commit` | Create a git commit with user approval |
-| `/founder_mode` | Retroactively create a JIRA ticket and PR for already-implemented work |
-| `/create_handoff` | Write a handoff document to transfer context to another session |
-| `/resume_handoff` | Pick up work from a handoff document |
-| `/local_review` | Set up a worktree to review a branch |
+| [`/research_codebase`](https://brightblock.ai/hyprlayer/commands/research-codebase/) | Document how existing code works |
+| [`/create_plan`](https://brightblock.ai/hyprlayer/commands/create-plan/) | Create an implementation plan through interactive research |
+| [`/iterate_plan`](https://brightblock.ai/hyprlayer/commands/iterate-plan/) | Refine an existing plan based on feedback |
+| [`/implement_plan`](https://brightblock.ai/hyprlayer/commands/implement-plan/) | Execute a plan phase-by-phase |
+| [`/validate_plan`](https://brightblock.ai/hyprlayer/commands/validate-plan/) | Verify implementation against plan success criteria |
+| [`/commit`](https://brightblock.ai/hyprlayer/commands/commit/) | Create a git commit with user approval |
+| [`/describe_pr`](https://brightblock.ai/hyprlayer/commands/describe-pr/) | Generate a PR description from branch changes |
+| [`/create_handoff`](https://brightblock.ai/hyprlayer/commands/create-handoff/) | Write a handoff document for another session |
+| [`/resume_handoff`](https://brightblock.ai/hyprlayer/commands/resume-handoff/) | Pick up work from a handoff document |
+| [`/local_review`](https://brightblock.ai/hyprlayer/commands/local-review/) | Set up a worktree to review a branch |
+| [`/founder_mode`](https://brightblock.ai/hyprlayer/commands/founder-mode/) | Retroactively create a JIRA ticket and PR |
+| [`/cost_estimate`](https://brightblock.ai/hyprlayer/commands/cost-estimate/) | Estimate development costs |
 
-Most commands have `_nt` variants that skip thoughts directory integration for repos that don't use it, and `_generic` variants for use outside of this repository.
+Most commands have [`_nt` and `_generic` variants](https://brightblock.ai/hyprlayer/reference/variants/).
 
 ## Development
 
