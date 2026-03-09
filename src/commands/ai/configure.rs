@@ -1,6 +1,6 @@
 use anyhow::Result;
 use colored::Colorize;
-use dialoguer::{Select, theme::ColorfulTheme};
+use dialoguer::{theme::ColorfulTheme, Select};
 use std::fs;
 use std::path::Path;
 
@@ -14,26 +14,23 @@ pub fn configure(args: AiConfigureArgs) -> Result<()> {
 
     let mut thoughts_config = load_or_create_minimal_config(&config_path)?;
 
-    match (&thoughts_config.agent_tool, force) {
-        (Some(agent), false) => {
+    if let (Some(agent), false) = (&thoughts_config.agent_tool, force) {
+        println!(
+            "{}",
+            format!("AI tool already configured: {}", agent).yellow()
+        );
+        println!("{}", "Use --force to reconfigure.".bright_black());
+
+        if !agent.is_installed() {
+            println!();
+            println!("{}", "Agent files not found. Installing...".yellow());
+            agent.install(thoughts_config.opencode_provider.as_ref())?;
             println!(
                 "{}",
-                format!("AI tool already configured: {}", agent).yellow()
+                format!("Agent files installed to {}", agent.dest_display()).green()
             );
-            println!("{}", "Use --force to reconfigure.".bright_black());
-
-            if !agent.is_installed() {
-                println!();
-                println!("{}", "Agent files not found. Installing...".yellow());
-                agent.install(thoughts_config.opencode_provider.as_ref())?;
-                println!(
-                    "{}",
-                    format!("Agent files installed to {}", agent.dest_display()).green()
-                );
-            }
-            return Ok(());
         }
-        _ => {}
+        return Ok(());
     }
 
     let theme = ColorfulTheme::default();

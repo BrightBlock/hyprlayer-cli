@@ -3,7 +3,7 @@ use clap::Args;
 use std::fs;
 use std::path::PathBuf;
 
-use crate::config::{ThoughtsConfig, expand_path, get_default_config_path};
+use crate::config::{expand_path, get_default_config_path, ThoughtsConfig};
 
 /// Common config file argument shared across commands
 #[derive(Debug, Clone, Args)]
@@ -20,11 +20,17 @@ impl ConfigArgs {
             .map_or_else(get_default_config_path, |p| Ok(expand_path(p)))
     }
 
-    /// Load existing config, error if not found
+    /// Load existing config, error if not found or incomplete
     pub fn load(&self) -> Result<ThoughtsConfig> {
-        self.load_if_exists()?.ok_or_else(|| {
+        let config = self.load_if_exists()?.ok_or_else(|| {
             anyhow::anyhow!("No thoughts configuration found. Run 'hyprlayer thoughts init' first.")
-        })
+        })?;
+        if !config.is_thoughts_configured() {
+            return Err(anyhow::anyhow!(
+                "Thoughts not fully configured. Run 'hyprlayer thoughts init' to complete setup."
+            ));
+        }
+        Ok(config)
     }
 
     /// Load config if exists, returns None if config file doesn't exist
