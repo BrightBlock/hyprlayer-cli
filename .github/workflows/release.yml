@@ -164,6 +164,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Update PKGBUILD version from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          sed -i "s/^pkgver=.*/pkgver=${VERSION}/" PKGBUILD-bin
+
       - name: Publish hyprlayer-bin to AUR
         uses: KSXGitHub/github-actions-deploy-aur@v3.0.1
         with:
