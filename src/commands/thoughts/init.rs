@@ -150,31 +150,26 @@ pub fn init(args: InitArgs) -> Result<()> {
 }
 
 fn load_or_create_config(config: &crate::cli::ConfigArgs) -> Result<ThoughtsConfig> {
-    if let Some(existing) = config.load_if_exists()? {
-        // Config file exists but thoughts fields may be empty (e.g. after `ai configure`
-        // which only sets agent_tool). If the essential fields are populated, use as-is.
-        if !existing.thoughts_repo.is_empty()
-            && !existing.repos_dir.is_empty()
-            && !existing.global_dir.is_empty()
-            && !existing.user.is_empty()
-        {
-            return Ok(existing);
-        }
-        // Fall through to prompt for missing thoughts fields, preserving existing values
-        return prompt_for_thoughts_fields(existing);
-    }
-
-    prompt_for_thoughts_fields(ThoughtsConfig::default())
+    let existing = config.load_if_exists()?.unwrap_or_default();
+    // Always prompt for thoughts fields so the user can set or update them,
+    // while preserving non-thoughts fields like agent_tool from the existing config.
+    prompt_for_thoughts_fields(existing)
 }
 
 /// Prompt the user for thoughts directory configuration, preserving any
 /// already-populated fields from an existing config (e.g. agent_tool).
+/// When fields already have values they are offered as defaults.
 fn prompt_for_thoughts_fields(mut existing: ThoughtsConfig) -> Result<ThoughtsConfig> {
     let theme = ColorfulTheme::default();
     println!("{}", "=== Initial Thoughts Setup ===".blue());
     println!();
 
-    let default_repo = get_default_thoughts_repo()?.display().to_string();
+    let fallback_repo = get_default_thoughts_repo()?.display().to_string();
+    let default_repo = if existing.thoughts_repo.is_empty() {
+        fallback_repo
+    } else {
+        existing.thoughts_repo.clone()
+    };
     let thoughts_repo: String = Input::with_theme(&theme)
         .with_prompt("Thoughts repository location")
         .default(default_repo.clone())
@@ -183,17 +178,27 @@ fn prompt_for_thoughts_fields(mut existing: ThoughtsConfig) -> Result<ThoughtsCo
         .map(|s: String| if s.is_empty() { default_repo } else { s })?;
 
     println!();
+    let default_repos_dir = if existing.repos_dir.is_empty() {
+        "repos".to_string()
+    } else {
+        existing.repos_dir.clone()
+    };
     let repos_dir: String = Input::with_theme(&theme)
         .with_prompt("Directory name for repository-specific thoughts")
-        .default("repos".to_string())
+        .default(default_repos_dir)
         .interact()?;
 
+    let default_global_dir = if existing.global_dir.is_empty() {
+        "global".to_string()
+    } else {
+        existing.global_dir.clone()
+    };
     let global_dir: String = Input::with_theme(&theme)
         .with_prompt("Directory name for global thoughts")
-        .default("global".to_string())
+        .default(default_global_dir)
         .interact()?;
 
-    let user = prompt_for_username(&theme)?;
+    let user = prompt_for_username(&theme, &existing.user)?;
 
     println!();
     println!("{}", "Creating thoughts structure:".yellow());
@@ -218,10 +223,14 @@ fn prompt_for_thoughts_fields(mut existing: ThoughtsConfig) -> Result<ThoughtsCo
     Ok(existing)
 }
 
-fn prompt_for_username(theme: &ColorfulTheme) -> Result<String> {
-    let default_user = std::env::var("USER")
-        .or_else(|_| std::env::var("USERNAME"))
-        .unwrap_or_else(|_| "user".to_string());
+fn prompt_for_username(theme: &ColorfulTheme, existing_user: &str) -> Result<String> {
+    let default_user = if existing_user.is_empty() {
+        std::env::var("USER")
+            .or_else(|_| std::env::var("USERNAME"))
+            .unwrap_or_else(|_| "user".to_string())
+    } else {
+        existing_user.to_string()
+    };
 
     loop {
         let input: String = Input::with_theme(theme)
