@@ -151,9 +151,25 @@ pub fn init(args: InitArgs) -> Result<()> {
 
 fn load_or_create_config(config: &crate::cli::ConfigArgs) -> Result<ThoughtsConfig> {
     if let Some(existing) = config.load_if_exists()? {
-        return Ok(existing);
+        // Config file exists but thoughts fields may be empty (e.g. after `ai configure`
+        // which only sets agent_tool). If the essential fields are populated, use as-is.
+        if !existing.thoughts_repo.is_empty()
+            && !existing.repos_dir.is_empty()
+            && !existing.global_dir.is_empty()
+            && !existing.user.is_empty()
+        {
+            return Ok(existing);
+        }
+        // Fall through to prompt for missing thoughts fields, preserving existing values
+        return prompt_for_thoughts_fields(existing);
     }
 
+    prompt_for_thoughts_fields(ThoughtsConfig::default())
+}
+
+/// Prompt the user for thoughts directory configuration, preserving any
+/// already-populated fields from an existing config (e.g. agent_tool).
+fn prompt_for_thoughts_fields(mut existing: ThoughtsConfig) -> Result<ThoughtsConfig> {
     let theme = ColorfulTheme::default();
     println!("{}", "=== Initial Thoughts Setup ===".blue());
     println!();
@@ -194,13 +210,12 @@ fn load_or_create_config(config: &crate::cli::ConfigArgs) -> Result<ThoughtsConf
     );
     println!();
 
-    Ok(ThoughtsConfig {
-        thoughts_repo,
-        repos_dir,
-        global_dir,
-        user,
-        ..Default::default()
-    })
+    existing.thoughts_repo = thoughts_repo;
+    existing.repos_dir = repos_dir;
+    existing.global_dir = global_dir;
+    existing.user = user;
+
+    Ok(existing)
 }
 
 fn prompt_for_username(theme: &ColorfulTheme) -> Result<String> {
