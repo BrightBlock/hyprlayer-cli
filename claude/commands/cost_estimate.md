@@ -8,22 +8,55 @@ You are a senior software engineering consultant tasked with estimating the deve
 
 ## Step 1: Analyze the Codebase
 
+### 1a: Detect Technology Stack
+
 First, detect the technology stack by examining project files:
 - Look for `package.json` (Node/React/TypeScript), `Cargo.toml` (Rust), `*.csproj`/`*.sln` (.NET/C#), `go.mod` (Go), `pyproject.toml`/`requirements.txt` (Python), `Gemfile` (Ruby), `build.gradle`/`pom.xml` (Java/Kotlin), `Package.swift` (Swift), etc.
 - Identify the primary language(s), frameworks, and build system
 
-Then read the codebase to understand:
-- Total lines of code by language
-- Architectural complexity (frameworks, integrations, APIs)
-- Advanced or specialized features (GPU programming, real-time systems, distributed systems, etc.)
-- Testing coverage
-- Documentation quality
+### 1b: Count Lines of Code
 
-Use the Glob and Read tools to systematically review:
+**Preferred Method: Use `cloc` (if installed)**
+
+First, check if `cloc` is available by running:
+```bash
+command -v cloc
+```
+
+If `cloc` is installed, use it for accurate line counts:
+```bash
+cloc . --json
+```
+
+This provides:
+- Lines of code by language (excluding blanks and comments)
+- Blank line counts
+- Comment line counts  
+- File counts per language
+
+Parse the JSON output to extract metrics. Key fields:
+- `SUM.code` - Total lines of actual code
+- `SUM.comment` - Total comment lines
+- `SUM.blank` - Total blank lines
+- Per-language breakdowns in the language-named keys
+
+**Fallback Method: Manual Counting (if `cloc` unavailable)**
+
+If `cloc` is not installed, use the Glob and Read tools to systematically review:
 - All source files in the primary language(s)
 - All test files
 - Build scripts and configuration files
 - Infrastructure/deployment configuration
+
+Count lines manually using `wc -l` on glob results or by reading files.
+
+### 1c: Assess Complexity
+
+Regardless of which counting method was used, read the codebase to understand:
+- Architectural complexity (frameworks, integrations, APIs)
+- Advanced or specialized features (GPU programming, real-time systems, distributed systems, etc.)
+- Testing coverage (compare test LOC to source LOC)
+- Documentation quality (comment ratio from cloc, or manual review)
 
 ## Step 2: Calculate Development Hours
 
