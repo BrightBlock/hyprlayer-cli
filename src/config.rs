@@ -89,6 +89,16 @@ pub struct EffectiveConfig {
 }
 
 impl ThoughtsConfig {
+    /// Check whether the essential thoughts fields are populated.
+    /// Returns false when only AI-related fields were configured
+    /// (e.g. after `hyprlayer ai configure` but before `thoughts init`).
+    pub fn is_thoughts_configured(&self) -> bool {
+        !self.thoughts_repo.is_empty()
+            && !self.repos_dir.is_empty()
+            && !self.global_dir.is_empty()
+            && !self.user.is_empty()
+    }
+
     /// Validate that a profile exists in the config (if specified)
     pub fn validate_profile(&self, profile: &Option<String>) -> Result<()> {
         if let Some(name) = profile
@@ -302,5 +312,34 @@ mod tests {
         let mapping = RepoMapping::new("my-repo", &Some("work".to_string()));
         assert_eq!(mapping.repo(), "my-repo");
         assert_eq!(mapping.profile(), Some("work"));
+    }
+
+    #[test]
+    fn is_thoughts_configured_returns_false_for_default() {
+        let config = ThoughtsConfig::default();
+        assert!(!config.is_thoughts_configured());
+    }
+
+    #[test]
+    fn is_thoughts_configured_returns_false_when_fields_partially_set() {
+        let config = ThoughtsConfig {
+            thoughts_repo: "~/thoughts".to_string(),
+            repos_dir: "repos".to_string(),
+            // global_dir and user are empty
+            ..Default::default()
+        };
+        assert!(!config.is_thoughts_configured());
+    }
+
+    #[test]
+    fn is_thoughts_configured_returns_true_when_all_fields_set() {
+        let config = ThoughtsConfig {
+            thoughts_repo: "~/thoughts".to_string(),
+            repos_dir: "repos".to_string(),
+            global_dir: "global".to_string(),
+            user: "testuser".to_string(),
+            ..Default::default()
+        };
+        assert!(config.is_thoughts_configured());
     }
 }
