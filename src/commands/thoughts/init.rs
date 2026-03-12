@@ -30,12 +30,17 @@ pub fn init(args: InitArgs) -> Result<()> {
         force,
         directory,
         profile,
+        yes,
         config,
     } = args;
     let current_repo = get_current_repo_path()?;
 
     if !GitRepo::is_repo(&current_repo) {
         return Err(anyhow::anyhow!("Not in a git repository"));
+    }
+
+    if yes {
+        return init_non_interactive(config, current_repo, directory, profile, force);
     }
 
     let config_path = config.path()?;
@@ -69,34 +74,6 @@ pub fn init(args: InitArgs) -> Result<()> {
         }
     }
 
-    // Install agent files if not already present, or if --force is used.
-    match thoughts_config.agent_tool {
-        Some(ref agent_tool) if force || !agent_tool.is_installed() => {
-            let provider = thoughts_config.opencode_provider.as_ref();
-            agent_tool.install(provider)?;
-            println!(
-                "{}",
-                format!(
-                    "  {} agent files installed to {}",
-                    agent_tool,
-                    agent_tool.dest_display()
-                )
-                .green()
-            );
-        }
-        Some(ref agent_tool) => {
-            println!(
-                "{}",
-                format!(
-                    "  {} agent files already installed, skipping download (use --force to reinstall)",
-                    agent_tool,
-                )
-                .bright_black()
-            );
-        }
-        _ => {}
-    }
-
     thoughts_config.validate_profile(&profile)?;
 
     if !check_existing_setup(&current_repo, force)? {
@@ -122,6 +99,106 @@ pub fn init(args: InitArgs) -> Result<()> {
         &thoughts_repo,
         &repos_dir,
     )?;
+
+    // Update config with mapping
+    let mapping = RepoMapping::new(&mapped_name, &profile);
+    thoughts_config
+        .repo_mappings
+        .insert(current_repo.display().to_string(), mapping);
+    thoughts_config.save(&config_path)?;
+    println!("{}", "✅ Global thoughts configuration saved".green());
+
+    let ctx = InitContext {
+        current_repo,
+        thoughts_config,
+        thoughts_repo,
+        repos_dir,
+        global_dir,
+        expanded_repo,
+        mapped_name,
+    };
+
+    setup_directory_structure(&ctx)?;
+    initialize_git_if_needed(&ctx)?;
+    setup_symlinks(&ctx)?;
+    setup_hooks_and_print_summary(&ctx)?;
+
+    Ok(())
+}
+
+/// Non-interactive init: uses existing config values without prompting.
+/// Requires that the config file already exists with all thoughts fields populated.
+/// The --directory flag must be provided to specify the repo directory name.
+fn init_non_interactive(
+    config: crate::cli::ConfigArgs,
+    current_repo: PathBuf,
+    directory: Option<String>,
+    profile: Option<String>,
+    force: bool,
+) -> Result<()> {
+    let directory =
+        directory.ok_or_else(|| anyhow::anyhow!("--directory is required when using --yes"))?;
+
+    let config_path = config.path()?;
+    let mut thoughts_config = config.load_if_exists()?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "No existing config found. Run 'hyprlayer thoughts init' interactively first."
+        )
+    })?;
+
+    if !thoughts_config.is_thoughts_configured() {
+        return Err(anyhow::anyhow!(
+            "Config is incomplete. Run 'hyprlayer thoughts init' interactively to complete setup."
+        ));
+    }
+
+    if thoughts_config.agent_tool.is_none() {
+        return Err(anyhow::anyhow!(
+            "AI tool not configured. Run 'hyprlayer ai configure' first."
+        ));
+    }
+
+    thoughts_config.validate_profile(&profile)?;
+
+    // In non-interactive mode, skip the "already configured, reconfigure?" prompt.
+    // If thoughts dir exists and --force is not set, just skip silently.
+    let thoughts_dir = current_repo.join("thoughts");
+    if thoughts_dir.exists() && !force {
+        println!(
+            "{}",
+            "Thoughts already configured for this repository, skipping.".bright_black()
+        );
+        return Ok(());
+    }
+
+    let ProfileConfig {
+        thoughts_repo,
+        repos_dir,
+        global_dir,
+    } = thoughts_config.resolve_dirs(&profile);
+    let expanded_repo = expand_path(&thoughts_repo);
+
+    ensure_repo_exists(&expanded_repo, &thoughts_repo)?;
+
+    let repos_path = expanded_repo.join(&repos_dir);
+    fs::create_dir_all(&repos_path)?;
+
+    // Use the provided directory name directly (create if it doesn't exist)
+    let mapped_name = sanitize_directory_name(&directory);
+    let target_dir = repos_path.join(&mapped_name);
+    if !target_dir.exists() {
+        fs::create_dir_all(&target_dir)?;
+        println!(
+            "{}",
+            format!(
+                "Created thoughts directory: {}{SEP}{}{SEP}{}",
+                thoughts_repo.cyan(),
+                repos_dir.cyan(),
+                mapped_name.cyan()
+            )
+            .green()
+        );
+    }
 
     // Update config with mapping
     let mapping = RepoMapping::new(&mapped_name, &profile);
