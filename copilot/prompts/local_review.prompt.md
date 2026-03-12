@@ -29,14 +29,16 @@ When invoked with a branch name or PR number:
    - Create worktree: `git worktree add -b review/BRANCHNAME ~/wt/$REPO_NAME/SHORT_NAME origin/BRANCHNAME`
 
 5. **Configure the worktree**:
-   - Detect and run the appropriate setup command:
-     - If `Makefile` exists with a `setup` target: `make -C WORKTREE setup`
-     - Else if `package.json` exists: `cd WORKTREE && npm install`
-     - Else if `pyproject.toml` exists: `cd WORKTREE && pip install -e .`
-     - Else if `go.mod` exists: `cd WORKTREE && go mod download`
-     - Else if a `*.sln` or `*.csproj` file exists: `cd WORKTREE && dotnet restore`
-     - Otherwise, skip dependency setup
-   - Initialize thoughts: `cd WORKTREE && hyprlayer thoughts init --directory $REPO_NAME`
+    - Detect and run the appropriate setup command:
+      - If `Makefile` exists with a `setup` target: `make -C WORKTREE setup`
+      - Else if `package.json` exists: `cd WORKTREE && npm install`
+      - Else if `Cargo.toml` exists: `cd WORKTREE && cargo build`
+      - Else if `pyproject.toml` exists: `cd WORKTREE && pip install -e .`
+      - Else if `requirements.txt` exists: `cd WORKTREE && pip install -r requirements.txt`
+      - Else if `go.mod` exists: `cd WORKTREE && go mod download`
+      - Else if a `*.sln` or `*.csproj` file exists: `cd WORKTREE && dotnet restore`
+      - Otherwise, skip dependency setup
+    - Initialize thoughts: `cd WORKTREE && hyprlayer thoughts init --directory $REPO_NAME --yes`
 
 ## Error Handling
 

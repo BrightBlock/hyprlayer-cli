@@ -66,6 +66,12 @@ pub struct InitArgs {
     pub directory: Option<String>,
     #[arg(long, help = "Use a specific thoughts profile")]
     pub profile: Option<String>,
+    #[arg(
+        long,
+        short = 'y',
+        help = "Run without interactive prompts (requires existing config and --directory)"
+    )]
+    pub yes: bool,
     #[command(flatten)]
     pub config: ConfigArgs,
 }
