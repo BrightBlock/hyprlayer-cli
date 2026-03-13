@@ -157,6 +157,58 @@ jobs:
           git commit -m "Update hyprlayer to ${VERSION}"
           git push
 
+  update-scoop:
+    name: Update Scoop
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Windows binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          gh release download "v${VERSION}" \
+            --repo BrightBlock/hyprlayer-cli \
+            --pattern 'hyprlayer-x86_64-pc-windows-msvc.exe' \
+            --dir assets
+
+      - name: Compute SHA256
+        id: hash
+        run: |
+          echo "sha256=$(sha256sum assets/hyprlayer-x86_64-pc-windows-msvc.exe | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout scoop bucket
+        uses: actions/checkout@v4
+        with:
+          repository: BrightBlock/scoop-bucket
+          token: ${{ secrets.TAP_GITHUB_TOKEN }}
+          path: scoop-bucket
+
+      - name: Update manifest
+        env:
+          VERSION: ${{ github.ref_name }}
+          SHA256: ${{ steps.hash.outputs.sha256 }}
+        run: |
+          VERSION="${VERSION#v}"
+          MANIFEST="scoop-bucket/bucket/hyprlayer.json"
+          # Update version
+          sed -i "s/\"version\": \".*\"/\"version\": \"${VERSION}\"/" "$MANIFEST"
+          # Update hash
+          sed -i "s/\"hash\": \".*\"/\"hash\": \"${SHA256}\"/" "$MANIFEST"
+          # Update url version
+          sed -i "s|/download/v[^/]*/|/download/v${VERSION}/|" "$MANIFEST"
+
+      - name: Commit and push
+        run: |
+          cd scoop-bucket
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          VERSION="${GITHUB_REF_NAME#v}"
+          git add bucket/hyprlayer.json
+          git diff --cached --quiet && exit 0
+          git commit -m "Update hyprlayer to ${VERSION}"
+          git push
+
   update-aur:
     name: Update AUR
     needs: release
