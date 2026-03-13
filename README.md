@@ -11,7 +11,8 @@ Hyprlayer provides a structured workflow where AI agents research your codebase,
 ```bash
 # Install
 brew tap brightblock/tap && brew install hyprlayer  # macOS/Linux
-winget install BrightBlock.Hyprlayer                 # Windows
+scoop bucket add brightblock https://github.com/BrightBlock/scoop-bucket && scoop install hyprlayer  # Windows
+winget install BrightBlock.Hyprlayer                 # Windows (alt)
 
 # Configure your AI tool
 hyprlayer ai configure
