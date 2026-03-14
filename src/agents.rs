@@ -148,7 +148,7 @@ impl AgentTool {
 
     /// Print status information for this agent tool.
     /// OpenCode includes provider and model details from config.
-    pub fn print_status(&self, config: &crate::config::ThoughtsConfig) {
+    pub fn print_status(&self, config: &crate::config::AiConfig) {
         use colored::Colorize;
 
         println!("  AI Tool: {}", self.to_string().cyan());
@@ -196,7 +196,7 @@ impl AgentTool {
     }
 
     /// Return status as JSON-serializable struct for --json output.
-    pub fn status_json(&self, config: &crate::config::ThoughtsConfig) -> serde_json::Value {
+    pub fn status_json(&self, config: &crate::config::AiConfig) -> serde_json::Value {
         match self {
             Self::OpenCode => serde_json::json!({
                 "agentTool": self.to_string(),

@@ -2,14 +2,14 @@
 use anyhow::Context;
 use anyhow::Result;
 use colored::Colorize;
-use dialoguer::{theme::ColorfulTheme, Input, Select};
+use dialoguer::{theme::ColorfulTheme, Confirm, Input, Select};
 use std::fs;
 use std::path::{Path, PathBuf, MAIN_SEPARATOR_STR as SEP};
 
 use crate::cli::InitArgs;
 use crate::config::{
     expand_path, get_current_repo_path, get_default_thoughts_repo, get_repo_name_from_path,
-    sanitize_directory_name, ProfileConfig, RepoMapping, ThoughtsConfig,
+    sanitize_directory_name, HyprlayerConfig, ProfileConfig, RepoMapping, ThoughtsConfig,
 };
 use crate::git_ops::GitRepo;
 use crate::hooks;
@@ -44,17 +44,21 @@ pub fn init(args: InitArgs) -> Result<()> {
     }
 
     let config_path = config.path()?;
-    let mut thoughts_config = load_or_create_config(&config)?;
+    let mut hyprlayer_config = load_or_create_config(&config)?;
 
     // Require AI to be configured first
-    if thoughts_config.agent_tool.is_none() {
+    if hyprlayer_config
+        .ai
+        .as_ref()
+        .is_none_or(|ai| ai.agent_tool.is_none())
+    {
         return Err(anyhow::anyhow!(
             "AI tool not configured. Run 'hyprlayer ai configure' first."
         ));
     }
 
     // Check for stale repo mappings (paths that no longer exist on disk)
-    let orphaned = thoughts_config.find_orphaned_mappings();
+    let orphaned = hyprlayer_config.thoughts_mut().find_orphaned_mappings();
     if !orphaned.is_empty() {
         println!(
             "{}",
@@ -63,18 +67,20 @@ pub fn init(args: InitArgs) -> Result<()> {
         for path in &orphaned {
             println!("  {}", path.bright_black());
         }
-        let remove: bool = Input::with_theme(&ColorfulTheme::default())
+        if Confirm::with_theme(&ColorfulTheme::default())
             .with_prompt("Remove stale mappings from config?")
             .default(true)
-            .interact()?;
-        if remove {
-            thoughts_config.remove_mappings(&orphaned);
-            thoughts_config.save(&config_path)?;
+            .interact()?
+        {
+            hyprlayer_config.thoughts_mut().remove_mappings(&orphaned);
+            hyprlayer_config.save(&config_path)?;
             println!("{}", "Stale mappings removed.".green());
         }
     }
 
-    thoughts_config.validate_profile(&profile)?;
+    hyprlayer_config
+        .thoughts_mut()
+        .validate_profile(&profile)?;
 
     if !check_existing_setup(&current_repo, force)? {
         return Ok(());
@@ -84,7 +90,7 @@ pub fn init(args: InitArgs) -> Result<()> {
         thoughts_repo,
         repos_dir,
         global_dir,
-    } = thoughts_config.resolve_dirs(&profile);
+    } = hyprlayer_config.thoughts_mut().resolve_dirs(&profile);
     let expanded_repo = expand_path(&thoughts_repo);
 
     ensure_repo_exists(&expanded_repo, &thoughts_repo)?;
@@ -102,15 +108,16 @@ pub fn init(args: InitArgs) -> Result<()> {
 
     // Update config with mapping
     let mapping = RepoMapping::new(&mapped_name, &profile);
-    thoughts_config
+    hyprlayer_config
+        .thoughts_mut()
         .repo_mappings
         .insert(current_repo.display().to_string(), mapping);
-    thoughts_config.save(&config_path)?;
+    hyprlayer_config.save(&config_path)?;
     println!("{}", "✅ Global thoughts configuration saved".green());
 
     let ctx = InitContext {
         current_repo,
-        thoughts_config,
+        thoughts_config: hyprlayer_config.thoughts.clone().unwrap_or_default(),
         thoughts_repo,
         repos_dir,
         global_dir,
@@ -140,25 +147,35 @@ fn init_non_interactive(
         directory.ok_or_else(|| anyhow::anyhow!("--directory is required when using --yes"))?;
 
     let config_path = config.path()?;
-    let mut thoughts_config = config.load_if_exists()?.ok_or_else(|| {
+    let mut hyprlayer_config = config.load_if_exists()?.ok_or_else(|| {
         anyhow::anyhow!(
             "No existing config found. Run 'hyprlayer thoughts init' interactively first."
         )
     })?;
 
-    if !thoughts_config.is_thoughts_configured() {
+    let thoughts = hyprlayer_config.thoughts.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Config is incomplete. Run 'hyprlayer thoughts init' interactively to complete setup."
+        )
+    })?;
+
+    if !thoughts.is_thoughts_configured() {
         return Err(anyhow::anyhow!(
             "Config is incomplete. Run 'hyprlayer thoughts init' interactively to complete setup."
         ));
     }
 
-    if thoughts_config.agent_tool.is_none() {
+    if hyprlayer_config
+        .ai
+        .as_ref()
+        .is_none_or(|ai| ai.agent_tool.is_none())
+    {
         return Err(anyhow::anyhow!(
             "AI tool not configured. Run 'hyprlayer ai configure' first."
         ));
     }
 
-    thoughts_config.validate_profile(&profile)?;
+    thoughts.validate_profile(&profile)?;
 
     // In non-interactive mode, skip the "already configured, reconfigure?" prompt.
     // If thoughts dir exists and --force is not set, just skip silently.
@@ -175,7 +192,7 @@ fn init_non_interactive(
         thoughts_repo,
         repos_dir,
         global_dir,
-    } = thoughts_config.resolve_dirs(&profile);
+    } = thoughts.resolve_dirs(&profile);
     let expanded_repo = expand_path(&thoughts_repo);
 
     ensure_repo_exists(&expanded_repo, &thoughts_repo)?;
@@ -202,15 +219,16 @@ fn init_non_interactive(
 
     // Update config with mapping
     let mapping = RepoMapping::new(&mapped_name, &profile);
-    thoughts_config
+    hyprlayer_config
+        .thoughts_mut()
         .repo_mappings
         .insert(current_repo.display().to_string(), mapping);
-    thoughts_config.save(&config_path)?;
+    hyprlayer_config.save(&config_path)?;
     println!("{}", "✅ Global thoughts configuration saved".green());
 
     let ctx = InitContext {
         current_repo,
-        thoughts_config,
+        thoughts_config: hyprlayer_config.thoughts.clone().unwrap_or_default(),
         thoughts_repo,
         repos_dir,
         global_dir,
@@ -226,17 +244,21 @@ fn init_non_interactive(
     Ok(())
 }
 
-fn load_or_create_config(config: &crate::cli::ConfigArgs) -> Result<ThoughtsConfig> {
+fn load_or_create_config(config: &crate::cli::ConfigArgs) -> Result<HyprlayerConfig> {
     let existing = config.load_if_exists()?.unwrap_or_default();
     // Always prompt for thoughts fields so the user can set or update them,
-    // while preserving non-thoughts fields like agent_tool from the existing config.
-    prompt_for_thoughts_fields(existing)
+    // while preserving non-thoughts fields like ai config from the existing config.
+    let thoughts = prompt_for_thoughts_fields(existing.thoughts.unwrap_or_default())?;
+    Ok(HyprlayerConfig {
+        thoughts: Some(thoughts),
+        ..existing
+    })
 }
 
 /// Prompt the user for thoughts directory configuration, preserving any
-/// already-populated fields from an existing config (e.g. agent_tool).
+/// already-populated fields from an existing config.
 /// When fields already have values they are offered as defaults.
-fn prompt_for_thoughts_fields(mut existing: ThoughtsConfig) -> Result<ThoughtsConfig> {
+fn prompt_for_thoughts_fields(existing: ThoughtsConfig) -> Result<ThoughtsConfig> {
     let theme = ColorfulTheme::default();
     println!("{}", "=== Initial Thoughts Setup ===".blue());
     println!();
@@ -292,12 +314,14 @@ fn prompt_for_thoughts_fields(mut existing: ThoughtsConfig) -> Result<ThoughtsCo
     );
     println!();
 
-    existing.thoughts_repo = thoughts_repo;
-    existing.repos_dir = repos_dir;
-    existing.global_dir = global_dir;
-    existing.user = user;
-
-    Ok(existing)
+    Ok(ThoughtsConfig {
+        thoughts_repo,
+        repos_dir,
+        global_dir,
+        user,
+        repo_mappings: existing.repo_mappings,
+        profiles: existing.profiles,
+    })
 }
 
 fn prompt_for_username(theme: &ColorfulTheme, existing_user: &str) -> Result<String> {
@@ -335,7 +359,7 @@ fn check_existing_setup(current_repo: &Path, force: bool) -> Result<bool> {
         "{}",
         "Thoughts directory already configured for this repository.".yellow()
     );
-    let reconfigure: bool = Input::with_theme(&ColorfulTheme::default())
+    let reconfigure = Confirm::with_theme(&ColorfulTheme::default())
         .with_prompt("Do you want to reconfigure?")
         .default(false)
         .interact()?;

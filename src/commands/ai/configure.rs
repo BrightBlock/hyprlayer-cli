@@ -1,20 +1,23 @@
 use anyhow::Result;
 use colored::Colorize;
 use dialoguer::{theme::ColorfulTheme, Select};
-use std::fs;
-use std::path::Path;
 
 use crate::agents::{AgentTool, OpenCodeProvider};
 use crate::cli::AiConfigureArgs;
-use crate::config::ThoughtsConfig;
+use crate::config::HyprlayerConfig;
 
 pub fn configure(args: AiConfigureArgs) -> Result<()> {
     let AiConfigureArgs { force, config } = args;
     let config_path = config.path()?;
 
-    let mut thoughts_config = load_or_create_minimal_config(&config_path)?;
+    let mut hyprlayer_config = load_or_create_minimal_config(&config_path)?;
 
-    if let (Some(agent), false) = (&thoughts_config.agent_tool, force) {
+    let existing_agent = hyprlayer_config
+        .ai
+        .as_ref()
+        .and_then(|ai| ai.agent_tool.as_ref());
+
+    if let (Some(agent), false) = (existing_agent, force) {
         println!(
             "{}",
             format!("AI tool already configured: {}", agent).yellow()
@@ -24,7 +27,11 @@ pub fn configure(args: AiConfigureArgs) -> Result<()> {
         if !agent.is_installed() {
             println!();
             println!("{}", "Agent files not found. Installing...".yellow());
-            agent.install(thoughts_config.opencode_provider.as_ref())?;
+            let opencode_provider = hyprlayer_config
+                .ai
+                .as_ref()
+                .and_then(|ai| ai.opencode_provider.as_ref());
+            agent.install(opencode_provider)?;
             println!(
                 "{}",
                 format!("Agent files installed to {}", agent.dest_display()).green()
@@ -51,17 +58,22 @@ pub fn configure(args: AiConfigureArgs) -> Result<()> {
             (None, None, None)
         };
 
-    thoughts_config.agent_tool = Some(agent_tool.clone());
-    thoughts_config.opencode_provider = opencode_provider;
-    thoughts_config.opencode_sonnet_model = opencode_sonnet_model;
-    thoughts_config.opencode_opus_model = opencode_opus_model;
+    let ai = hyprlayer_config.ai_mut();
+    ai.agent_tool = Some(agent_tool.clone());
+    ai.opencode_provider = opencode_provider;
+    ai.opencode_sonnet_model = opencode_sonnet_model;
+    ai.opencode_opus_model = opencode_opus_model;
 
-    save_config(&config_path, &thoughts_config)?;
+    hyprlayer_config.save(&config_path)?;
     println!();
     println!("{}", "Configuration saved.".green());
 
     println!();
-    agent_tool.install(thoughts_config.opencode_provider.as_ref())?;
+    let opencode_provider_ref = hyprlayer_config
+        .ai
+        .as_ref()
+        .and_then(|ai| ai.opencode_provider.as_ref());
+    agent_tool.install(opencode_provider_ref)?;
     println!(
         "{}",
         format!(
@@ -72,7 +84,11 @@ pub fn configure(args: AiConfigureArgs) -> Result<()> {
         .green()
     );
 
-    if let Some(ref p) = thoughts_config.opencode_provider {
+    if let Some(ref p) = hyprlayer_config
+        .ai
+        .as_ref()
+        .and_then(|ai| ai.opencode_provider.as_ref())
+    {
         println!("{}", format!("Configured for {} provider", p).green());
     }
 
@@ -111,36 +127,9 @@ fn prompt_for_opencode_provider(theme: &ColorfulTheme) -> Result<OpenCodeProvide
     Ok(OpenCodeProvider::ALL[selection].clone())
 }
 
-fn load_or_create_minimal_config(config_path: &Path) -> Result<ThoughtsConfig> {
+fn load_or_create_minimal_config(config_path: &std::path::Path) -> Result<HyprlayerConfig> {
     if config_path.exists() {
-        let content = fs::read_to_string(config_path)?;
-        let config_file: serde_json::Value = serde_json::from_str(&content)?;
-
-        if let Some(thoughts) = config_file.get("thoughts") {
-            return serde_json::from_value(thoughts.clone())
-                .map_err(|e| anyhow::anyhow!("Failed to parse thoughts config: {}", e));
-        }
+        return HyprlayerConfig::load(config_path);
     }
-
-    Ok(ThoughtsConfig::default())
-}
-
-fn save_config(config_path: &Path, thoughts_config: &ThoughtsConfig) -> Result<()> {
-    if let Some(parent) = config_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    let mut config_json: serde_json::Value = config_path
-        .exists()
-        .then(|| fs::read_to_string(config_path))
-        .transpose()?
-        .and_then(|content| serde_json::from_str(&content).ok())
-        .unwrap_or_else(|| serde_json::json!({}));
-
-    config_json["thoughts"] = serde_json::to_value(thoughts_config)?;
-
-    let json = serde_json::to_string_pretty(&config_json)?;
-    fs::write(config_path, json)?;
-
-    Ok(())
+    Ok(HyprlayerConfig::default())
 }
