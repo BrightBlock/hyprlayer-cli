@@ -1,18 +1,19 @@
 use anyhow::Result;
 use colored::Colorize;
-use dialoguer::{Input, theme::ColorfulTheme};
+use dialoguer::{Confirm, theme::ColorfulTheme};
 use std::fs;
 use std::path::{MAIN_SEPARATOR_STR as SEP, Path};
 
 use crate::cli::UninitArgs;
-use crate::config::{EffectiveConfig, ThoughtsConfig, get_current_repo_path};
+use crate::config::{EffectiveConfig, HyprlayerConfig, get_current_repo_path};
 
 fn remove_from_config(config_path: &Path, repo_key: &str) -> Result<()> {
-    let mut config = ThoughtsConfig::load(config_path)?;
-    config.repo_mappings.remove(repo_key);
+    let mut config = HyprlayerConfig::load(config_path)?;
+    let thoughts = config.thoughts_mut();
+    thoughts.repo_mappings.remove(repo_key);
 
     // Check for other stale mappings while we're saving
-    let orphaned = config.find_orphaned_mappings();
+    let orphaned = thoughts.find_orphaned_mappings();
     if !orphaned.is_empty() {
         println!(
             "{}",
@@ -21,12 +22,12 @@ fn remove_from_config(config_path: &Path, repo_key: &str) -> Result<()> {
         for path in &orphaned {
             println!("  {}", path.bright_black());
         }
-        let remove: bool = Input::with_theme(&ColorfulTheme::default())
+        if Confirm::with_theme(&ColorfulTheme::default())
             .with_prompt("Remove stale mappings from config?")
             .default(true)
-            .interact()?;
-        if remove {
-            config.remove_mappings(&orphaned);
+            .interact()?
+        {
+            config.thoughts_mut().remove_mappings(&orphaned);
             println!("{}", "Stale mappings removed.".green());
         }
     }
@@ -88,17 +89,18 @@ pub fn uninit(args: UninitArgs) -> Result<()> {
     }
 
     let config_path = config.path()?;
-    let thoughts_config = config.load_if_exists()?;
+    let hyprlayer_config = config.load_if_exists()?;
     let current_repo_str = current_repo.display().to_string();
 
-    let effective = thoughts_config
+    let effective = hyprlayer_config
         .as_ref()
-        .map(|c| c.effective_config_for(&current_repo_str));
+        .and_then(|c| c.thoughts.as_ref())
+        .map(|t| t.effective_config_for(&current_repo_str));
 
     let is_mapped = effective.as_ref().is_some_and(|e| e.mapped_name.is_some());
 
     // Validation (skip if force)
-    if !force && thoughts_config.is_none() {
+    if !force && hyprlayer_config.is_none() {
         print_validation_error("No thoughts configuration found.");
         return Ok(());
     }

@@ -135,13 +135,13 @@ pub fn maybe_check_for_updates() {
         return;
     }
 
-    let mut thoughts_config = match config::ThoughtsConfig::load(&config_path) {
+    let mut hyprlayer_config = match config::HyprlayerConfig::load(&config_path) {
         Ok(c) => c,
         Err(_) => return,
     };
 
     // Check if updates are disabled
-    if thoughts_config.disable_update_check {
+    if hyprlayer_config.disable_update_check {
         return;
     }
 
@@ -151,7 +151,7 @@ pub fn maybe_check_for_updates() {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
 
-    let last_check = thoughts_config.last_version_check.unwrap_or(0);
+    let last_check = hyprlayer_config.last_version_check.unwrap_or(0);
     let one_day_seconds = 24 * 60 * 60;
 
     if now - last_check < one_day_seconds {
@@ -164,8 +164,8 @@ pub fn maybe_check_for_updates() {
     }
 
     // Update last check timestamp (ignore save errors)
-    thoughts_config.last_version_check = Some(now);
-    let _ = thoughts_config.save(&config_path);
+    hyprlayer_config.last_version_check = Some(now);
+    let _ = hyprlayer_config.save(&config_path);
 }
 
 /// Print update notification with install-method-specific hint

@@ -59,6 +59,15 @@ pub struct ThoughtsConfig {
     pub global_dir: String,
     pub user: String,
     #[serde(default)]
+    pub repo_mappings: HashMap<String, RepoMapping>,
+    #[serde(default)]
+    pub profiles: HashMap<String, ProfileConfig>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiConfig {
+    #[serde(default)]
     pub agent_tool: Option<AgentTool>,
     #[serde(default)]
     pub opencode_provider: Option<OpenCodeProvider>,
@@ -66,16 +75,6 @@ pub struct ThoughtsConfig {
     pub opencode_sonnet_model: Option<String>,
     #[serde(default)]
     pub opencode_opus_model: Option<String>,
-    #[serde(default)]
-    pub repo_mappings: HashMap<String, RepoMapping>,
-    #[serde(default)]
-    pub profiles: HashMap<String, ProfileConfig>,
-    /// Timestamp of last version check (Unix epoch seconds)
-    #[serde(default)]
-    pub last_version_check: Option<i64>,
-    /// Disable automatic update checking
-    #[serde(default)]
-    pub disable_update_check: bool,
 }
 
 /// Effective configuration for a specific repository
@@ -122,31 +121,6 @@ impl ThoughtsConfig {
             })
     }
 
-    /// Load config from a file path
-    pub fn load(config_path: &Path) -> Result<Self> {
-        let content = fs::read_to_string(config_path)
-            .with_context(|| format!("Failed to read config file: {}", config_path.display()))?;
-        let config_file: ConfigFile =
-            serde_json::from_str(&content).with_context(|| "Failed to parse config file")?;
-        config_file
-            .thoughts
-            .ok_or_else(|| anyhow::anyhow!("No thoughts configuration found in config file"))
-    }
-
-    /// Save config to a file path
-    pub fn save(&self, config_path: &Path) -> Result<()> {
-        if let Some(parent) = config_path.parent() {
-            fs::create_dir_all(parent).with_context(|| {
-                format!("Failed to create config directory: {}", parent.display())
-            })?;
-        }
-        let content = serde_json::json!({ "thoughts": self });
-        let json = serde_json::to_string_pretty(&content)?;
-        fs::write(config_path, json)
-            .with_context(|| format!("Failed to write config file: {}", config_path.display()))?;
-        Ok(())
-    }
-
     /// Find repo mappings whose paths no longer exist on disk.
     pub fn find_orphaned_mappings(&self) -> Vec<String> {
         self.repo_mappings
@@ -185,10 +159,133 @@ impl ThoughtsConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConfigFile {
-    #[serde(skip_serializing_if = "Option::is_none")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HyprlayerConfig {
+    #[serde(default)]
+    pub version: Option<u32>,
+    #[serde(default)]
+    pub last_version_check: Option<i64>,
+    #[serde(default)]
+    pub disable_update_check: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thoughts: Option<ThoughtsConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai: Option<AiConfig>,
+}
+
+/// V1 config shape for migration -- the old ThoughtsConfig with all fields
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct V1ThoughtsConfig {
+    #[serde(default)]
+    thoughts_repo: String,
+    #[serde(default)]
+    repos_dir: String,
+    #[serde(default)]
+    global_dir: String,
+    #[serde(default)]
+    user: String,
+    #[serde(default)]
+    agent_tool: Option<AgentTool>,
+    #[serde(default)]
+    opencode_provider: Option<OpenCodeProvider>,
+    #[serde(default)]
+    opencode_sonnet_model: Option<String>,
+    #[serde(default)]
+    opencode_opus_model: Option<String>,
+    #[serde(default)]
+    repo_mappings: HashMap<String, RepoMapping>,
+    #[serde(default)]
+    profiles: HashMap<String, ProfileConfig>,
+    #[serde(default)]
+    last_version_check: Option<i64>,
+    #[serde(default)]
+    disable_update_check: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct V1ConfigFile {
+    thoughts: Option<V1ThoughtsConfig>,
+}
+
+impl HyprlayerConfig {
+    /// Load config from a file path, auto-migrating v1 configs to v2.
+    pub fn load(config_path: &Path) -> Result<Self> {
+        let content = fs::read_to_string(config_path)
+            .with_context(|| format!("Failed to read config file: {}", config_path.display()))?;
+        let config: HyprlayerConfig =
+            serde_json::from_str(&content).with_context(|| "Failed to parse config file")?;
+
+        // Auto-migrate v1 -> v2
+        if config.version.is_none() {
+            let migrated = Self::migrate_v1(&content)?;
+            migrated.save(config_path)?;
+            return Ok(migrated);
+        }
+
+        Ok(config)
+    }
+
+    /// Save config to a file path.
+    pub fn save(&self, config_path: &Path) -> Result<()> {
+        if let Some(parent) = config_path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!("Failed to create config directory: {}", parent.display())
+            })?;
+        }
+        let json = serde_json::to_string_pretty(&self)?;
+        fs::write(config_path, json)
+            .with_context(|| format!("Failed to write config file: {}", config_path.display()))?;
+        Ok(())
+    }
+
+    /// Get or create the thoughts section
+    pub fn thoughts_mut(&mut self) -> &mut ThoughtsConfig {
+        self.thoughts.get_or_insert_with(ThoughtsConfig::default)
+    }
+
+    /// Get or create the AI section
+    pub fn ai_mut(&mut self) -> &mut AiConfig {
+        self.ai.get_or_insert_with(AiConfig::default)
+    }
+
+    /// Migrate a v1 config (no version field) to v2 format.
+    fn migrate_v1(content: &str) -> Result<Self> {
+        let v1: V1ConfigFile =
+            serde_json::from_str(content).with_context(|| "Failed to parse v1 config")?;
+
+        let Some(old) = v1.thoughts else {
+            return Ok(HyprlayerConfig {
+                version: Some(2),
+                ..Default::default()
+            });
+        };
+
+        let thoughts = ThoughtsConfig {
+            thoughts_repo: old.thoughts_repo,
+            repos_dir: old.repos_dir,
+            global_dir: old.global_dir,
+            user: old.user,
+            repo_mappings: old.repo_mappings,
+            profiles: old.profiles,
+        };
+
+        let ai = AiConfig {
+            agent_tool: old.agent_tool,
+            opencode_provider: old.opencode_provider,
+            opencode_sonnet_model: old.opencode_sonnet_model,
+            opencode_opus_model: old.opencode_opus_model,
+        };
+
+        Ok(HyprlayerConfig {
+            version: Some(2),
+            last_version_check: old.last_version_check,
+            disable_update_check: old.disable_update_check,
+            thoughts: Some(thoughts),
+            ai: Some(ai),
+        })
+    }
 }
 
 pub fn get_default_config_path() -> anyhow::Result<PathBuf> {
@@ -234,52 +331,161 @@ mod tests {
         assert_eq!(config.repos_dir, "");
         assert_eq!(config.global_dir, "");
         assert_eq!(config.user, "");
+        assert!(config.repo_mappings.is_empty());
+        assert!(config.profiles.is_empty());
+    }
+
+    #[test]
+    fn ai_config_default_values() {
+        let config = AiConfig::default();
         assert!(config.agent_tool.is_none());
         assert!(config.opencode_provider.is_none());
         assert!(config.opencode_sonnet_model.is_none());
         assert!(config.opencode_opus_model.is_none());
-        assert!(config.repo_mappings.is_empty());
-        assert!(config.profiles.is_empty());
-        assert!(config.last_version_check.is_none());
-        assert!(!config.disable_update_check);
     }
 
     #[test]
-    fn thoughts_config_save_load_round_trip() {
+    fn hyprlayer_config_save_load_round_trip() {
         let temp_dir = std::env::temp_dir().join("hyprlayer_test_config_round_trip");
         let config_path = temp_dir.join("config.json");
 
-        let config = ThoughtsConfig {
-            thoughts_repo: "~/thoughts".to_string(),
-            repos_dir: "repos".to_string(),
-            global_dir: "global".to_string(),
-            user: "testuser".to_string(),
+        let config = HyprlayerConfig {
+            version: Some(2),
             last_version_check: Some(1700000000),
             disable_update_check: true,
-            ..Default::default()
+            thoughts: Some(ThoughtsConfig {
+                thoughts_repo: "~/thoughts".to_string(),
+                repos_dir: "repos".to_string(),
+                global_dir: "global".to_string(),
+                user: "testuser".to_string(),
+                ..Default::default()
+            }),
+            ai: Some(AiConfig {
+                agent_tool: Some(AgentTool::Claude),
+                ..Default::default()
+            }),
         };
 
         config.save(&config_path).unwrap();
-        let loaded = ThoughtsConfig::load(&config_path).unwrap();
+        let loaded = HyprlayerConfig::load(&config_path).unwrap();
 
-        assert_eq!(loaded.thoughts_repo, "~/thoughts");
-        assert_eq!(loaded.user, "testuser");
+        assert_eq!(loaded.version, Some(2));
         assert_eq!(loaded.last_version_check, Some(1700000000));
         assert!(loaded.disable_update_check);
-        assert!(loaded.agent_tool.is_none());
-        assert!(loaded.repo_mappings.is_empty());
+
+        let thoughts = loaded.thoughts.unwrap();
+        assert_eq!(thoughts.thoughts_repo, "~/thoughts");
+        assert_eq!(thoughts.user, "testuser");
+        assert!(thoughts.repo_mappings.is_empty());
+
+        let ai = loaded.ai.unwrap();
+        assert!(matches!(ai.agent_tool, Some(AgentTool::Claude)));
+        assert!(ai.opencode_provider.is_none());
 
         fs::remove_dir_all(&temp_dir).ok();
     }
 
     #[test]
-    fn thoughts_config_deserializes_without_version_fields() {
-        // Config files created before version checking was added won't have these fields
+    fn migrate_v1_full_config() {
+        let json = r#"{
+            "thoughts": {
+                "thoughtsRepo": "~/thoughts",
+                "reposDir": "repos",
+                "globalDir": "global",
+                "user": "testuser",
+                "agentTool": "claude",
+                "opencodeProvider": null,
+                "opencodeSonnetModel": null,
+                "opencodeOpusModel": null,
+                "repoMappings": {},
+                "profiles": {},
+                "lastVersionCheck": 1700000000,
+                "disableUpdateCheck": false
+            }
+        }"#;
+        let config = HyprlayerConfig::migrate_v1(json).unwrap();
+
+        assert_eq!(config.version, Some(2));
+        assert_eq!(config.last_version_check, Some(1700000000));
+        assert!(!config.disable_update_check);
+
+        let thoughts = config.thoughts.unwrap();
+        assert_eq!(thoughts.thoughts_repo, "~/thoughts");
+        assert_eq!(thoughts.user, "testuser");
+
+        let ai = config.ai.unwrap();
+        assert!(matches!(ai.agent_tool, Some(AgentTool::Claude)));
+    }
+
+    #[test]
+    fn migrate_v1_ai_only() {
+        let json = r#"{
+            "thoughts": {
+                "thoughtsRepo": "",
+                "reposDir": "",
+                "globalDir": "",
+                "user": "",
+                "agentTool": "copilot"
+            }
+        }"#;
+        let config = HyprlayerConfig::migrate_v1(json).unwrap();
+        let ai = config.ai.unwrap();
+        assert!(matches!(ai.agent_tool, Some(AgentTool::Copilot)));
+
+        let thoughts = config.thoughts.unwrap();
+        assert!(!thoughts.is_thoughts_configured());
+    }
+
+    #[test]
+    fn migrate_v1_no_thoughts_key() {
+        let json = r#"{}"#;
+        let config = HyprlayerConfig::migrate_v1(json).unwrap();
+        assert_eq!(config.version, Some(2));
+        assert!(config.thoughts.is_none());
+        assert!(config.ai.is_none());
+    }
+
+    #[test]
+    fn migrate_v1_minimal_thoughts() {
         let json = r#"{"thoughts": {"thoughtsRepo": "~/t", "reposDir": "r", "globalDir": "g", "user": "u"}}"#;
-        let config_file: ConfigFile = serde_json::from_str(json).unwrap();
-        let config = config_file.thoughts.unwrap();
+        let config = HyprlayerConfig::migrate_v1(json).unwrap();
+        assert_eq!(config.version, Some(2));
         assert!(config.last_version_check.is_none());
         assert!(!config.disable_update_check);
+
+        let thoughts = config.thoughts.unwrap();
+        assert_eq!(thoughts.thoughts_repo, "~/t");
+        assert!(thoughts.is_thoughts_configured());
+
+        let ai = config.ai.unwrap();
+        assert!(ai.agent_tool.is_none());
+    }
+
+    #[test]
+    fn v2_config_does_not_trigger_migration() {
+        let temp_dir = std::env::temp_dir().join("hyprlayer_test_v2_no_migrate");
+        let config_path = temp_dir.join("config.json");
+
+        let config = HyprlayerConfig {
+            version: Some(2),
+            thoughts: Some(ThoughtsConfig {
+                thoughts_repo: "~/thoughts".to_string(),
+                repos_dir: "repos".to_string(),
+                global_dir: "global".to_string(),
+                user: "testuser".to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        config.save(&config_path).unwrap();
+        let loaded = HyprlayerConfig::load(&config_path).unwrap();
+
+        assert_eq!(loaded.version, Some(2));
+        let thoughts = loaded.thoughts.unwrap();
+        assert_eq!(thoughts.thoughts_repo, "~/thoughts");
+
+        fs::remove_dir_all(&temp_dir).ok();
     }
 
     #[test]

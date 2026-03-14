@@ -3,7 +3,7 @@ use clap::Args;
 use std::fs;
 use std::path::PathBuf;
 
-use crate::config::{expand_path, get_default_config_path, ThoughtsConfig};
+use crate::config::{expand_path, get_default_config_path, HyprlayerConfig};
 
 /// Common config file argument shared across commands
 #[derive(Debug, Clone, Args)]
@@ -21,11 +21,15 @@ impl ConfigArgs {
     }
 
     /// Load existing config, error if not found or incomplete
-    pub fn load(&self) -> Result<ThoughtsConfig> {
+    pub fn load(&self) -> Result<HyprlayerConfig> {
         let config = self.load_if_exists()?.ok_or_else(|| {
-            anyhow::anyhow!("No thoughts configuration found. Run 'hyprlayer thoughts init' first.")
+            anyhow::anyhow!("No configuration found. Run 'hyprlayer thoughts init' first.")
         })?;
-        if !config.is_thoughts_configured() {
+        if config
+            .thoughts
+            .as_ref()
+            .is_none_or(|t| !t.is_thoughts_configured())
+        {
             return Err(anyhow::anyhow!(
                 "Thoughts not fully configured. Run 'hyprlayer thoughts init' to complete setup."
             ));
@@ -34,12 +38,12 @@ impl ConfigArgs {
     }
 
     /// Load config if exists, returns None if config file doesn't exist
-    pub fn load_if_exists(&self) -> Result<Option<ThoughtsConfig>> {
+    pub fn load_if_exists(&self) -> Result<Option<HyprlayerConfig>> {
         let path = self.path()?;
         if !path.exists() {
             return Ok(None);
         }
-        ThoughtsConfig::load(&path).map(Some)
+        HyprlayerConfig::load(&path).map(Some)
     }
 
     /// Load raw JSON config, error if not found

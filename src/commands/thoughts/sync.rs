@@ -116,7 +116,8 @@ pub fn sync(args: SyncArgs) -> Result<()> {
     println!("{}", "Syncing thoughts...".blue());
 
     // Load config
-    let thoughts_config = config.load()?;
+    let hyprlayer_config = config.load()?;
+    let thoughts_config = hyprlayer_config.thoughts.as_ref().unwrap();
 
     // Check if current repo has thoughts setup
     let current_repo = get_current_repo_path()?;
