@@ -20,18 +20,22 @@ pub fn status(args: AiStatusArgs) -> Result<()> {
     let AiStatusArgs { json, config } = args;
     let config_path = config.path()?;
 
-    let Some(thoughts_config) = config.load_if_exists()? else {
+    let Some(hyprlayer_config) = config.load_if_exists()? else {
         return print_not_configured(json);
     };
 
-    let Some(ref agent_tool) = thoughts_config.agent_tool else {
+    let Some(ref ai_config) = hyprlayer_config.ai else {
+        return print_not_configured(json);
+    };
+
+    let Some(ref agent_tool) = ai_config.agent_tool else {
         return print_not_configured(json);
     };
 
     if json {
         println!(
             "{}",
-            serde_json::to_string_pretty(&agent_tool.status_json(&thoughts_config))?
+            serde_json::to_string_pretty(&agent_tool.status_json(ai_config))?
         );
         return Ok(());
     }
@@ -40,7 +44,7 @@ pub fn status(args: AiStatusArgs) -> Result<()> {
     println!("{}", "=".repeat(50).bright_black());
     println!();
 
-    agent_tool.print_status(&thoughts_config);
+    agent_tool.print_status(ai_config);
 
     println!();
     println!(

@@ -12,7 +12,8 @@ pub fn status(args: StatusArgs) -> Result<()> {
     println!();
 
     // Load config
-    let thoughts_config = args.config.load()?;
+    let hyprlayer_config = args.config.load()?;
+    let thoughts_config = hyprlayer_config.thoughts.as_ref().unwrap();
 
     // Resolve effective config for current repo (profile-aware)
     let current_repo = get_current_repo_path()?;
