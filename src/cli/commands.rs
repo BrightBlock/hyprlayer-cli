@@ -3,7 +3,7 @@ use clap::Args;
 use std::fs;
 use std::path::PathBuf;
 
-use crate::config::{expand_path, get_default_config_path, HyprlayerConfig};
+use crate::config::{BackendKind, HyprlayerConfig, expand_path, get_default_config_path};
 
 /// Common config file argument shared across commands
 #[derive(Debug, Clone, Args)]
@@ -70,6 +70,18 @@ pub struct InitArgs {
     pub directory: Option<String>,
     #[arg(long, help = "Use a specific thoughts profile")]
     pub profile: Option<String>,
+    #[arg(long, value_enum, help = "Storage backend for thoughts")]
+    pub backend: Option<BackendKind>,
+    #[arg(
+        long,
+        help = "Obsidian vault path (required when --backend obsidian with --yes)"
+    )]
+    pub vault_path: Option<String>,
+    #[arg(
+        long,
+        help = "Subfolder within the Obsidian vault for hyprlayer content (default: hyprlayer)"
+    )]
+    pub vault_subpath: Option<String>,
     #[arg(
         long,
         short = 'y',
@@ -188,6 +200,18 @@ pub struct AiStatusArgs {
 #[derive(Debug, Args)]
 #[command(name = "reinstall", about = "Reinstall AI agent files")]
 pub struct AiReinstallArgs {
+    #[command(flatten)]
+    pub config: ConfigArgs,
+}
+
+#[derive(Debug, Args)]
+#[command(
+    name = "info",
+    about = "Show the active storage backend and its settings"
+)]
+pub struct StorageInfoArgs {
+    #[arg(long, help = "Output as JSON for slash-command consumption")]
+    pub json: bool,
     #[command(flatten)]
     pub config: ConfigArgs,
 }

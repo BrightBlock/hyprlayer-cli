@@ -2,6 +2,7 @@ use anyhow::Result;
 use clap::Parser;
 
 pub mod agents;
+mod backends;
 mod cli;
 mod commands;
 mod config;
@@ -9,8 +10,9 @@ mod git_ops;
 mod hooks;
 mod version;
 
-use cli::{AiCommands, ProfileCommands, ThoughtsCommands};
+use cli::{AiCommands, ProfileCommands, StorageCommands, ThoughtsCommands};
 use commands::ai::{configure as ai_configure, reinstall as ai_reinstall, status as ai_status};
+use commands::storage::info as storage_info;
 use commands::thoughts::profile::{
     create as profile_create, delete as profile_delete, list as profile_list, show as profile_show,
 };
@@ -38,6 +40,9 @@ fn main() -> Result<()> {
             AiCommands::Configure(args) => ai_configure::configure(args)?,
             AiCommands::Status(args) => ai_status::status(args)?,
             AiCommands::Reinstall(args) => ai_reinstall::reinstall(args)?,
+        },
+        cli::Cli::Storage { command } => match command {
+            StorageCommands::Info(args) => storage_info::info(args)?,
         },
     }
 

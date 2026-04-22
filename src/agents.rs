@@ -334,12 +334,7 @@ fn curl_download_file(url: &str, dest: &Path) -> Result<()> {
     }
 
     let status = Command::new("curl")
-        .args([
-            "-sL",
-            "-o",
-            &dest.display().to_string(),
-            url,
-        ])
+        .args(["-sL", "-o", &dest.display().to_string(), url])
         .status()
         .context("curl not found")?;
 

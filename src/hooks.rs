@@ -7,8 +7,11 @@ use std::process::Command;
 
 const HOOK_VERSION: &str = "1";
 
-/// Set up git hooks for thoughts protection and auto-sync
-pub fn setup_git_hooks(repo_path: &Path) -> Result<Vec<String>> {
+/// Install the pre-commit hook (always) and, when `include_auto_sync` is true,
+/// the post-commit hook. With `include_auto_sync = false`, any previously-
+/// installed hyprlayer post-commit is removed so backend switches don't leave
+/// dead hooks firing on every commit.
+pub fn setup_git_hooks(repo_path: &Path, include_auto_sync: bool) -> Result<Vec<String>> {
     let hooks_dir = get_hooks_dir(repo_path)?;
     fs::create_dir_all(&hooks_dir)?;
 
@@ -17,11 +20,39 @@ pub fn setup_git_hooks(repo_path: &Path) -> Result<Vec<String>> {
     if install_hook(&hooks_dir, "pre-commit", pre_commit_content())? {
         updated.push("pre-commit".to_string());
     }
-    if install_hook(&hooks_dir, "post-commit", post_commit_content())? {
-        updated.push("post-commit".to_string());
+    if include_auto_sync {
+        if install_hook(&hooks_dir, "post-commit", post_commit_content())? {
+            updated.push("post-commit".to_string());
+        }
+    } else if remove_our_hook(&hooks_dir, "post-commit")? {
+        updated.push("post-commit (removed)".to_string());
     }
 
     Ok(updated)
+}
+
+fn backup_path(hook_path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.old", hook_path.display()))
+}
+
+fn remove_our_hook(hooks_dir: &Path, name: &str) -> Result<bool> {
+    let hook_path = hooks_dir.join(name);
+    if !hook_path.exists() {
+        return Ok(false);
+    }
+
+    let content = fs::read_to_string(&hook_path).unwrap_or_default();
+    if !content.contains("hyprlayer thoughts") {
+        return Ok(false);
+    }
+
+    fs::remove_file(&hook_path)?;
+
+    let backup = backup_path(&hook_path);
+    if backup.exists() {
+        fs::rename(&backup, &hook_path)?;
+    }
+    Ok(true)
 }
 
 fn get_hooks_dir(repo_path: &Path) -> Result<PathBuf> {
@@ -46,12 +77,10 @@ fn hook_needs_update(hook_path: &Path) -> bool {
         return true;
     };
 
-    // Not our hook - don't update
     if !content.contains("hyprlayer thoughts") {
         return false;
     }
 
-    // Check version
     content
         .lines()
         .find(|l| l.contains("# Version:"))
@@ -68,11 +97,10 @@ fn install_hook(hooks_dir: &Path, name: &str, content: String) -> Result<bool> {
         return Ok(false);
     }
 
-    // Backup existing non-hyprlayer hook
     if hook_path.exists() {
         let existing = fs::read_to_string(&hook_path)?;
         if !existing.contains("hyprlayer thoughts") {
-            fs::rename(&hook_path, format!("{}.old", hook_path.display()))?;
+            fs::rename(&hook_path, backup_path(&hook_path))?;
         }
     }
 
