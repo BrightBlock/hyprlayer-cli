@@ -63,6 +63,49 @@ impl BackendSettings {
             },
         )
     }
+
+    /// Validate the backend-specific required fields are populated.
+    /// `database_id` / `type_id` remain optional at validation time because
+    /// they are populated lazily by the first write-oriented slash command.
+    pub fn validate_for(&self, kind: BackendKind) -> Result<()> {
+        match kind {
+            BackendKind::Git => Ok(()),
+            BackendKind::Obsidian => {
+                if self.vault_path.as_deref().unwrap_or("").is_empty() {
+                    return Err(anyhow::anyhow!(
+                        "Obsidian backend requires vaultPath in settings"
+                    ));
+                }
+                Ok(())
+            }
+            BackendKind::Notion => {
+                if self.parent_page_id.as_deref().unwrap_or("").is_empty() {
+                    return Err(anyhow::anyhow!(
+                        "Notion backend requires parentPageId in settings"
+                    ));
+                }
+                if self.api_token_env.as_deref().unwrap_or("").is_empty() {
+                    return Err(anyhow::anyhow!(
+                        "Notion backend requires apiTokenEnv in settings"
+                    ));
+                }
+                Ok(())
+            }
+            BackendKind::Anytype => {
+                if self.space_id.as_deref().unwrap_or("").is_empty() {
+                    return Err(anyhow::anyhow!(
+                        "Anytype backend requires spaceId in settings"
+                    ));
+                }
+                if self.api_token_env.as_deref().unwrap_or("").is_empty() {
+                    return Err(anyhow::anyhow!(
+                        "Anytype backend requires apiTokenEnv in settings"
+                    ));
+                }
+                Ok(())
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -799,6 +842,73 @@ mod tests {
         assert_eq!(eff.backend, BackendKind::Obsidian);
         assert_eq!(eff.backend_settings.vault_path.as_deref(), Some("/vault"));
         assert_eq!(eff.profile_name.as_deref(), Some("obs"));
+    }
+
+    #[test]
+    fn validate_for_git_is_always_ok() {
+        assert!(
+            BackendSettings::default()
+                .validate_for(BackendKind::Git)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn validate_for_obsidian_requires_vault_path() {
+        let empty = BackendSettings::default();
+        assert!(empty.validate_for(BackendKind::Obsidian).is_err());
+
+        let with_vault = BackendSettings {
+            vault_path: Some("/v".to_string()),
+            ..Default::default()
+        };
+        assert!(with_vault.validate_for(BackendKind::Obsidian).is_ok());
+    }
+
+    #[test]
+    fn validate_for_notion_requires_parent_page_and_token_env() {
+        let empty = BackendSettings::default();
+        let err = empty.validate_for(BackendKind::Notion).unwrap_err();
+        assert!(err.to_string().contains("parentPageId"));
+
+        let only_parent = BackendSettings {
+            parent_page_id: Some("p".to_string()),
+            ..Default::default()
+        };
+        let err = only_parent.validate_for(BackendKind::Notion).unwrap_err();
+        assert!(err.to_string().contains("apiTokenEnv"));
+
+        let full = BackendSettings {
+            parent_page_id: Some("p".to_string()),
+            api_token_env: Some("NOTION_TOKEN".to_string()),
+            ..Default::default()
+        };
+        assert!(full.validate_for(BackendKind::Notion).is_ok());
+    }
+
+    #[test]
+    fn validate_for_notion_does_not_require_database_id() {
+        let s = BackendSettings {
+            parent_page_id: Some("p".to_string()),
+            api_token_env: Some("NOTION_TOKEN".to_string()),
+            database_id: None,
+            ..Default::default()
+        };
+        assert!(s.validate_for(BackendKind::Notion).is_ok());
+    }
+
+    #[test]
+    fn validate_for_anytype_requires_space_and_token_env() {
+        let empty = BackendSettings::default();
+        let err = empty.validate_for(BackendKind::Anytype).unwrap_err();
+        assert!(err.to_string().contains("spaceId"));
+
+        let full = BackendSettings {
+            space_id: Some("s".to_string()),
+            api_token_env: Some("ANYTYPE_API_KEY".to_string()),
+            ..Default::default()
+        };
+        assert!(full.validate_for(BackendKind::Anytype).is_ok());
     }
 
     #[test]

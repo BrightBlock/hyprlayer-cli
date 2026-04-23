@@ -84,6 +84,21 @@ pub struct InitArgs {
     pub vault_subpath: Option<String>,
     #[arg(
         long,
+        help = "Notion parent page ID (required when --backend notion with --yes)"
+    )]
+    pub parent_page_id: Option<String>,
+    #[arg(
+        long,
+        help = "Existing Notion database ID to reuse (skips lazy creation)"
+    )]
+    pub database_id: Option<String>,
+    #[arg(
+        long,
+        help = "Env var name holding the backend's API token (default: NOTION_TOKEN for notion)"
+    )]
+    pub api_token_env: Option<String>,
+    #[arg(
+        long,
         short = 'y',
         help = "Run without interactive prompts (requires existing config and --directory)"
     )]
@@ -212,6 +227,17 @@ pub struct AiReinstallArgs {
 pub struct StorageInfoArgs {
     #[arg(long, help = "Output as JSON for slash-command consumption")]
     pub json: bool,
+    #[command(flatten)]
+    pub config: ConfigArgs,
+}
+
+#[derive(Debug, Args)]
+#[command(
+    name = "set-database-id",
+    about = "Persist a Notion database ID to the active profile's backend settings"
+)]
+pub struct StorageSetDatabaseIdArgs {
+    pub id: String,
     #[command(flatten)]
     pub config: ConfigArgs,
 }

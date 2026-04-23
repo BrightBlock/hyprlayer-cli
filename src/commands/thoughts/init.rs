@@ -21,6 +21,9 @@ pub fn init(args: InitArgs) -> Result<()> {
         backend,
         vault_path,
         vault_subpath,
+        parent_page_id,
+        database_id,
+        api_token_env,
         yes,
         config,
     } = args;
@@ -31,6 +34,12 @@ pub fn init(args: InitArgs) -> Result<()> {
         return Err(anyhow::anyhow!("Not in a git repository"));
     }
 
+    let notion_flags = NotionFlags {
+        parent_page_id,
+        database_id,
+        api_token_env: api_token_env.clone(),
+    };
+
     if yes {
         return init_non_interactive(
             config,
@@ -40,6 +49,7 @@ pub fn init(args: InitArgs) -> Result<()> {
             backend,
             vault_path,
             vault_subpath,
+            notion_flags,
             force,
         );
     }
@@ -92,24 +102,40 @@ pub fn init(args: InitArgs) -> Result<()> {
         backend_kind,
         vault_path,
         vault_subpath,
+        &notion_flags,
         &profile,
     )?;
     hyprlayer_config.thoughts = Some(refreshed);
 
     let resolved = hyprlayer_config.thoughts_mut().resolve_dirs(&profile);
-    let content_root = resolve_content_root(backend_kind, &resolved)?;
-    ensure_content_root(&content_root)?;
+    let mapped_name = if backend_uses_filesystem(backend_kind) {
+        let content_root = resolve_content_root(backend_kind, &resolved)?;
+        ensure_content_root(&content_root)?;
 
-    let repos_path = content_root.join(&resolved.repos_dir);
-    fs::create_dir_all(&repos_path)?;
+        let repos_path = content_root.join(&resolved.repos_dir);
+        fs::create_dir_all(&repos_path)?;
 
-    let mapped_name = select_or_create_directory(
-        &repos_path,
-        &current_repo,
-        directory,
-        &content_root,
-        &resolved.repos_dir,
-    )?;
+        select_or_create_directory(
+            &repos_path,
+            &current_repo,
+            directory,
+            &content_root,
+            &resolved.repos_dir,
+        )?
+    } else {
+        let default_name = get_repo_name_from_path(&current_repo);
+        let chosen = match directory {
+            Some(d) => d,
+            None => Input::with_theme(&ColorfulTheme::default())
+                .with_prompt(format!(
+                    "Project identifier (used as the `project` metadata field) [{}]",
+                    default_name
+                ))
+                .default(default_name)
+                .interact()?,
+        };
+        sanitize_directory_name(&chosen)
+    };
 
     let mapping = RepoMapping::new(&mapped_name, &profile);
     hyprlayer_config
@@ -130,6 +156,13 @@ pub fn init(args: InitArgs) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Default, Clone)]
+struct NotionFlags {
+    parent_page_id: Option<String>,
+    database_id: Option<String>,
+    api_token_env: Option<String>,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn init_non_interactive(
     config: crate::cli::ConfigArgs,
@@ -139,6 +172,7 @@ fn init_non_interactive(
     backend_flag: Option<BackendKind>,
     vault_path_flag: Option<String>,
     vault_subpath_flag: Option<String>,
+    notion_flags: NotionFlags,
     force: bool,
 ) -> Result<()> {
     let directory =
@@ -212,6 +246,38 @@ fn init_non_interactive(
             backend_kind,
             new_settings,
         );
+    } else if backend_kind == BackendKind::Notion {
+        let parent = notion_flags
+            .parent_page_id
+            .clone()
+            .or_else(|| existing_profile.backend_settings.parent_page_id.clone());
+        if parent.as_deref().unwrap_or("").is_empty() {
+            return Err(anyhow::anyhow!(
+                "--parent-page-id is required when --backend notion is used with --yes"
+            ));
+        }
+        let token_env = notion_flags
+            .api_token_env
+            .clone()
+            .or_else(|| existing_profile.backend_settings.api_token_env.clone())
+            .unwrap_or_else(|| "NOTION_TOKEN".to_string());
+        let db_id = notion_flags
+            .database_id
+            .clone()
+            .or_else(|| existing_profile.backend_settings.database_id.clone());
+
+        let new_settings = BackendSettings {
+            parent_page_id: parent,
+            database_id: db_id,
+            api_token_env: Some(token_env),
+            ..existing_profile.backend_settings.clone()
+        };
+        apply_backend_and_settings(
+            hyprlayer_config.thoughts_mut(),
+            &profile,
+            backend_kind,
+            new_settings,
+        );
     } else if backend_flag.is_some() {
         apply_backend_and_settings(
             hyprlayer_config.thoughts_mut(),
@@ -222,26 +288,29 @@ fn init_non_interactive(
     }
 
     let resolved = hyprlayer_config.thoughts_mut().resolve_dirs(&profile);
-    let content_root = resolve_content_root(backend_kind, &resolved)?;
-    ensure_content_root(&content_root)?;
-
-    let repos_path = content_root.join(&resolved.repos_dir);
-    fs::create_dir_all(&repos_path)?;
-
     let mapped_name = sanitize_directory_name(&directory);
-    let target_dir = repos_path.join(&mapped_name);
-    if !target_dir.exists() {
-        fs::create_dir_all(&target_dir)?;
-        println!(
-            "{}",
-            format!(
-                "Created thoughts directory: {}{SEP}{}{SEP}{}",
-                content_root.display().to_string().cyan(),
-                resolved.repos_dir.cyan(),
-                mapped_name.cyan()
-            )
-            .green()
-        );
+
+    if backend_uses_filesystem(backend_kind) {
+        let content_root = resolve_content_root(backend_kind, &resolved)?;
+        ensure_content_root(&content_root)?;
+
+        let repos_path = content_root.join(&resolved.repos_dir);
+        fs::create_dir_all(&repos_path)?;
+
+        let target_dir = repos_path.join(&mapped_name);
+        if !target_dir.exists() {
+            fs::create_dir_all(&target_dir)?;
+            println!(
+                "{}",
+                format!(
+                    "Created thoughts directory: {}{SEP}{}{SEP}{}",
+                    content_root.display().to_string().cyan(),
+                    resolved.repos_dir.cyan(),
+                    mapped_name.cyan()
+                )
+                .green()
+            );
+        }
     }
 
     let mapping = RepoMapping::new(&mapped_name, &profile);
@@ -278,7 +347,7 @@ fn resolve_backend_interactive(
 
     // First-run: offer a short menu. Keep git as the default so existing
     // users see no change when they press enter.
-    let items = ["git (default)", "obsidian"];
+    let items = ["git (default)", "obsidian", "notion"];
     let selection = Select::with_theme(&ColorfulTheme::default())
         .with_prompt("Storage backend for thoughts")
         .items(&items)
@@ -288,6 +357,7 @@ fn resolve_backend_interactive(
     Ok(match selection {
         0 => BackendKind::Git,
         1 => BackendKind::Obsidian,
+        2 => BackendKind::Notion,
         _ => unreachable!(),
     })
 }
@@ -301,6 +371,7 @@ fn prompt_for_thoughts_fields(
     backend_kind: BackendKind,
     vault_path_flag: Option<String>,
     vault_subpath_flag: Option<String>,
+    notion_flags: &NotionFlags,
     profile: &Option<String>,
 ) -> Result<ThoughtsConfig> {
     let theme = ColorfulTheme::default();
@@ -354,6 +425,12 @@ fn prompt_for_thoughts_fields(
             // Preserve any previous git thoughts_repo so switching git↔obsidian doesn't lose it.
             (existing.thoughts_repo.clone(), settings)
         }
+        BackendKind::Notion => {
+            let settings =
+                prompt_notion_settings(&theme, &existing_profile.backend_settings, notion_flags)?;
+            // Preserve any existing filesystem repo path so switching backends doesn't lose it.
+            (existing.thoughts_repo.clone(), settings)
+        }
         _ => {
             return Err(anyhow::anyhow!(
                 "Backend '{}' is not yet supported in this version",
@@ -362,50 +439,67 @@ fn prompt_for_thoughts_fields(
         }
     };
 
-    println!();
-    let default_repos_dir = if existing_profile.repos_dir.is_empty() {
-        "repos".to_string()
-    } else {
-        existing_profile.repos_dir.clone()
-    };
-    let repos_dir: String = Input::with_theme(&theme)
-        .with_prompt("Directory name for repository-specific thoughts")
-        .default(default_repos_dir)
-        .interact()?;
+    let (repos_dir, global_dir) = if backend_uses_filesystem(backend_kind) {
+        println!();
+        let default_repos_dir = if existing_profile.repos_dir.is_empty() {
+            "repos".to_string()
+        } else {
+            existing_profile.repos_dir.clone()
+        };
+        let repos_dir: String = Input::with_theme(&theme)
+            .with_prompt("Directory name for repository-specific thoughts")
+            .default(default_repos_dir)
+            .interact()?;
 
-    let default_global_dir = if existing_profile.global_dir.is_empty() {
-        "global".to_string()
+        let default_global_dir = if existing_profile.global_dir.is_empty() {
+            "global".to_string()
+        } else {
+            existing_profile.global_dir.clone()
+        };
+        let global_dir: String = Input::with_theme(&theme)
+            .with_prompt("Directory name for global thoughts")
+            .default(default_global_dir)
+            .interact()?;
+        (repos_dir, global_dir)
     } else {
-        existing_profile.global_dir.clone()
+        let repos_dir = if existing_profile.repos_dir.is_empty() {
+            "repos".to_string()
+        } else {
+            existing_profile.repos_dir.clone()
+        };
+        let global_dir = if existing_profile.global_dir.is_empty() {
+            "global".to_string()
+        } else {
+            existing_profile.global_dir.clone()
+        };
+        (repos_dir, global_dir)
     };
-    let global_dir: String = Input::with_theme(&theme)
-        .with_prompt("Directory name for global thoughts")
-        .default(default_global_dir)
-        .interact()?;
 
     let user = prompt_for_username(&theme, &existing.user)?;
 
-    println!();
-    println!("{}", "Creating thoughts structure:".yellow());
-    let preview = ProfileConfig {
-        thoughts_repo: thoughts_repo.clone(),
-        repos_dir: repos_dir.clone(),
-        global_dir: global_dir.clone(),
-        backend: backend_kind,
-        backend_settings: backend_settings.clone(),
-    };
-    println!("  {}{SEP}", display_root(backend_kind, &preview).cyan());
-    println!(
-        "    ├── {}{SEP}     {}",
-        repos_dir.cyan(),
-        "(project-specific thoughts)".bright_black()
-    );
-    println!(
-        "    └── {}{SEP}    {}",
-        global_dir.cyan(),
-        "(cross-project thoughts)".bright_black()
-    );
-    println!();
+    if backend_uses_filesystem(backend_kind) {
+        println!();
+        println!("{}", "Creating thoughts structure:".yellow());
+        let preview = ProfileConfig {
+            thoughts_repo: thoughts_repo.clone(),
+            repos_dir: repos_dir.clone(),
+            global_dir: global_dir.clone(),
+            backend: backend_kind,
+            backend_settings: backend_settings.clone(),
+        };
+        println!("  {}{SEP}", display_root(backend_kind, &preview).cyan());
+        println!(
+            "    ├── {}{SEP}     {}",
+            repos_dir.cyan(),
+            "(project-specific thoughts)".bright_black()
+        );
+        println!(
+            "    └── {}{SEP}    {}",
+            global_dir.cyan(),
+            "(cross-project thoughts)".bright_black()
+        );
+        println!();
+    }
 
     let mut out = ThoughtsConfig {
         user,
@@ -434,6 +528,66 @@ fn prompt_for_thoughts_fields(
     }
 
     Ok(out)
+}
+
+fn backend_uses_filesystem(kind: BackendKind) -> bool {
+    matches!(kind, BackendKind::Git | BackendKind::Obsidian)
+}
+
+fn prompt_notion_settings(
+    theme: &ColorfulTheme,
+    existing: &BackendSettings,
+    flags: &NotionFlags,
+) -> Result<BackendSettings> {
+    let default_parent = existing.parent_page_id.clone().unwrap_or_default();
+    let parent_page_id = match flags.parent_page_id.clone() {
+        Some(v) => v,
+        None => {
+            let mut input = Input::<String>::with_theme(theme)
+                .with_prompt("Notion parent page ID (from the page URL after the last `-`)");
+            if !default_parent.is_empty() {
+                input = input.default(default_parent);
+            }
+            input.interact()?
+        }
+    };
+    if parent_page_id.trim().is_empty() {
+        return Err(anyhow::anyhow!("Notion parent page ID is required"));
+    }
+
+    let default_env = existing
+        .api_token_env
+        .clone()
+        .unwrap_or_else(|| "NOTION_TOKEN".to_string());
+    let api_token_env = match flags.api_token_env.clone() {
+        Some(v) => v,
+        None => Input::<String>::with_theme(theme)
+            .with_prompt("Env var holding your Notion integration token")
+            .default(default_env)
+            .interact()?,
+    };
+
+    let default_db = existing.database_id.clone().unwrap_or_default();
+    let db_input = match flags.database_id.clone() {
+        Some(v) => v,
+        None => Input::<String>::with_theme(theme)
+            .with_prompt("Existing Notion database ID (leave blank to create on first use)")
+            .default(default_db)
+            .allow_empty(true)
+            .interact()?,
+    };
+    let database_id = if db_input.trim().is_empty() {
+        None
+    } else {
+        Some(db_input)
+    };
+
+    Ok(BackendSettings {
+        parent_page_id: Some(parent_page_id),
+        database_id,
+        api_token_env: Some(api_token_env),
+        ..existing.clone()
+    })
 }
 
 fn prompt_vault_path(theme: &ColorfulTheme, existing: &str) -> Result<String> {
@@ -513,11 +667,9 @@ fn resolve_content_root(backend_kind: BackendKind, resolved: &ProfileConfig) -> 
             // Check vault existence here, before `ensure_content_root` would
             // create the missing path. Obsidian vaults are user-managed — we
             // never auto-create them.
-            let vault = expand_path(
-                resolved.backend_settings.vault_path.as_deref().ok_or_else(|| {
-                    anyhow::anyhow!("Obsidian backend requires vaultPath in settings")
-                })?,
-            );
+            let vault = expand_path(resolved.backend_settings.vault_path.as_deref().ok_or_else(
+                || anyhow::anyhow!("Obsidian backend requires vaultPath in settings"),
+            )?);
             if !vault.exists() {
                 return Err(anyhow::anyhow!(
                     "Obsidian vault does not exist: {}. Create it in Obsidian first.",
@@ -735,32 +887,43 @@ fn print_summary(
     println!();
     println!("Backend: {}", backend_kind.as_str().cyan());
     println!();
-    println!("Repository structure created:");
-    println!("  {}{SEP}", current_repo.display().to_string().cyan());
-    println!("    └── thoughts{SEP}");
 
-    let root_display = display_root(backend_kind, resolved);
+    if backend_uses_filesystem(backend_kind) {
+        println!("Repository structure created:");
+        println!("  {}{SEP}", current_repo.display().to_string().cyan());
+        println!("    └── thoughts{SEP}");
 
-    println!(
-        "         ├── {}{SEP}     → {}{SEP}{}{SEP}{}{SEP}{}{SEP}",
-        effective.user.cyan(),
-        root_display.cyan(),
-        resolved.repos_dir.cyan(),
-        mapped_name.cyan(),
-        effective.user.cyan(),
-    );
-    println!(
-        "         ├── shared{SEP}      → {}{SEP}{}{SEP}{}{SEP}shared{SEP}",
-        root_display.cyan(),
-        resolved.repos_dir.cyan(),
-        mapped_name.cyan(),
-    );
-    println!(
-        "         └── global{SEP}      → {}{SEP}{}{SEP}",
-        root_display.cyan(),
-        resolved.global_dir.cyan(),
-    );
-    println!();
+        let root_display = display_root(backend_kind, resolved);
+
+        println!(
+            "         ├── {}{SEP}     → {}{SEP}{}{SEP}{}{SEP}{}{SEP}",
+            effective.user.cyan(),
+            root_display.cyan(),
+            resolved.repos_dir.cyan(),
+            mapped_name.cyan(),
+            effective.user.cyan(),
+        );
+        println!(
+            "         ├── shared{SEP}      → {}{SEP}{}{SEP}{}{SEP}shared{SEP}",
+            root_display.cyan(),
+            resolved.repos_dir.cyan(),
+            mapped_name.cyan(),
+        );
+        println!(
+            "         └── global{SEP}      → {}{SEP}{}{SEP}",
+            root_display.cyan(),
+            resolved.global_dir.cyan(),
+        );
+        println!();
+    } else {
+        println!("Project identifier: {}", mapped_name.cyan());
+        println!(
+            "{}",
+            "  (used as the `project` metadata field on every thought)".bright_black()
+        );
+        println!();
+    }
+
     match backend_kind {
         BackendKind::Git => {
             println!("Protection enabled:");
@@ -782,6 +945,18 @@ fn print_summary(
             println!(
                 "{}",
                 "  (no post-commit auto-sync — Obsidian vaults sync themselves)".bright_black()
+            );
+        }
+        BackendKind::Notion => {
+            println!(
+                "{}",
+                "The Notion MCP server has been registered with your AI tool.".bright_black()
+            );
+            println!(
+                "{}",
+                "Your first /create_plan (or similar) will create the database under the \
+                 configured parent page and persist its ID."
+                    .bright_black()
             );
         }
         _ => {}

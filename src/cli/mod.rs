@@ -59,4 +59,5 @@ pub enum ProfileCommands {
 #[derive(Subcommand, Debug)]
 pub enum StorageCommands {
     Info(StorageInfoArgs),
+    SetDatabaseId(StorageSetDatabaseIdArgs),
 }

@@ -5,6 +5,7 @@ use crate::config::{BackendKind, EffectiveConfig};
 
 pub mod common;
 pub mod git;
+pub mod notion;
 pub mod obsidian;
 pub mod schema;
 
@@ -36,7 +37,7 @@ pub fn for_kind(kind: BackendKind) -> Box<dyn ThoughtsBackend> {
     match kind {
         BackendKind::Git => Box::new(git::GitBackend),
         BackendKind::Obsidian => Box::new(obsidian::ObsidianBackend),
-        BackendKind::Notion => panic!("Notion backend is not yet implemented (phase 3)"),
+        BackendKind::Notion => Box::new(notion::NotionBackend),
         BackendKind::Anytype => panic!("Anytype backend is not yet implemented (phase 4)"),
     }
 }
