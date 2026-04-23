@@ -96,6 +96,7 @@ pub fn init(args: InitArgs) -> Result<()> {
     let existing_profile = hyprlayer_config.thoughts_mut().resolve_dirs(&profile);
     let backend_kind = resolve_backend_interactive(backend, existing_profile.backend)?;
 
+    let agent_tool = hyprlayer_config.ai.as_ref().and_then(|a| a.agent_tool);
     let refreshed = prompt_for_thoughts_fields(
         hyprlayer_config.thoughts.clone().unwrap_or_default(),
         &existing_profile,
@@ -104,6 +105,7 @@ pub fn init(args: InitArgs) -> Result<()> {
         vault_subpath,
         &notion_flags,
         &profile,
+        agent_tool,
     )?;
     hyprlayer_config.thoughts = Some(refreshed);
 
@@ -256,11 +258,13 @@ fn init_non_interactive(
                 "--parent-page-id is required when --backend notion is used with --yes"
             ));
         }
+        // Token env is only meaningful for self-hosted installs. In --yes
+        // mode, honor an explicit --api-token-env flag; otherwise keep the
+        // existing value (which will be None for connector users).
         let token_env = notion_flags
             .api_token_env
             .clone()
-            .or_else(|| existing_profile.backend_settings.api_token_env.clone())
-            .unwrap_or_else(|| crate::backends::notion::DEFAULT_NOTION_TOKEN_ENV.to_string());
+            .or_else(|| existing_profile.backend_settings.api_token_env.clone());
         let db_id = notion_flags
             .database_id
             .clone()
@@ -269,7 +273,7 @@ fn init_non_interactive(
         let new_settings = BackendSettings {
             parent_page_id: parent,
             database_id: db_id,
-            api_token_env: Some(token_env),
+            api_token_env: token_env,
             ..existing_profile.backend_settings.clone()
         };
         apply_backend_and_settings(
@@ -365,6 +369,7 @@ fn resolve_backend_interactive(
 /// Prompt the user for thoughts directory configuration, preserving any
 /// already-populated fields. Branches on backend kind so Obsidian users
 /// are asked for a vault path instead of a thoughts repo.
+#[allow(clippy::too_many_arguments)]
 fn prompt_for_thoughts_fields(
     existing: ThoughtsConfig,
     existing_profile: &ProfileConfig,
@@ -373,6 +378,7 @@ fn prompt_for_thoughts_fields(
     vault_subpath_flag: Option<String>,
     notion_flags: &NotionFlags,
     profile: &Option<String>,
+    agent_tool: Option<crate::agents::AgentTool>,
 ) -> Result<ThoughtsConfig> {
     let theme = ColorfulTheme::default();
     println!("{}", "=== Initial Thoughts Setup ===".blue());
@@ -426,8 +432,12 @@ fn prompt_for_thoughts_fields(
             (existing.thoughts_repo.clone(), settings)
         }
         BackendKind::Notion => {
-            let settings =
-                prompt_notion_settings(&theme, &existing_profile.backend_settings, notion_flags)?;
+            let settings = prompt_notion_settings(
+                &theme,
+                &existing_profile.backend_settings,
+                notion_flags,
+                agent_tool,
+            )?;
             // Preserve any existing filesystem repo path so switching backends doesn't lose it.
             (existing.thoughts_repo.clone(), settings)
         }
@@ -534,6 +544,7 @@ fn prompt_notion_settings(
     theme: &ColorfulTheme,
     existing: &BackendSettings,
     flags: &NotionFlags,
+    agent_tool: Option<crate::agents::AgentTool>,
 ) -> Result<BackendSettings> {
     let default_parent = existing.parent_page_id.clone().unwrap_or_default();
     let parent_page_id = match flags.parent_page_id.clone() {
@@ -551,16 +562,34 @@ fn prompt_notion_settings(
         return Err(anyhow::anyhow!("Notion parent page ID is required"));
     }
 
-    let default_env = existing
-        .api_token_env
-        .clone()
-        .unwrap_or_else(|| crate::backends::notion::DEFAULT_NOTION_TOKEN_ENV.to_string());
-    let api_token_env = match flags.api_token_env.clone() {
-        Some(v) => v,
-        None => Input::<String>::with_theme(theme)
-            .with_prompt("Env var holding your Notion integration token")
-            .default(default_env)
-            .interact()?,
+    // Skip the token-env prompt when Notion MCP is already wired up (connector
+    // or prior self-host install). The token is only used by the self-hosted
+    // server, and hyprlayer never reads its value directly.
+    let mcp_already_registered = agent_tool
+        .map(crate::backends::notion::is_notion_mcp_registered)
+        .unwrap_or(false);
+    let api_token_env = if mcp_already_registered {
+        println!(
+            "{}",
+            "✓ Notion MCP already wired up — skipping token env-var prompt.".bright_black()
+        );
+        existing.api_token_env.clone()
+    } else if let Some(v) = flags.api_token_env.clone() {
+        Some(v)
+    } else {
+        let default_env = existing
+            .api_token_env
+            .clone()
+            .unwrap_or_else(|| crate::backends::notion::DEFAULT_NOTION_TOKEN_ENV.to_string());
+        Some(
+            Input::<String>::with_theme(theme)
+                .with_prompt(
+                    "Env var NAME that holds your Notion integration token \
+                     (hyprlayer stores the name only, not the value)",
+                )
+                .default(default_env)
+                .interact()?,
+        )
     };
 
     let default_db = existing.database_id.clone().unwrap_or_default();
@@ -581,7 +610,7 @@ fn prompt_notion_settings(
     Ok(BackendSettings {
         parent_page_id: Some(parent_page_id),
         database_id,
-        api_token_env: Some(api_token_env),
+        api_token_env,
         ..existing.clone()
     })
 }

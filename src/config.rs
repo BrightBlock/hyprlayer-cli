@@ -91,11 +91,10 @@ impl BackendSettings {
                         "Notion backend requires parentPageId in settings"
                     ));
                 }
-                if self.api_token_env.as_deref().unwrap_or("").is_empty() {
-                    return Err(anyhow::anyhow!(
-                        "Notion backend requires apiTokenEnv in settings"
-                    ));
-                }
+                // `api_token_env` is intentionally optional: users with the
+                // Notion connector (SSO/OAuth via the MCP marketplace) don't
+                // have an integration token at all. Only the self-hosted
+                // `@notionhq/notion-mcp-server` install path needs one.
                 Ok(())
             }
             BackendKind::Anytype => {
@@ -873,17 +872,18 @@ mod tests {
     }
 
     #[test]
-    fn validate_for_notion_requires_parent_page_and_token_env() {
+    fn validate_for_notion_requires_parent_page_only() {
         let empty = BackendSettings::default();
         let err = empty.validate_for(BackendKind::Notion).unwrap_err();
         assert!(err.to_string().contains("parentPageId"));
 
+        // `api_token_env` is intentionally optional — connector/SSO setups
+        // don't have a token at all.
         let only_parent = BackendSettings {
             parent_page_id: Some("p".to_string()),
             ..Default::default()
         };
-        let err = only_parent.validate_for(BackendKind::Notion).unwrap_err();
-        assert!(err.to_string().contains("apiTokenEnv"));
+        assert!(only_parent.validate_for(BackendKind::Notion).is_ok());
 
         let full = BackendSettings {
             parent_page_id: Some("p".to_string()),
@@ -897,7 +897,6 @@ mod tests {
     fn validate_for_notion_does_not_require_database_id() {
         let s = BackendSettings {
             parent_page_id: Some("p".to_string()),
-            api_token_env: Some("NOTION_TOKEN".to_string()),
             database_id: None,
             ..Default::default()
         };

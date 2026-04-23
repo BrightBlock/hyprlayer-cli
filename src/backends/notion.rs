@@ -25,23 +25,6 @@ impl ThoughtsBackend for NotionBackend {
             .backend_settings
             .validate_for(BackendKind::Notion)?;
 
-        let env_var = ctx
-            .effective
-            .backend_settings
-            .api_token_env
-            .as_deref()
-            .unwrap_or(DEFAULT_NOTION_TOKEN_ENV);
-        if std::env::var(env_var).is_err() {
-            println!(
-                "{}",
-                format!(
-                    "⚠️  Env var {} is not set in the current shell — set it before starting your AI tool.",
-                    env_var
-                )
-                .yellow()
-            );
-        }
-
         let hooks_updated = crate::hooks::setup_git_hooks(ctx.code_repo, false)?;
         if !hooks_updated.is_empty() {
             println!(
@@ -70,7 +53,38 @@ impl ThoughtsBackend for NotionBackend {
         let agent = ctx.agent_tool.ok_or_else(|| {
             anyhow::anyhow!("AI tool not configured. Run 'hyprlayer ai configure' first.")
         })?;
-        register_notion_mcp(agent, env_var)?;
+
+        // If Notion MCP is already wired up (connector/SSO, prior self-host
+        // install, or any other means), skip registration entirely. The token
+        // env-var path only matters for a fresh self-hosted install.
+        if is_notion_mcp_registered(agent) {
+            println!(
+                "{}",
+                format!(
+                    "✓ Notion MCP already wired up with {} — skipping registration",
+                    agent_label(agent)
+                )
+                .green()
+            );
+        } else {
+            let env_var = ctx
+                .effective
+                .backend_settings
+                .api_token_env
+                .as_deref()
+                .unwrap_or(DEFAULT_NOTION_TOKEN_ENV);
+            if std::env::var(env_var).is_err() {
+                println!(
+                    "{}",
+                    format!(
+                        "⚠️  Env var {} is not set in the current shell — set it before starting your AI tool.",
+                        env_var
+                    )
+                    .yellow()
+                );
+            }
+            register_notion_mcp(agent, env_var)?;
+        }
 
         if ctx
             .effective
@@ -114,17 +128,17 @@ impl ThoughtsBackend for NotionBackend {
             )),
         }
 
-        match settings.api_token_env.as_deref() {
-            Some(name) => {
-                let set = std::env::var(name).is_ok();
-                let status = if set {
-                    "✓ set".green().to_string()
-                } else {
-                    "✗ not set".red().to_string()
-                };
-                lines.push(format!("  API token env: {} ({})", name.cyan(), status));
-            }
-            None => lines.push(format!("  API token env: {}", "(not set)".bright_black())),
+        // Only render the env-var row for self-hosted installs. Connector/SSO
+        // setups have no token — rendering "(not set)" there would read as a
+        // red flag that never resolves.
+        if let Some(name) = settings.api_token_env.as_deref() {
+            let set = std::env::var(name).is_ok();
+            let status = if set {
+                "✓ set".green().to_string()
+            } else {
+                "✗ not set".red().to_string()
+            };
+            lines.push(format!("  API token env: {} ({})", name.cyan(), status));
         }
 
         lines.push(format!(
@@ -230,14 +244,24 @@ fn print_copilot_mcp_snippet(env_var: &str) {
     );
 }
 
-/// Best-effort: ask the agent's CLI whether `notion` is in its MCP server list.
-/// Returns `None` if the agent isn't Claude/OpenCode (Copilot has no CLI to
-/// probe) or the CLI isn't reachable, so callers can render `(unknown)` and
-/// skip a misleading "✗ not registered" row.
-fn mcp_registration_status(agent: Option<AgentTool>) -> Option<String> {
-    let (cli, label) = match agent? {
-        AgentTool::Claude => ("claude", "Claude Code"),
-        AgentTool::OpenCode => ("opencode", "OpenCode"),
+/// Human-readable label for an `AgentTool` — used in messages to the user.
+fn agent_label(agent: AgentTool) -> &'static str {
+    match agent {
+        AgentTool::Claude => "Claude Code",
+        AgentTool::OpenCode => "OpenCode",
+        AgentTool::Copilot => "GitHub Copilot",
+    }
+}
+
+/// Probe the agent's CLI for Notion MCP registration. Returns:
+/// - `Some(true)` if notion appears in the MCP list
+/// - `Some(false)` if the probe succeeded but notion is absent
+/// - `None` if we couldn't probe (Copilot has no CLI; or the CLI is missing
+///   or returned non-zero) — callers treat this as "unknown"
+fn probe_notion_mcp(agent: AgentTool) -> Option<bool> {
+    let cli = match agent {
+        AgentTool::Claude => "claude",
+        AgentTool::OpenCode => "opencode",
         AgentTool::Copilot => return None,
     };
     let output = Command::new(cli).args(["mcp", "list"]).output().ok()?;
@@ -245,10 +269,26 @@ fn mcp_registration_status(agent: Option<AgentTool>) -> Option<String> {
         return None;
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
-    if stdout.lines().any(|l| l.contains(NOTION_MCP_NAME)) {
-        Some(format!("✓ registered with {}", label).green().to_string())
-    } else {
-        Some(format!("✗ not registered with {}", label).red().to_string())
+    Some(stdout.lines().any(|l| l.contains(NOTION_MCP_NAME)))
+}
+
+/// True iff we can confirm Notion MCP is already registered with the agent.
+/// Unknown / un-probable cases return `false` so init falls through to the
+/// self-hosted install path (where the user can still opt out via Ctrl-C if
+/// they know they're already set up via the connector).
+pub fn is_notion_mcp_registered(agent: AgentTool) -> bool {
+    probe_notion_mcp(agent).unwrap_or(false)
+}
+
+/// Formatted status row for `thoughts status`. Wraps `probe_notion_mcp` with
+/// color + label. Returns `None` only when the probe itself couldn't run, so
+/// the status view can render `(unknown)` instead of a misleading "✗".
+fn mcp_registration_status(agent: Option<AgentTool>) -> Option<String> {
+    let agent = agent?;
+    let label = agent_label(agent);
+    match probe_notion_mcp(agent)? {
+        true => Some(format!("✓ registered with {}", label).green().to_string()),
+        false => Some(format!("✗ not registered with {}", label).red().to_string()),
     }
 }
 

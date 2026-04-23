@@ -162,18 +162,18 @@ fn print_opt(label: &str, value: Option<&str>) {
 }
 
 fn print_env_ref(env_var: Option<&str>) {
-    match env_var {
-        Some(name) => {
-            let set = std::env::var(name).is_ok();
-            let status = if set {
-                "(✓ set)".green().to_string()
-            } else {
-                "(✗ not set)".red().to_string()
-            };
-            println!("  API token env: {} {}", name.cyan(), status);
-        }
-        None => println!("  API token env: {}", "(not set)".bright_black()),
-    }
+    // Only render the env-var row for self-hosted installs. Connector/SSO
+    // setups have no token, so rendering "(not set)" would be misleading.
+    let Some(name) = env_var else {
+        return;
+    };
+    let set = std::env::var(name).is_ok();
+    let status = if set {
+        "(✓ set)".green().to_string()
+    } else {
+        "(✗ not set)".red().to_string()
+    };
+    println!("  API token env: {} {}", name.cyan(), status);
 }
 
 #[cfg(test)]
