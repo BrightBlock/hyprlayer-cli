@@ -7,6 +7,19 @@ subtask: false
 
 You are tasked with resuming work from a handoff document through an interactive process. These handoffs contain critical context, learnings, and next steps from previous work sessions that need to be understood and continued.
 
+## Storage backend dispatch
+
+Before you start, run `hyprlayer storage info --json` and parse the `backend` field. This command reads an existing handoff from storage:
+
+- **`git`**: read from `thoughts/shared/handoffs/ENG-XXXX/<name>.md` via the symlink, or the absolute path under `settings.thoughtsRepo`. If the user provides only a ticket number (e.g. `ENG-2124`), list `thoughts/shared/handoffs/ENG-2124/` and pick the most recent file by the `YYYY-MM-DD_HH-MM-SS` prefix. For `backend: git` you may first run `hyprlayer thoughts sync` to ensure latest handoffs are pulled.
+- **`obsidian`**: read via the project's `thoughts/shared/handoffs/...` symlink (identical to git), or via absolute path under `settings.contentRoot`. Skip any sync step — Obsidian has no pull.
+- **`notion`**: use `mcp__notion__retrieve-page` with the page ID the user provides, or query via `mcp__notion__query-database` filtered by `type = handoff` + `project = <mappedName>` + (optional) `ticket = ENG-XXXX`, sorted by `date` descending, to find the most recent handoff for a ticket.
+- **`anytype`**: use `mcp__anytype__API-get-object` with the object ID + `settings.spaceId`, or `mcp__anytype__API-list-objects` filtered by `type = handoff`, sorted by `date` descending.
+
+If the referenced handoff points to related artifacts (plan, research docs), apply the same dispatch logic to retrieve those.
+
+If `hyprlayer storage info` is not available or the project isn't mapped, proceed with `git` behavior using relative `thoughts/shared/handoffs/...` paths.
+
 ## Initial Response
 
 When this command is invoked:
@@ -19,8 +32,8 @@ When this command is invoked:
    - Then propose a course of action to the user and confirm, or ask for clarification on direction.
 
 2. **If a ticket number (like ENG-XXXX) was provided**:
-   - run `hyprlayer thoughts sync` to ensure your `thoughts/` directory is up to date.
-   - locate the most recent handoff document for the ticket. Tickets will be located in `thoughts/shared/handoffs/ENG-XXXX` where `ENG-XXXX` is the ticket number. e.g. for `ENG-2124` the handoffs would be in `thoughts/shared/handoffs/ENG-2124/`. **List this directory's contents.**
+   - For `backend: git`, run `hyprlayer thoughts sync` to ensure your `thoughts/` directory is up to date. For `obsidian`/`notion`/`anytype`, skip this step.
+   - Locate the most recent handoff per the storage backend dispatch above. For `git`/`obsidian`, tickets will be located in `thoughts/shared/handoffs/ENG-XXXX/`. **List this directory's contents.** For `notion`/`anytype`, query the database/type filtered by `type = handoff` + `ticket = ENG-XXXX` sorted by `date` descending.
    - There may be zero, one or multiple files in the directory.
    - **If there are zero files in the directory, or the directory does not exist**: tell the user: "I'm sorry, I can't seem to find that handoff document. Can you please provide me with a path to it?"
    - **If there is only one file in the directory**: proceed with that handoff

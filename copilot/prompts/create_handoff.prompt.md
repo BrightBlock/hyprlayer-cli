@@ -7,6 +7,20 @@ agent: agent
 
 You are tasked with writing a handoff document to hand off your work to another agent in a new session. You will create a handoff document that is thorough, but also **concise**. The goal is to compact and summarize your context without losing any of the key details of what you're working on.
 
+## Storage backend dispatch
+
+Before you start, run `hyprlayer storage info --json` and parse the output. The `backend` field tells you where to save the handoff. The `schema` field lists required metadata — **populate every required field** regardless of backend. If the `hyprlayer` binary is not available or the project isn't mapped, proceed with the `git` branch using relative `thoughts/shared/handoffs/...` paths.
+
+### Where to save
+
+- **`git`**: write to `thoughts/shared/handoffs/ENG-XXXX/<title>.md` (or `thoughts/shared/handoffs/general/<title>.md` if no ticket) via the symlink. Prepend the required metadata as YAML frontmatter. At the end, run `hyprlayer thoughts sync` so the handoff is available to the resuming session.
+- **`obsidian`**: the project's `thoughts/` symlinks point into the user's vault. `thoughts/shared/handoffs/ENG-XXXX/<title>.md` works for writes. Prepend YAML frontmatter — Obsidian's Properties panel picks it up. Do NOT run sync.
+- **`notion`**: do NOT write local files. Ensure the target database exists (retrieve-database → create-database if missing → persist with `hyprlayer storage set-database-id`), then create a row via `mcp__notion__create-page`, populating every required schema field as a typed property; the handoff narrative becomes the body. If the Notion MCP tools are not available, tell the user to run `hyprlayer thoughts init --backend notion` and stop.
+- **`anytype`**: do NOT write local files. Ensure the target type exists (get-type → create-type + create-property if missing → persist with `hyprlayer storage set-type-id`), then create an object via `mcp__anytype__API-create-object`, populating every required schema field. If the Anytype MCP tools are not available, tell the user to start the Anytype app and run `hyprlayer thoughts init --backend anytype`, then stop.
+
+### Required metadata
+
+Populate every `required: true` field from `storage info`'s `schema` array. For this command: `type: handoff`, `status: active`, `project: <mappedName>`, `scope: shared`, `date: YYYY-MM-DD`, `author` from `hyprlayer thoughts config --json`, `ticket` if referenced, 2-5 `tags`, and a `title` like `"ENG-XXXX: short description"`. Legal `select` values are in `schema.options`. Render as YAML frontmatter for `git`/`obsidian`; typed properties for `notion`/`anytype`.
 
 ## Process
 ### 1. Filepath & Metadata
@@ -67,22 +81,22 @@ type: implementation_strategy
 ---
 
 ### 3. Approve and Sync
-Run `hyprlayer thoughts sync` to save the document.
+For `backend: git`, run `hyprlayer thoughts sync` so the handoff is pushed. For `obsidian`/`notion`/`anytype`, skip the sync.
 
-Once this is completed, you should respond to the user with the template between <template_response></template_response> XML tags. do NOT include the tags in your response.
+Once this is completed, you should respond to the user with the template between <template_response></template_response> XML tags. do NOT include the tags in your response. The "path" field should be the local filepath for git/obsidian or the page/object ID for notion/anytype.
 
 <template_response>
-Handoff created and synced! You can resume from this handoff in a new session with the following command:
+Handoff created! You can resume from this handoff in a new session with the following command:
 
 ```bash
-/resume_handoff path/to/handoff.md
+/resume_handoff <path or id>
 ```
 </template_response>
 
 for example (between <example_response></example_response> XML tags - do NOT include these tags in your actual response to the user)
 
 <example_response>
-Handoff created and synced! You can resume from this handoff in a new session with the following command:
+Handoff created! You can resume from this handoff in a new session with the following command:
 
 ```bash
 /resume_handoff thoughts/shared/handoffs/ENG-2166/2025-01-08_13-44-55_ENG-2166_create-context-compaction.md

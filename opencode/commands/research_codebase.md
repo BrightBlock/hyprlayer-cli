@@ -8,6 +8,21 @@ subtask: false
 
 You are tasked with conducting comprehensive research across the codebase to answer user questions by delegating to sub-agents and synthesizing their findings.
 
+## Storage backend dispatch
+
+Before you start, run `hyprlayer storage info --json` and parse the output. The `backend` field tells you where to save the research document. The `schema` field lists required metadata — **populate every required field** regardless of backend. If the `hyprlayer` binary is not available or the project isn't mapped, proceed with the `git` branch using relative `thoughts/shared/research/...` paths.
+
+### Where to save
+
+- **`git`**: write to `thoughts/shared/research/<title>.md` via the symlink. Prepend the required metadata as YAML frontmatter. `settings.thoughtsRepo` gives the absolute path. At the end, remind the user to run `hyprlayer thoughts sync`.
+- **`obsidian`**: the project's `thoughts/` symlinks point into the user's vault, so `thoughts/shared/research/<title>.md` works for writes. Prepend YAML frontmatter — Obsidian's Properties panel picks it up. Do NOT remind the user to sync.
+- **`notion`**: do NOT write local files. Ensure the target database exists (retrieve-database → create-database if missing → persist with `hyprlayer storage set-database-id`). Create the research entry via `mcp__notion__create-page` with `parent.database_id = <id>`, populating every required schema field as a typed property. If the Notion MCP tools are not available, tell the user to run `hyprlayer thoughts init --backend notion` and stop.
+- **`anytype`**: do NOT write local files. Ensure the target type exists (get-type → create-type + create-property if missing → persist with `hyprlayer storage set-type-id`). Create an object via `mcp__anytype__API-create-object`, populating every required schema field. If the Anytype MCP tools are not available, tell the user to start the Anytype app and run `hyprlayer thoughts init --backend anytype`, then stop.
+
+### Required metadata
+
+Populate every `required: true` field from `storage info`'s `schema` array. For this command: `type: research`, `status: draft` (or `active` if ongoing), `project: <mappedName>`, `scope: shared`, `date: YYYY-MM-DD`, `author` from `hyprlayer thoughts config --json`, `ticket` if referenced, 2-5 `tags` naming the components researched, and `title` matching the research question. Legal `select` values are in `schema.options`. Render as YAML frontmatter for `git`/`obsidian`; typed properties for `notion`/`anytype`.
+
 ## CRITICAL: YOUR ONLY JOB IS TO DOCUMENT AND EXPLAIN THE CODEBASE AS IT EXISTS TODAY
 - DO NOT suggest improvements or changes unless the user explicitly asks for them
 - DO NOT perform root cause analysis unless the user explicitly asks for them
@@ -83,14 +98,10 @@ Then wait for the user's research query.
 
 5. **Gather metadata for the research document:**
    - generate all relevant metadata
-   - Filename: `thoughts/shared/research/YYYY-MM-DD-ENG-XXXX-description.md`
-     - Format: `YYYY-MM-DD-ENG-XXXX-description.md` where:
-       - YYYY-MM-DD is today's date
-       - ENG-XXXX is the ticket number (omit if no ticket)
-       - description is a brief kebab-case description of the research topic
-     - Examples:
-       - With ticket: `2025-01-08-ENG-1478-parent-child-tracking.md`
-       - Without ticket: `2025-01-08-authentication-flow.md`
+   - Determine the artifact title as `YYYY-MM-DD-ENG-XXXX-description` (omit the ticket chunk if there is none)
+   - Destination is resolved by the storage backend dispatch:
+     - For `git`/`obsidian`: `thoughts/shared/research/<title>.md`
+     - For `notion`/`anytype`: a database row / object with `type: research`
 
 6. **Generate research document:**
    - Use the metadata gathered in step 4
@@ -160,19 +171,19 @@ Then wait for the user's research query.
      - Create permalinks: `https://github.com/{owner}/{repo}/blob/{commit}/{file}#L{line}`
    - Replace local file references with permalinks in the document
 
-8. **Sync and present findings:**
-   - Run `hyprlayer thoughts sync` to sync the thoughts directory
+8. **Sync (git only) and present findings:**
+   - For `backend: git`, run `hyprlayer thoughts sync`. Skip for `obsidian`/`notion`/`anytype`.
    - Present a concise summary of findings to the user
    - Include key file references for easy navigation
    - Ask if they have follow-up questions or need clarification
 
 9. **Handle follow-up questions:**
-   - If the user has follow-up questions, append to the same research document
-   - Update the frontmatter fields `last_updated` and `last_updated_by` to reflect the update
-   - Add `last_updated_note: "Added follow-up research for [brief description]"` to frontmatter
+   - If the user has follow-up questions, append to the same research document (edit the file for `git`/`obsidian`; use `mcp__notion__update-page` / `mcp__anytype__API-update-object` for notion/anytype)
+   - Update `last_updated` and `last_updated_by` (frontmatter or properties)
+   - Add `last_updated_note: "Added follow-up research for [brief description]"`
    - Add a new section: `## Follow-up Research [timestamp]`
    - Delegate to sub-agents as needed for additional investigation
-   - Continue updating the document and syncing
+   - For `backend: git`, sync again after updates
 
 ## Important notes:
 - Always delegate research to sub-agents (`@codebase-locator`, `@codebase-analyzer`, `@thoughts-locator`, etc.) to maximize efficiency
