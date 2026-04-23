@@ -4,7 +4,7 @@ use std::path::MAIN_SEPARATOR_STR as SEP;
 
 use crate::backends::{self, BackendContext};
 use crate::cli::StatusArgs;
-use crate::config::{BackendKind, get_current_repo_path};
+use crate::config::get_current_repo_path;
 
 pub fn status(args: StatusArgs) -> Result<()> {
     println!("{}", "Thoughts Repository Status".blue());
@@ -36,11 +36,7 @@ pub fn status(args: StatusArgs) -> Result<()> {
         println!("{}", "Current Repository:".yellow());
         println!("  Path: {}", current_repo_str.cyan());
 
-        // The `Thoughts directory` and `Status: ✓/✗ Initialized` rows describe
-        // project-level `thoughts/` symlinks, which only local-filesystem
-        // backends (git, obsidian) create. Notion/Anytype content lives in
-        // remote databases — these rows would be misleading there.
-        if backend_uses_project_symlinks(effective.backend) {
+        if effective.backend.uses_filesystem() {
             println!(
                 "  Thoughts directory: {}{SEP}{}",
                 effective.repos_dir.cyan(),
@@ -59,7 +55,8 @@ pub fn status(args: StatusArgs) -> Result<()> {
     }
     println!();
 
-    let ctx = BackendContext::new(&current_repo, &effective);
+    let agent_tool = hyprlayer_config.ai.as_ref().and_then(|a| a.agent_tool);
+    let ctx = BackendContext::new(&current_repo, &effective).with_agent_tool(agent_tool);
     let backend = backends::for_kind(effective.backend);
     let report = backend.status(&ctx)?;
     for line in report.lines {
@@ -67,28 +64,4 @@ pub fn status(args: StatusArgs) -> Result<()> {
     }
 
     Ok(())
-}
-
-/// True iff the backend creates `<code_repo>/thoughts/` symlinks on init.
-/// Top-level status rendering uses this to decide whether to print the
-/// symlink-existence rows.
-fn backend_uses_project_symlinks(kind: BackendKind) -> bool {
-    matches!(kind, BackendKind::Git | BackendKind::Obsidian)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn git_and_obsidian_use_project_symlinks() {
-        assert!(backend_uses_project_symlinks(BackendKind::Git));
-        assert!(backend_uses_project_symlinks(BackendKind::Obsidian));
-    }
-
-    #[test]
-    fn notion_and_anytype_do_not_use_project_symlinks() {
-        assert!(!backend_uses_project_symlinks(BackendKind::Notion));
-        assert!(!backend_uses_project_symlinks(BackendKind::Anytype));
-    }
 }

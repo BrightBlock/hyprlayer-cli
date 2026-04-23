@@ -16,7 +16,8 @@ pub fn sync(args: SyncArgs) -> Result<()> {
     let current_repo_str = current_repo.display().to_string();
     let effective = thoughts_config.effective_config_for(&current_repo_str);
 
-    let ctx = BackendContext::new(&current_repo, &effective);
+    let agent_tool = hyprlayer_config.ai.as_ref().and_then(|a| a.agent_tool);
+    let ctx = BackendContext::new(&current_repo, &effective).with_agent_tool(agent_tool);
     let backend = backends::for_kind(effective.backend);
     backend.sync(&ctx, message.as_deref())?;
 

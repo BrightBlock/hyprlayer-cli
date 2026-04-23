@@ -25,6 +25,13 @@ impl BackendKind {
             BackendKind::Anytype => "anytype",
         }
     }
+
+    /// Local-filesystem backends create `<code_repo>/thoughts/` symlinks and
+    /// write markdown to disk. Flat-list backends (notion, anytype) delegate
+    /// all I/O to MCP tools the agent invokes.
+    pub fn uses_filesystem(self) -> bool {
+        matches!(self, BackendKind::Git | BackendKind::Obsidian)
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]

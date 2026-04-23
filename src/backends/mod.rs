@@ -1,6 +1,7 @@
 use anyhow::Result;
 use std::path::Path;
 
+use crate::agents::AgentTool;
 use crate::config::{BackendKind, EffectiveConfig};
 
 pub mod common;
@@ -12,6 +13,9 @@ pub mod schema;
 pub struct BackendContext<'a> {
     pub code_repo: &'a Path,
     pub effective: &'a EffectiveConfig,
+    /// The active AI tool, when configured. Only backends that register MCP
+    /// servers (notion, anytype) need this; others ignore it.
+    pub agent_tool: Option<AgentTool>,
 }
 
 impl<'a> BackendContext<'a> {
@@ -19,7 +23,13 @@ impl<'a> BackendContext<'a> {
         Self {
             code_repo,
             effective,
+            agent_tool: None,
         }
+    }
+
+    pub fn with_agent_tool(mut self, agent_tool: Option<AgentTool>) -> Self {
+        self.agent_tool = agent_tool;
+        self
     }
 }
 

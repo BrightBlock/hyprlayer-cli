@@ -4,13 +4,18 @@ use std::process::Command;
 
 use super::{BackendContext, StatusReport, ThoughtsBackend};
 use crate::agents::AgentTool;
-use crate::config::{BackendKind, HyprlayerConfig, get_default_config_path};
+use crate::config::BackendKind;
 
 /// The Notion MCP server command the agent tool invokes.
 /// Pinned here so we don't depend on user-configurable runtime paths.
 const NOTION_MCP_COMMAND: &str = "npx";
 const NOTION_MCP_ARGS: &[&str] = &["-y", "@notionhq/notion-mcp-server"];
 const NOTION_MCP_NAME: &str = "notion";
+
+/// Default name of the env var holding the Notion integration token when the
+/// user doesn't specify one. Referenced from config defaults, init prompts,
+/// and the Copilot settings snippet to avoid drift.
+pub const DEFAULT_NOTION_TOKEN_ENV: &str = "NOTION_TOKEN";
 
 pub struct NotionBackend;
 
@@ -25,7 +30,7 @@ impl ThoughtsBackend for NotionBackend {
             .backend_settings
             .api_token_env
             .as_deref()
-            .unwrap_or("NOTION_TOKEN");
+            .unwrap_or(DEFAULT_NOTION_TOKEN_ENV);
         if std::env::var(env_var).is_err() {
             println!(
                 "{}",
@@ -37,11 +42,6 @@ impl ThoughtsBackend for NotionBackend {
             );
         }
 
-        // Install the pre-commit guard and clean up any stale post-commit
-        // auto-sync hook from a previous local-filesystem backend. Notion has
-        // no local sync, so the post-commit hook would just fire on every
-        // commit and no-op. `setup_git_hooks` silently returns an empty Vec
-        // when the user isn't in a git repo — Notion users often aren't.
         let hooks_updated = crate::hooks::setup_git_hooks(ctx.code_repo, false)?;
         if !hooks_updated.is_empty() {
             println!(
@@ -50,11 +50,11 @@ impl ThoughtsBackend for NotionBackend {
             );
         }
 
-        // Warn (don't delete) if stale `thoughts/` symlinks exist from a
-        // previous git/obsidian init — deleting them would destroy the user's
-        // path to old content; leaving them silent would be confusing.
+        // Use `symlink_metadata` (not `exists`) so broken symlinks — the most
+        // likely "stale" shape after the user deletes the old thoughts repo —
+        // still trip the warning.
         let stale = ctx.code_repo.join("thoughts");
-        if stale.exists() {
+        if stale.symlink_metadata().is_ok() {
             println!(
                 "{}",
                 format!(
@@ -67,8 +67,10 @@ impl ThoughtsBackend for NotionBackend {
             );
         }
 
-        let agent = load_agent_tool()?;
-        register_notion_mcp(&agent, env_var)?;
+        let agent = ctx.agent_tool.ok_or_else(|| {
+            anyhow::anyhow!("AI tool not configured. Run 'hyprlayer ai configure' first.")
+        })?;
+        register_notion_mcp(agent, env_var)?;
 
         if ctx
             .effective
@@ -127,30 +129,18 @@ impl ThoughtsBackend for NotionBackend {
 
         lines.push(format!(
             "  MCP server: {}",
-            mcp_registration_status().unwrap_or_else(|| "(unknown)".bright_black().to_string())
+            mcp_registration_status(ctx.agent_tool)
+                .unwrap_or_else(|| "(unknown)".bright_black().to_string())
         ));
 
         Ok(StatusReport { lines })
     }
 }
 
-fn load_agent_tool() -> Result<AgentTool> {
-    let config_path = get_default_config_path()?;
-    if !config_path.exists() {
-        return Err(anyhow::anyhow!(
-            "No hyprlayer config found. Run 'hyprlayer ai configure' first."
-        ));
-    }
-    let config = HyprlayerConfig::load(&config_path)?;
-    config.ai.and_then(|a| a.agent_tool).ok_or_else(|| {
-        anyhow::anyhow!("AI tool not configured. Run 'hyprlayer ai configure' first.")
-    })
-}
-
-fn register_notion_mcp(agent: &AgentTool, env_var: &str) -> Result<()> {
+fn register_notion_mcp(agent: AgentTool, env_var: &str) -> Result<()> {
     match agent {
-        AgentTool::Claude => run_claude_mcp_add(env_var),
-        AgentTool::OpenCode => run_opencode_mcp_add(env_var),
+        AgentTool::Claude => run_mcp_add("claude", &["--scope", "user"], "Claude Code", env_var),
+        AgentTool::OpenCode => run_mcp_add("opencode", &[], "OpenCode", env_var),
         AgentTool::Copilot => {
             print_copilot_mcp_snippet(env_var);
             Ok(())
@@ -158,17 +148,21 @@ fn register_notion_mcp(agent: &AgentTool, env_var: &str) -> Result<()> {
     }
 }
 
-fn run_claude_mcp_add(env_var: &str) -> Result<()> {
+/// Register the Notion MCP server with a Claude-style CLI (`<cli> mcp add …`).
+/// Shared by Claude Code and OpenCode, which differ only in their extra flags
+/// (Claude needs `--scope user`; OpenCode has no equivalent) and the friendly
+/// label printed to the user.
+fn run_mcp_add(cli: &str, extra_args: &[&str], label: &str, env_var: &str) -> Result<()> {
     let env_pair = format!("{}=${}", env_var, env_var);
-    // Claude's variadic `-e` consumes arguments until the next flag or `--`,
-    // so the server name must come BEFORE `-e` or it's mis-parsed as an env
-    // value (yes, even claude's own docs example gets this wrong).
-    let mut cmd = Command::new("claude");
-    cmd.arg("mcp")
-        .arg("add")
-        .arg("--scope")
-        .arg("user")
-        .arg(NOTION_MCP_NAME)
+    let mut cmd = Command::new(cli);
+    cmd.arg("mcp").arg("add");
+    for a in extra_args {
+        cmd.arg(a);
+    }
+    // Variadic `-e` (on Claude) consumes arguments until the next flag or
+    // `--`, so the server name must come BEFORE `-e` — even Claude's own
+    // docs example gets this wrong.
+    cmd.arg(NOTION_MCP_NAME)
         .arg("-e")
         .arg(&env_pair)
         .arg("--")
@@ -179,69 +173,33 @@ fn run_claude_mcp_add(env_var: &str) -> Result<()> {
 
     let output = cmd.output().map_err(|e| {
         anyhow::anyhow!(
-            "Failed to run 'claude mcp add'. Is the Claude Code CLI installed on PATH? ({})",
+            "Failed to run '{} mcp add'. Is the {} CLI installed on PATH? ({})",
+            cli,
+            label,
             e
         )
     })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        // Already-registered is not a hard failure — Claude's CLI returns
-        // non-zero with a clear message; surface it but don't abort init.
         if stderr.contains("already") {
             println!(
                 "{}",
-                "ℹ️  Notion MCP server was already registered with Claude Code".bright_black()
+                format!(
+                    "ℹ️  Notion MCP server was already registered with {}",
+                    label
+                )
+                .bright_black()
             );
             return Ok(());
         }
-        return Err(anyhow::anyhow!("claude mcp add failed: {}", stderr.trim()));
+        return Err(anyhow::anyhow!("{} mcp add failed: {}", cli, stderr.trim()));
     }
 
     println!(
         "{}",
-        "✓ Registered Notion MCP server with Claude Code".green()
+        format!("✓ Registered Notion MCP server with {}", label).green()
     );
-    Ok(())
-}
-
-fn run_opencode_mcp_add(env_var: &str) -> Result<()> {
-    let env_pair = format!("{}=${}", env_var, env_var);
-    let mut cmd = Command::new("opencode");
-    cmd.arg("mcp")
-        .arg("add")
-        .arg(NOTION_MCP_NAME)
-        .arg("-e")
-        .arg(&env_pair)
-        .arg("--")
-        .arg(NOTION_MCP_COMMAND);
-    for a in NOTION_MCP_ARGS {
-        cmd.arg(a);
-    }
-
-    let output = cmd.output().map_err(|e| {
-        anyhow::anyhow!(
-            "Failed to run 'opencode mcp add'. Is the OpenCode CLI installed on PATH? ({})",
-            e
-        )
-    })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("already") {
-            println!(
-                "{}",
-                "ℹ️  Notion MCP server was already registered with OpenCode".bright_black()
-            );
-            return Ok(());
-        }
-        return Err(anyhow::anyhow!(
-            "opencode mcp add failed: {}",
-            stderr.trim()
-        ));
-    }
-
-    println!("{}", "✓ Registered Notion MCP server with OpenCode".green());
     Ok(())
 }
 
@@ -262,27 +220,35 @@ fn print_copilot_mcp_snippet(env_var: &str) {
   "notion": {{
     "command": "{}",
     "args": [{}],
-    "env": {{ "NOTION_TOKEN": "${{env:{}}}" }}
+    "env": {{ "{}": "${{env:{}}}" }}
   }}
 "#,
         NOTION_MCP_COMMAND,
         args_json.join(", "),
+        env_var,
         env_var
     );
 }
 
-/// Best-effort: ask the Claude CLI whether `notion` is in its MCP server list.
-/// Returns None if the CLI isn't reachable so callers can render `(unknown)`.
-fn mcp_registration_status() -> Option<String> {
-    let output = Command::new("claude").args(["mcp", "list"]).output().ok()?;
+/// Best-effort: ask the agent's CLI whether `notion` is in its MCP server list.
+/// Returns `None` if the agent isn't Claude/OpenCode (Copilot has no CLI to
+/// probe) or the CLI isn't reachable, so callers can render `(unknown)` and
+/// skip a misleading "✗ not registered" row.
+fn mcp_registration_status(agent: Option<AgentTool>) -> Option<String> {
+    let (cli, label) = match agent? {
+        AgentTool::Claude => ("claude", "Claude Code"),
+        AgentTool::OpenCode => ("opencode", "OpenCode"),
+        AgentTool::Copilot => return None,
+    };
+    let output = Command::new(cli).args(["mcp", "list"]).output().ok()?;
     if !output.status.success() {
         return None;
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     if stdout.lines().any(|l| l.contains(NOTION_MCP_NAME)) {
-        Some("✓ registered with Claude Code".green().to_string())
+        Some(format!("✓ registered with {}", label).green().to_string())
     } else {
-        Some("✗ not registered with Claude Code".red().to_string())
+        Some(format!("✗ not registered with {}", label).red().to_string())
     }
 }
 
@@ -328,6 +294,14 @@ mod tests {
         let joined = report.lines.join("\n");
         assert!(joined.contains("p1"));
         assert!(joined.contains("HYPRLAYER_TEST_NOTION_TOKEN_PRESENT"));
+    }
+
+    #[test]
+    fn mcp_registration_status_skips_copilot() {
+        // Copilot has no CLI to probe — returning None lets the status view
+        // render `(unknown)` instead of a misleading `✗ not registered`.
+        assert!(mcp_registration_status(Some(AgentTool::Copilot)).is_none());
+        assert!(mcp_registration_status(None).is_none());
     }
 
     #[test]

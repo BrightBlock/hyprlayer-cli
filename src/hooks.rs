@@ -10,12 +10,8 @@ const HOOK_VERSION: &str = "1";
 /// Install the pre-commit hook (always) and, when `include_auto_sync` is true,
 /// the post-commit hook. With `include_auto_sync = false`, any previously-
 /// installed hyprlayer post-commit is removed so backend switches don't leave
-/// dead hooks firing on every commit.
-///
-/// Returns `Ok(vec![])` if `repo_path` is not inside a git working tree —
-/// Notion/Anytype users routinely run from non-git directories and shouldn't
-/// see a failure (or, worse, a spurious `hooks/` directory created next to
-/// their project).
+/// dead hooks firing on every commit. Returns `Ok(vec![])` if `repo_path`
+/// isn't inside a git working tree (safe to call from non-filesystem backends).
 pub fn setup_git_hooks(repo_path: &Path, include_auto_sync: bool) -> Result<Vec<String>> {
     let Some(hooks_dir) = get_hooks_dir(repo_path)? else {
         return Ok(Vec::new());

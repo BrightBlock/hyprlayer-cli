@@ -108,7 +108,7 @@ pub fn init(args: InitArgs) -> Result<()> {
     hyprlayer_config.thoughts = Some(refreshed);
 
     let resolved = hyprlayer_config.thoughts_mut().resolve_dirs(&profile);
-    let mapped_name = if backend_uses_filesystem(backend_kind) {
+    let mapped_name = if backend_kind.uses_filesystem() {
         let content_root = resolve_content_root(backend_kind, &resolved)?;
         ensure_content_root(&content_root)?;
 
@@ -260,7 +260,7 @@ fn init_non_interactive(
             .api_token_env
             .clone()
             .or_else(|| existing_profile.backend_settings.api_token_env.clone())
-            .unwrap_or_else(|| "NOTION_TOKEN".to_string());
+            .unwrap_or_else(|| crate::backends::notion::DEFAULT_NOTION_TOKEN_ENV.to_string());
         let db_id = notion_flags
             .database_id
             .clone()
@@ -290,7 +290,7 @@ fn init_non_interactive(
     let resolved = hyprlayer_config.thoughts_mut().resolve_dirs(&profile);
     let mapped_name = sanitize_directory_name(&directory);
 
-    if backend_uses_filesystem(backend_kind) {
+    if backend_kind.uses_filesystem() {
         let content_root = resolve_content_root(backend_kind, &resolved)?;
         ensure_content_root(&content_root)?;
 
@@ -439,7 +439,7 @@ fn prompt_for_thoughts_fields(
         }
     };
 
-    let (repos_dir, global_dir) = if backend_uses_filesystem(backend_kind) {
+    let (repos_dir, global_dir) = if backend_kind.uses_filesystem() {
         println!();
         let default_repos_dir = if existing_profile.repos_dir.is_empty() {
             "repos".to_string()
@@ -477,7 +477,7 @@ fn prompt_for_thoughts_fields(
 
     let user = prompt_for_username(&theme, &existing.user)?;
 
-    if backend_uses_filesystem(backend_kind) {
+    if backend_kind.uses_filesystem() {
         println!();
         println!("{}", "Creating thoughts structure:".yellow());
         let preview = ProfileConfig {
@@ -530,10 +530,6 @@ fn prompt_for_thoughts_fields(
     Ok(out)
 }
 
-fn backend_uses_filesystem(kind: BackendKind) -> bool {
-    matches!(kind, BackendKind::Git | BackendKind::Obsidian)
-}
-
 fn prompt_notion_settings(
     theme: &ColorfulTheme,
     existing: &BackendSettings,
@@ -558,7 +554,7 @@ fn prompt_notion_settings(
     let default_env = existing
         .api_token_env
         .clone()
-        .unwrap_or_else(|| "NOTION_TOKEN".to_string());
+        .unwrap_or_else(|| crate::backends::notion::DEFAULT_NOTION_TOKEN_ENV.to_string());
     let api_token_env = match flags.api_token_env.clone() {
         Some(v) => v,
         None => Input::<String>::with_theme(theme)
@@ -860,7 +856,8 @@ fn dispatch_backend_init(
         .expect("thoughts config must exist here")
         .effective_config_for(&current_repo_str);
 
-    let ctx = BackendContext::new(current_repo, &effective);
+    let agent_tool = config.ai.as_ref().and_then(|a| a.agent_tool);
+    let ctx = BackendContext::new(current_repo, &effective).with_agent_tool(agent_tool);
     let backend_impl = backends::for_kind(backend_kind);
     backend_impl.init(&ctx)?;
 
@@ -888,7 +885,7 @@ fn print_summary(
     println!("Backend: {}", backend_kind.as_str().cyan());
     println!();
 
-    if backend_uses_filesystem(backend_kind) {
+    if backend_kind.uses_filesystem() {
         println!("Repository structure created:");
         println!("  {}{SEP}", current_repo.display().to_string().cyan());
         println!("    └── thoughts{SEP}");

@@ -27,7 +27,7 @@ pub fn set_database_id(args: StorageSetDatabaseIdArgs) -> Result<()> {
         .and_then(|m: &RepoMapping| m.profile())
         .map(|s| s.to_string());
 
-    let (backend_kind, updated) = match profile_name.as_deref() {
+    let (backend, settings) = match profile_name.as_deref() {
         Some(name) => {
             let profile = thoughts.profiles.get_mut(name).ok_or_else(|| {
                 anyhow::anyhow!(
@@ -35,28 +35,17 @@ pub fn set_database_id(args: StorageSetDatabaseIdArgs) -> Result<()> {
                     name
                 )
             })?;
-            if profile.backend != BackendKind::Notion {
-                return Err(anyhow::anyhow!(
-                    "Active backend is '{}', but set-database-id is only valid for notion",
-                    profile.backend.as_str()
-                ));
-            }
-            profile.backend_settings.database_id = Some(id.clone());
-            (profile.backend, true)
+            (profile.backend, &mut profile.backend_settings)
         }
-        None => {
-            if thoughts.backend != BackendKind::Notion {
-                return Err(anyhow::anyhow!(
-                    "Active backend is '{}', but set-database-id is only valid for notion",
-                    thoughts.backend.as_str()
-                ));
-            }
-            thoughts.backend_settings.database_id = Some(id.clone());
-            (thoughts.backend, true)
-        }
+        None => (thoughts.backend, &mut thoughts.backend_settings),
     };
-    debug_assert_eq!(backend_kind, BackendKind::Notion);
-    debug_assert!(updated);
+    if backend != BackendKind::Notion {
+        return Err(anyhow::anyhow!(
+            "Active backend is '{}', but set-database-id is only valid for notion",
+            backend.as_str()
+        ));
+    }
+    settings.database_id = Some(id.clone());
 
     hyprlayer_config.save(&config_path)?;
     println!(
