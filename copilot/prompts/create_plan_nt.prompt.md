@@ -3,6 +3,8 @@ description: Create implementation plans with thorough research (no thoughts dir
 agent: agent
 ---
 
+> **Path convention**: the `thoughts/shared/...` paths in examples and templates below are literal on `git`/`obsidian` backends. On `notion`/`anytype`, substitute the matching `notion://<id>` / `anytype://<id>` identifier that `hyprlayer storage info` or `thoughts-locator` returns.
+
 # Implementation Plan
 
 You are tasked with creating detailed implementation plans through an interactive, iterative process. You should be skeptical, thorough, and work collaboratively with the user to produce high-quality technical specifications.

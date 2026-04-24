@@ -1,7 +1,9 @@
 ---
-description: Implement technical plans from thoughts/shared/plans with verification
+description: Implement technical plans with verification
 agent: agent
 ---
+
+> **Path convention**: the `thoughts/shared/...` paths in examples and templates below are literal on `git`/`obsidian` backends. On `notion`/`anytype`, substitute the matching `notion://<id>` / `anytype://<id>` identifier that `hyprlayer storage info` or `thoughts-locator` returns.
 
 # Implement Plan
 

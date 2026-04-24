@@ -3,6 +3,8 @@ description: Document codebase as-is with thoughts directory for historical cont
 model: opus
 ---
 
+> **Path convention**: the `thoughts/shared/...` paths in examples and templates below are literal on `git`/`obsidian` backends. On `notion`/`anytype`, substitute the matching `notion://<id>` / `anytype://<id>` identifier that `hyprlayer storage info` or `thoughts-locator` returns.
+
 # Research Codebase
 
 You are tasked with conducting comprehensive research across the codebase to answer user questions by spawning parallel sub-agents and synthesizing their findings.
@@ -21,11 +23,12 @@ Before you start, run `hyprlayer storage info --json` and parse the output. The 
   3. Run `hyprlayer storage set-database-id <returned_id>` to persist.
   4. Create a database row using `mcp__notion__create-page` with `parent.database_id = <id>`. Populate every required schema field as a typed property; the body receives the narrative content.
   If the Notion MCP tools are not available, tell the user to run `hyprlayer thoughts init --backend notion` and stop.
-- **`anytype`**: do NOT write local files. Ensure the target type exists:
-  1. If `settings.typeId` is populated, call `mcp__anytype__API-get-type` with that ID + `settings.spaceId`. If it resolves, skip to step 4.
-  2. If `typeId` is missing or resolution fails, call `mcp__anytype__API-create-type` + `mcp__anytype__API-create-property` for each schema field.
-  3. Run `hyprlayer storage set-type-id <returned_id>` to persist.
-  4. Create an object of that type using `mcp__anytype__API-create-object`. Populate every required schema field as a property.
+- **`anytype`**: do NOT write local files. Ensure the target type + properties + tags exist before creating the object:
+  1. **Resolve the type.** If `settings.typeId` is populated, call `mcp__anytype__API-get-type` with that ID + `settings.spaceId`. If it resolves, skip to step 4. If it returns not-found / 404 / 410, treat as missing and fall through.
+  2. **Create the type + properties.** Call `mcp__anytype__API-create-type` in `spaceId` with `name: "Hyprlayer Thought"`, `plural_name: "Hyprlayer Thoughts"`, `key: "hyprlayer_thought"`, `layout: "basic"`. Then create each schema field (except `title` — maps to `name`) via `mcp__anytype__API-create-property` with `key: "hyprlayer_<field>"`. For `select` / `multi_select` fields, pass `tags: [...]` in the create-property call with one entry per `schema.options` value. Treat "property key already exists" as success. **Then call `mcp__anytype__API-update-type`** with `properties: [...]` listing every field — this is what links the properties to the type so the UI renders them.
+  3. **Persist the type ID.** Run `hyprlayer storage set-type-id <returned_id>`. Proceed with step 4 using the new ID.
+  4. **Ensure select tags exist** for this write's values. For `type`, `status`, `scope`, and each `tags` value, call `mcp__anytype__API-list-tags` and create missing ones via `mcp__anytype__API-create-tag`. Record returned tag IDs — the object-create call takes IDs, not string names.
+  5. **Create the object.** `mcp__anytype__API-create-object` with `type_key: "hyprlayer_thought"`, `space_id`, `name: <title>`, `body: <narrative>`, and a `properties` array of typed values (`select: <tag_id>`, `multi_select: [<tag_id>, …]`, `date: "YYYY-MM-DD"`, `text: "…"`). Do NOT dump metadata as frontmatter in the body — Anytype's search relies on typed properties.
   If the Anytype MCP tools are not available, tell the user to start the Anytype app and run `hyprlayer thoughts init --backend anytype`, then stop.
 
 ### Required metadata

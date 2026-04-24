@@ -3,6 +3,8 @@ description: Document codebase as-is with thoughts directory for historical cont
 agent: agent
 ---
 
+> **Path convention**: the `thoughts/shared/...` paths in examples and templates below are literal on `git`/`obsidian` backends. On `notion`/`anytype`, substitute the matching `notion://<id>` / `anytype://<id>` identifier that `hyprlayer storage info` or `thoughts-locator` returns.
+
 # Research Codebase
 
 You are tasked with conducting comprehensive research across the codebase to answer user questions by delegating to sub-agents and synthesizing their findings.
