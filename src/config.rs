@@ -71,6 +71,22 @@ impl BackendSettings {
         )
     }
 
+    /// Return the settings to preserve when switching from `previous_kind`
+    /// to `new_kind`. When the kind is unchanged, keep everything. When it
+    /// changes, discard all fields: values from a prior backend (including
+    /// the shared `api_token_env`) are not meaningful under a new one.
+    pub fn carry_across(
+        &self,
+        previous_kind: BackendKind,
+        new_kind: BackendKind,
+    ) -> BackendSettings {
+        if previous_kind == new_kind {
+            self.clone()
+        } else {
+            BackendSettings::default()
+        }
+    }
+
     /// Validate the backend-specific required fields are populated.
     /// `database_id` / `type_id` remain optional at validation time because
     /// they are populated lazily by the first write-oriented slash command.
@@ -91,10 +107,12 @@ impl BackendSettings {
                         "Notion backend requires parentPageId in settings"
                     ));
                 }
-                // `api_token_env` is intentionally optional: users with the
-                // Notion connector (SSO/OAuth via the MCP marketplace) don't
-                // have an integration token at all. Only the self-hosted
-                // `@notionhq/notion-mcp-server` install path needs one.
+                // `api_token_env` is intentionally not required here (and
+                // no longer used at all for notion). Hyprlayer relies on the
+                // agent tool's Notion connector (Claude.ai etc.) instead of
+                // registering a self-hosted MCP, so there is no token for
+                // hyprlayer to manage. The field is still legal in the struct
+                // because it's shared with the anytype backend.
                 Ok(())
             }
             BackendKind::Anytype => {
@@ -103,11 +121,12 @@ impl BackendSettings {
                         "Anytype backend requires spaceId in settings"
                     ));
                 }
-                if self.api_token_env.as_deref().unwrap_or("").is_empty() {
-                    return Err(anyhow::anyhow!(
-                        "Anytype backend requires apiTokenEnv in settings"
-                    ));
-                }
+                // `api_token_env` is intentionally optional: users who already
+                // have the Anytype MCP server wired up (connector flow, or a
+                // prior self-host install) don't need hyprlayer to re-register
+                // it and therefore don't need to surface the env-var name.
+                // Hyprlayer never reads the token value directly — it's only
+                // passed through to `claude mcp add -e` during registration.
                 Ok(())
             }
         }
@@ -851,6 +870,76 @@ mod tests {
     }
 
     #[test]
+    fn carry_across_keeps_all_fields_when_kind_unchanged() {
+        let s = BackendSettings {
+            space_id: Some("s".to_string()),
+            type_id: Some("t".to_string()),
+            api_token_env: Some("ANYTYPE_API_KEY".to_string()),
+            ..Default::default()
+        };
+        let carried = s.carry_across(BackendKind::Anytype, BackendKind::Anytype);
+        assert_eq!(carried, s);
+    }
+
+    #[test]
+    fn carry_across_drops_everything_when_kind_changes() {
+        // Reproducer for the bug where `hyprlayer thoughts init --backend notion`
+        // after a prior anytype init leaked ANYTYPE_API_KEY into the notion
+        // settings via shared fields and the struct-update fallback.
+        let stale_anytype = BackendSettings {
+            space_id: Some("old-space".to_string()),
+            type_id: Some("old-type".to_string()),
+            api_token_env: Some("ANYTYPE_API_KEY".to_string()),
+            ..Default::default()
+        };
+        let carried = stale_anytype.carry_across(BackendKind::Anytype, BackendKind::Notion);
+        assert!(carried.is_empty());
+        assert!(carried.api_token_env.is_none());
+        assert!(carried.space_id.is_none());
+        assert!(carried.type_id.is_none());
+    }
+
+    #[test]
+    fn carry_across_drops_obsidian_fields_when_switching_to_notion() {
+        let stale = BackendSettings {
+            vault_path: Some("/vault".to_string()),
+            vault_subpath: Some("hyprlayer".to_string()),
+            ..Default::default()
+        };
+        let carried = stale.carry_across(BackendKind::Obsidian, BackendKind::Notion);
+        assert!(carried.is_empty());
+    }
+
+    #[test]
+    fn carry_across_round_trips_backend_switch() {
+        // Simulates: init anytype → init notion → (carried settings used to
+        // build next `BackendSettings`) must leave no anytype fields behind.
+        let mut settings = BackendSettings {
+            space_id: Some("space-1".to_string()),
+            type_id: Some("type-1".to_string()),
+            api_token_env: Some("ANYTYPE_API_KEY".to_string()),
+            ..Default::default()
+        };
+
+        // Backend switch: anytype → notion. `carry_across` is the only piece
+        // the init path uses to decide what to preserve.
+        settings = settings.carry_across(BackendKind::Anytype, BackendKind::Notion);
+
+        // Now the init flow would populate notion-specific fields on top.
+        settings = BackendSettings {
+            parent_page_id: Some("page-1".to_string()),
+            ..settings
+        };
+
+        assert_eq!(settings.parent_page_id.as_deref(), Some("page-1"));
+        assert!(settings.api_token_env.is_none());
+        assert!(settings.space_id.is_none());
+        assert!(settings.type_id.is_none());
+        assert!(settings.vault_path.is_none());
+        assert!(settings.vault_subpath.is_none());
+    }
+
+    #[test]
     fn validate_for_git_is_always_ok() {
         assert!(
             BackendSettings::default()
@@ -904,10 +993,18 @@ mod tests {
     }
 
     #[test]
-    fn validate_for_anytype_requires_space_and_token_env() {
+    fn validate_for_anytype_requires_space_id_only() {
         let empty = BackendSettings::default();
         let err = empty.validate_for(BackendKind::Anytype).unwrap_err();
         assert!(err.to_string().contains("spaceId"));
+
+        // `api_token_env` is optional — SSO / pre-registered MCP flows don't
+        // need hyprlayer to surface it.
+        let only_space = BackendSettings {
+            space_id: Some("s".to_string()),
+            ..Default::default()
+        };
+        assert!(only_space.validate_for(BackendKind::Anytype).is_ok());
 
         let full = BackendSettings {
             space_id: Some("s".to_string()),

@@ -23,6 +23,8 @@ pub fn init(args: InitArgs) -> Result<()> {
         vault_subpath,
         parent_page_id,
         database_id,
+        space_id,
+        type_id,
         api_token_env,
         yes,
         config,
@@ -34,9 +36,20 @@ pub fn init(args: InitArgs) -> Result<()> {
         return Err(anyhow::anyhow!("Not in a git repository"));
     }
 
+    if backend == Some(BackendKind::Notion) && api_token_env.is_some() {
+        return Err(anyhow::anyhow!(
+            "--api-token-env is not valid with --backend notion. Notion uses the agent \
+             tool's connector and hyprlayer does not manage a token."
+        ));
+    }
+
     let notion_flags = NotionFlags {
         parent_page_id,
         database_id,
+    };
+    let anytype_flags = AnytypeFlags {
+        space_id,
+        type_id,
         api_token_env: api_token_env.clone(),
     };
 
@@ -50,6 +63,7 @@ pub fn init(args: InitArgs) -> Result<()> {
             vault_path,
             vault_subpath,
             notion_flags,
+            anytype_flags,
             force,
         );
     }
@@ -104,6 +118,7 @@ pub fn init(args: InitArgs) -> Result<()> {
         vault_path,
         vault_subpath,
         &notion_flags,
+        &anytype_flags,
         &profile,
         agent_tool,
     )?;
@@ -162,6 +177,12 @@ pub fn init(args: InitArgs) -> Result<()> {
 struct NotionFlags {
     parent_page_id: Option<String>,
     database_id: Option<String>,
+}
+
+#[derive(Debug, Default, Clone)]
+struct AnytypeFlags {
+    space_id: Option<String>,
+    type_id: Option<String>,
     api_token_env: Option<String>,
 }
 
@@ -175,6 +196,7 @@ fn init_non_interactive(
     vault_path_flag: Option<String>,
     vault_subpath_flag: Option<String>,
     notion_flags: NotionFlags,
+    anytype_flags: AnytypeFlags,
     force: bool,
 ) -> Result<()> {
     let directory =
@@ -224,70 +246,28 @@ fn init_non_interactive(
 
     let existing_profile = hyprlayer_config.thoughts_mut().resolve_dirs(&profile);
     let backend_kind = backend_flag.unwrap_or(existing_profile.backend);
+    let prior_settings = existing_profile
+        .backend_settings
+        .carry_across(existing_profile.backend, backend_kind);
 
-    if backend_kind == BackendKind::Obsidian {
-        let vault_from_flag =
-            vault_path_flag.or_else(|| existing_profile.backend_settings.vault_path.clone());
-        if vault_from_flag.is_none() {
-            return Err(anyhow::anyhow!(
-                "--vault-path is required when --backend obsidian is used with --yes"
-            ));
+    let new_settings = match backend_kind {
+        BackendKind::Git => prior_settings,
+        BackendKind::Obsidian => {
+            obsidian_settings_non_interactive(vault_path_flag, vault_subpath_flag, prior_settings)?
         }
-        let subpath = vault_subpath_flag
-            .or_else(|| existing_profile.backend_settings.vault_subpath.clone())
-            .unwrap_or_else(|| "hyprlayer".to_string());
+        BackendKind::Notion => notion_settings_non_interactive(notion_flags, prior_settings)?,
+        BackendKind::Anytype => anytype_settings_non_interactive(anytype_flags, prior_settings)?,
+    };
 
-        let new_settings = BackendSettings {
-            vault_path: vault_from_flag,
-            vault_subpath: Some(subpath),
-            ..existing_profile.backend_settings.clone()
-        };
+    // A bare `--yes` with no `--backend` defaulting to Git has nothing to
+    // write; every other branch either set fields or explicitly re-selected
+    // Git, and needs to persist.
+    if backend_kind != BackendKind::Git || backend_flag.is_some() {
         apply_backend_and_settings(
             hyprlayer_config.thoughts_mut(),
             &profile,
             backend_kind,
             new_settings,
-        );
-    } else if backend_kind == BackendKind::Notion {
-        let parent = notion_flags
-            .parent_page_id
-            .clone()
-            .or_else(|| existing_profile.backend_settings.parent_page_id.clone());
-        if parent.as_deref().unwrap_or("").is_empty() {
-            return Err(anyhow::anyhow!(
-                "--parent-page-id is required when --backend notion is used with --yes"
-            ));
-        }
-        // Token env is only meaningful for self-hosted installs. In --yes
-        // mode, honor an explicit --api-token-env flag; otherwise keep the
-        // existing value (which will be None for connector users).
-        let token_env = notion_flags
-            .api_token_env
-            .clone()
-            .or_else(|| existing_profile.backend_settings.api_token_env.clone());
-        let db_id = notion_flags
-            .database_id
-            .clone()
-            .or_else(|| existing_profile.backend_settings.database_id.clone());
-
-        let new_settings = BackendSettings {
-            parent_page_id: parent,
-            database_id: db_id,
-            api_token_env: token_env,
-            ..existing_profile.backend_settings.clone()
-        };
-        apply_backend_and_settings(
-            hyprlayer_config.thoughts_mut(),
-            &profile,
-            backend_kind,
-            new_settings,
-        );
-    } else if backend_flag.is_some() {
-        apply_backend_and_settings(
-            hyprlayer_config.thoughts_mut(),
-            &profile,
-            backend_kind,
-            existing_profile.backend_settings.clone(),
         );
     }
 
@@ -351,7 +331,7 @@ fn resolve_backend_interactive(
 
     // First-run: offer a short menu. Keep git as the default so existing
     // users see no change when they press enter.
-    let items = ["git (default)", "obsidian", "notion"];
+    let items = ["git (default)", "obsidian", "notion", "anytype"];
     let selection = Select::with_theme(&ColorfulTheme::default())
         .with_prompt("Storage backend for thoughts")
         .items(&items)
@@ -362,6 +342,7 @@ fn resolve_backend_interactive(
         0 => BackendKind::Git,
         1 => BackendKind::Obsidian,
         2 => BackendKind::Notion,
+        3 => BackendKind::Anytype,
         _ => unreachable!(),
     })
 }
@@ -377,12 +358,17 @@ fn prompt_for_thoughts_fields(
     vault_path_flag: Option<String>,
     vault_subpath_flag: Option<String>,
     notion_flags: &NotionFlags,
+    anytype_flags: &AnytypeFlags,
     profile: &Option<String>,
     agent_tool: Option<crate::agents::AgentTool>,
 ) -> Result<ThoughtsConfig> {
     let theme = ColorfulTheme::default();
     println!("{}", "=== Initial Thoughts Setup ===".blue());
     println!();
+
+    let prior_settings = existing_profile
+        .backend_settings
+        .carry_across(existing_profile.backend, backend_kind);
 
     let (thoughts_repo, backend_settings) = match backend_kind {
         BackendKind::Git => {
@@ -398,20 +384,15 @@ fn prompt_for_thoughts_fields(
                 .allow_empty(true)
                 .interact()
                 .map(|s: String| if s.is_empty() { default_repo } else { s })?;
-            (repo, existing_profile.backend_settings.clone())
+            (repo, prior_settings)
         }
         BackendKind::Obsidian => {
-            let existing_vault = existing_profile
-                .backend_settings
-                .vault_path
-                .clone()
-                .unwrap_or_default();
+            let existing_vault = prior_settings.vault_path.clone().unwrap_or_default();
             let vault_path = match vault_path_flag {
                 Some(v) => v,
                 None => prompt_vault_path(&theme, &existing_vault)?,
             };
-            let default_sub = existing_profile
-                .backend_settings
+            let default_sub = prior_settings
                 .vault_subpath
                 .clone()
                 .unwrap_or_else(|| "hyprlayer".to_string());
@@ -426,26 +407,20 @@ fn prompt_for_thoughts_fields(
             let settings = BackendSettings {
                 vault_path: Some(vault_path.clone()),
                 vault_subpath: Some(vault_subpath),
-                ..existing_profile.backend_settings.clone()
+                ..prior_settings
             };
             // Preserve any previous git thoughts_repo so switching git↔obsidian doesn't lose it.
             (existing.thoughts_repo.clone(), settings)
         }
         BackendKind::Notion => {
-            let settings = prompt_notion_settings(
-                &theme,
-                &existing_profile.backend_settings,
-                notion_flags,
-                agent_tool,
-            )?;
+            let settings = prompt_notion_settings(&theme, &prior_settings, notion_flags)?;
             // Preserve any existing filesystem repo path so switching backends doesn't lose it.
             (existing.thoughts_repo.clone(), settings)
         }
-        _ => {
-            return Err(anyhow::anyhow!(
-                "Backend '{}' is not yet supported in this version",
-                backend_kind.as_str()
-            ));
+        BackendKind::Anytype => {
+            let settings =
+                prompt_anytype_settings(&theme, &prior_settings, anytype_flags, agent_tool)?;
+            (existing.thoughts_repo.clone(), settings)
         }
     };
 
@@ -544,7 +519,6 @@ fn prompt_notion_settings(
     theme: &ColorfulTheme,
     existing: &BackendSettings,
     flags: &NotionFlags,
-    agent_tool: Option<crate::agents::AgentTool>,
 ) -> Result<BackendSettings> {
     let default_parent = existing.parent_page_id.clone().unwrap_or_default();
     let parent_page_id = match flags.parent_page_id.clone() {
@@ -562,36 +536,6 @@ fn prompt_notion_settings(
         return Err(anyhow::anyhow!("Notion parent page ID is required"));
     }
 
-    // Skip the token-env prompt when Notion MCP is already wired up (connector
-    // or prior self-host install). The token is only used by the self-hosted
-    // server, and hyprlayer never reads its value directly.
-    let mcp_already_registered = agent_tool
-        .map(crate::backends::notion::is_notion_mcp_registered)
-        .unwrap_or(false);
-    let api_token_env = if mcp_already_registered {
-        println!(
-            "{}",
-            "✓ Notion MCP already wired up — skipping token env-var prompt.".bright_black()
-        );
-        existing.api_token_env.clone()
-    } else if let Some(v) = flags.api_token_env.clone() {
-        Some(v)
-    } else {
-        let default_env = existing
-            .api_token_env
-            .clone()
-            .unwrap_or_else(|| crate::backends::notion::DEFAULT_NOTION_TOKEN_ENV.to_string());
-        Some(
-            Input::<String>::with_theme(theme)
-                .with_prompt(
-                    "Env var NAME that holds your Notion integration token \
-                     (hyprlayer stores the name only, not the value)",
-                )
-                .default(default_env)
-                .interact()?,
-        )
-    };
-
     let default_db = existing.database_id.clone().unwrap_or_default();
     let db_input = match flags.database_id.clone() {
         Some(v) => v,
@@ -601,15 +545,85 @@ fn prompt_notion_settings(
             .allow_empty(true)
             .interact()?,
     };
-    let database_id = if db_input.trim().is_empty() {
-        None
-    } else {
-        Some(db_input)
-    };
+    let database_id = Some(db_input).filter(|s| !s.trim().is_empty());
 
+    // Notion uses the agent tool's connector; hyprlayer never stores a token.
     Ok(BackendSettings {
         parent_page_id: Some(parent_page_id),
         database_id,
+        api_token_env: None,
+        ..existing.clone()
+    })
+}
+
+fn prompt_anytype_settings(
+    theme: &ColorfulTheme,
+    existing: &BackendSettings,
+    flags: &AnytypeFlags,
+    agent_tool: Option<crate::agents::AgentTool>,
+) -> Result<BackendSettings> {
+    let default_space = existing.space_id.clone().unwrap_or_default();
+    let space_id = match flags.space_id.clone() {
+        Some(v) => v,
+        None => {
+            let mut input = Input::<String>::with_theme(theme).with_prompt(
+                "Anytype space ID (open Space settings in Anytype, or list via the \
+                     Anytype MCP's API-list-spaces)",
+            );
+            if !default_space.is_empty() {
+                input = input.default(default_space);
+            }
+            input.interact()?
+        }
+    };
+    if space_id.trim().is_empty() {
+        return Err(anyhow::anyhow!("Anytype space ID is required"));
+    }
+
+    // Skip the token-env prompt when Anytype MCP is already wired up. The
+    // token is only used by the MCP server, and hyprlayer never reads its
+    // value directly.
+    let mcp_already_registered = agent_tool
+        .map(crate::backends::anytype::is_anytype_mcp_registered)
+        .unwrap_or(false);
+    let api_token_env = if mcp_already_registered {
+        println!(
+            "{}",
+            "✓ Anytype MCP already wired up — skipping token env-var prompt.".bright_black()
+        );
+        existing.api_token_env.clone()
+    } else if let Some(v) = flags.api_token_env.clone() {
+        Some(v)
+    } else {
+        let default_env = existing
+            .api_token_env
+            .clone()
+            .unwrap_or_else(|| crate::backends::anytype::DEFAULT_ANYTYPE_TOKEN_ENV.to_string());
+        Some(
+            Input::<String>::with_theme(theme)
+                .with_prompt(
+                    "Env var NAME that holds your Anytype API key \
+                     (hyprlayer stores the name only, not the value)",
+                )
+                .default(default_env)
+                .interact()?,
+        )
+    };
+
+    let default_type = existing.type_id.clone().unwrap_or_default();
+    let type_input = match flags.type_id.clone() {
+        Some(v) => v,
+        None => Input::<String>::with_theme(theme)
+            .with_prompt("Existing Anytype type ID (leave blank to create on first use)")
+            .default(default_type)
+            .allow_empty(true)
+            .interact()?,
+    };
+    let type_id = Some(type_input).filter(|s| !s.trim().is_empty());
+
+    Ok(BackendSettings {
+        space_id: Some(space_id),
+        type_id,
         api_token_env,
         ..existing.clone()
     })
@@ -738,6 +752,80 @@ fn ensure_content_root(content_root: &Path) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Non-interactive Obsidian settings: `--vault-path` is required (no safe default),
+/// `--vault-subpath` falls back to the prior value then `hyprlayer`.
+fn obsidian_settings_non_interactive(
+    vault_path_flag: Option<String>,
+    vault_subpath_flag: Option<String>,
+    prior: BackendSettings,
+) -> Result<BackendSettings> {
+    let vault_path = vault_path_flag
+        .or_else(|| prior.vault_path.clone())
+        .ok_or_else(|| {
+            anyhow::anyhow!("--vault-path is required when --backend obsidian is used with --yes")
+        })?;
+    let vault_subpath = vault_subpath_flag
+        .or_else(|| prior.vault_subpath.clone())
+        .unwrap_or_else(|| "hyprlayer".to_string());
+    Ok(BackendSettings {
+        vault_path: Some(vault_path),
+        vault_subpath: Some(vault_subpath),
+        ..prior
+    })
+}
+
+/// Non-interactive Notion settings. `--parent-page-id` is required; `api_token_env`
+/// is always cleared because Notion uses the agent's connector.
+fn notion_settings_non_interactive(
+    flags: NotionFlags,
+    prior: BackendSettings,
+) -> Result<BackendSettings> {
+    let NotionFlags {
+        parent_page_id,
+        database_id,
+    } = flags;
+    let parent = parent_page_id
+        .or_else(|| prior.parent_page_id.clone())
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!("--parent-page-id is required when --backend notion is used with --yes")
+        })?;
+    Ok(BackendSettings {
+        parent_page_id: Some(parent),
+        database_id: database_id.or_else(|| prior.database_id.clone()),
+        api_token_env: None,
+        ..prior
+    })
+}
+
+/// Non-interactive Anytype settings. `--space-id` is required; `--api-token-env`
+/// defaults to `ANYTYPE_API_KEY` when unset.
+fn anytype_settings_non_interactive(
+    flags: AnytypeFlags,
+    prior: BackendSettings,
+) -> Result<BackendSettings> {
+    let AnytypeFlags {
+        space_id,
+        type_id,
+        api_token_env,
+    } = flags;
+    let space = space_id
+        .or_else(|| prior.space_id.clone())
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!("--space-id is required when --backend anytype is used with --yes")
+        })?;
+    let token_env = api_token_env
+        .or_else(|| prior.api_token_env.clone())
+        .or_else(|| Some(crate::backends::anytype::DEFAULT_ANYTYPE_TOKEN_ENV.to_string()));
+    Ok(BackendSettings {
+        space_id: Some(space),
+        type_id: type_id.or_else(|| prior.type_id.clone()),
+        api_token_env: token_env,
+        ..prior
+    })
 }
 
 fn apply_backend_and_settings(
@@ -985,6 +1073,17 @@ fn print_summary(
                     .bright_black()
             );
         }
-        _ => {}
+        BackendKind::Anytype => {
+            println!(
+                "{}",
+                "The Anytype MCP server has been registered with your AI tool.".bright_black()
+            );
+            println!(
+                "{}",
+                "Your first /create_plan (or similar) will create a HyprlayerThought type \
+                 in the configured space and persist its ID."
+                    .bright_black()
+            );
+        }
     }
 }

@@ -6,6 +6,24 @@ use std::path::Path;
 
 use super::BackendContext;
 
+/// Build the `KEY=VALUE` pair to pass as `<cli> mcp add -e <pair>`.
+///
+/// `Command::new` does not invoke a shell, and `claude mcp add -e` stores its
+/// argument verbatim in `~/.claude.json`. So `"NOTION_TOKEN=$NOTION_TOKEN"`
+/// would land there as a literal placeholder and the MCP server would send
+/// that string as the bearer token — every request 401s. Resolve the value
+/// ourselves and pass it through expanded.
+pub fn resolve_mcp_env_pair(env_var: &str) -> Result<String> {
+    let value = std::env::var(env_var).map_err(|_| {
+        anyhow::anyhow!(
+            "Env var {} is not set. Export it before running init so the token \
+             can be stored in the MCP registration.",
+            env_var
+        )
+    })?;
+    Ok(format!("{}={}", env_var, value))
+}
+
 /// Create the `repos/<mapped>/<user>`, `repos/<mapped>/shared`,
 /// `global/<user>`, `global/shared` tree rooted at `root`.
 pub fn setup_directory_structure_at(root: &Path, ctx: &BackendContext) -> Result<()> {
@@ -96,4 +114,38 @@ fn create_symlinks(
     )?;
     create(global_path, &thoughts_dir.join("global"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_mcp_env_pair_expands_value() {
+        // Unique var name per test so parallel tests in this crate don't race
+        // on the shared process environment.
+        let key = "HYPRLAYER_TEST_RESOLVE_MCP_ENV_PAIR_SET";
+        unsafe { std::env::set_var(key, "secret-xyz") };
+
+        let pair = resolve_mcp_env_pair(key).unwrap();
+
+        assert_eq!(pair, format!("{}=secret-xyz", key));
+        // Regression guard: the old code passed `$NAME` verbatim, which
+        // `claude mcp add` then stored as a literal placeholder.
+        assert!(
+            !pair.contains('$'),
+            "env var must be expanded to its value, not stored as a literal placeholder: {pair}"
+        );
+
+        unsafe { std::env::remove_var(key) };
+    }
+
+    #[test]
+    fn resolve_mcp_env_pair_errors_when_unset() {
+        let key = "HYPRLAYER_TEST_RESOLVE_MCP_ENV_PAIR_UNSET";
+        unsafe { std::env::remove_var(key) };
+
+        let err = resolve_mcp_env_pair(key).unwrap_err();
+        assert!(err.to_string().contains(key));
+    }
 }

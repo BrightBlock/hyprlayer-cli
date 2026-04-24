@@ -60,4 +60,5 @@ pub enum ProfileCommands {
 pub enum StorageCommands {
     Info(StorageInfoArgs),
     SetDatabaseId(StorageSetDatabaseIdArgs),
+    SetTypeId(StorageSetTypeIdArgs),
 }

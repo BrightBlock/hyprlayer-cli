@@ -75,10 +75,11 @@ fn backend_settings_json(eff: &EffectiveConfig) -> Value {
             "reposDir": eff.repos_dir,
             "globalDir": eff.global_dir,
         }),
+        // No `apiTokenEnv`: notion uses the agent's connector (see
+        // `backends::notion`), and slash commands branch on the key's absence.
         BackendKind::Notion => json!({
             "parentPageId": eff.backend_settings.parent_page_id,
             "databaseId": eff.backend_settings.database_id,
-            "apiTokenEnv": eff.backend_settings.api_token_env,
         }),
         BackendKind::Anytype => json!({
             "spaceId": eff.backend_settings.space_id,
@@ -144,7 +145,6 @@ fn print_human(eff: &EffectiveConfig, project_path: &str) {
                 eff.backend_settings.parent_page_id.as_deref(),
             );
             print_opt("  Database ID", eff.backend_settings.database_id.as_deref());
-            print_env_ref(eff.backend_settings.api_token_env.as_deref());
         }
         BackendKind::Anytype => {
             print_opt("  Space ID", eff.backend_settings.space_id.as_deref());
@@ -240,13 +240,19 @@ mod tests {
     }
 
     #[test]
-    fn json_payload_for_notion_includes_settings() {
+    fn json_payload_for_notion_includes_settings_without_token_env() {
+        // Notion uses the agent tool's Notion connector (Claude.ai etc.),
+        // not a self-hosted MCP server, so hyprlayer never stores a token env
+        // name. `apiTokenEnv` must not appear under the notion branch even if
+        // a stale value leaked in from a prior backend — slash commands rely
+        // on the missing key to decide not to surface token-related guidance.
         let eff = EffectiveConfig {
             backend: BackendKind::Notion,
             backend_settings: BackendSettings {
                 parent_page_id: Some("p1".to_string()),
                 database_id: Some("d1".to_string()),
-                api_token_env: Some("NOTION_TOKEN".to_string()),
+                // Populated to prove the payload strips it for notion.
+                api_token_env: Some("SHOULD_NOT_APPEAR".to_string()),
                 ..Default::default()
             },
             ..base_effective()
@@ -255,7 +261,45 @@ mod tests {
         assert_eq!(payload["backend"], "notion");
         assert_eq!(payload["settings"]["parentPageId"], "p1");
         assert_eq!(payload["settings"]["databaseId"], "d1");
-        assert_eq!(payload["settings"]["apiTokenEnv"], "NOTION_TOKEN");
+        assert!(
+            payload["settings"].get("apiTokenEnv").is_none(),
+            "notion settings must not expose apiTokenEnv: {}",
+            payload["settings"]
+        );
+    }
+
+    #[test]
+    fn json_payload_for_anytype_includes_settings_and_null_type_id() {
+        // Pins the contract every slash command relies on: when the type
+        // hasn't been lazily created yet, `typeId` must serialize as JSON
+        // null (not omitted, not an empty string) so the dispatch branches
+        // `typeId == null` vs populated correctly.
+        let eff = EffectiveConfig {
+            backend: BackendKind::Anytype,
+            backend_settings: BackendSettings {
+                space_id: Some("s1".to_string()),
+                type_id: None,
+                api_token_env: Some("ANYTYPE_API_KEY".to_string()),
+                ..Default::default()
+            },
+            ..base_effective()
+        };
+        let payload = build_json(&eff, "/code/myproj");
+        assert_eq!(payload["backend"], "anytype");
+        assert_eq!(payload["settings"]["spaceId"], "s1");
+        assert_eq!(payload["settings"]["typeId"], serde_json::Value::Null);
+        assert_eq!(payload["settings"]["apiTokenEnv"], "ANYTYPE_API_KEY");
+        assert_eq!(payload["schema"].as_array().unwrap().len(), 10);
+
+        let with_type = EffectiveConfig {
+            backend_settings: BackendSettings {
+                type_id: Some("t1".to_string()),
+                ..eff.backend_settings.clone()
+            },
+            ..eff
+        };
+        let payload = build_json(&with_type, "/code/myproj");
+        assert_eq!(payload["settings"]["typeId"], "t1");
     }
 
     #[test]

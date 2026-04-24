@@ -105,8 +105,16 @@ impl Serialize for SchemaField {
 }
 
 /// Serialize `THOUGHT_SCHEMA` as a JSON array suitable for `storage info --json`.
+///
+/// `storage info --json` is called by every write-oriented slash command's
+/// dispatch preamble, so this runs on the hot path of every agent interaction.
+/// The schema is `static` and the serialized form is identical on every call;
+/// compute once and clone.
 pub fn schema_as_json_value() -> serde_json::Value {
-    serde_json::to_value(THOUGHT_SCHEMA).expect("schema serialization is infallible")
+    static CACHED: std::sync::LazyLock<serde_json::Value> = std::sync::LazyLock::new(|| {
+        serde_json::to_value(THOUGHT_SCHEMA).expect("schema serialization is infallible")
+    });
+    CACHED.clone()
 }
 
 #[cfg(test)]

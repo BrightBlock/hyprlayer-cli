@@ -94,7 +94,15 @@ pub struct InitArgs {
     pub database_id: Option<String>,
     #[arg(
         long,
-        help = "Env var name holding the backend's API token (default: NOTION_TOKEN for notion)"
+        help = "Anytype space ID (required when --backend anytype with --yes)"
+    )]
+    pub space_id: Option<String>,
+    #[arg(long, help = "Existing Anytype type ID to reuse (skips lazy creation)")]
+    pub type_id: Option<String>,
+    #[arg(
+        long,
+        help = "Env var name holding the Anytype API token (default: ANYTYPE_API_KEY). \
+                Ignored for notion — hyprlayer uses the agent tool's Notion connector."
     )]
     pub api_token_env: Option<String>,
     #[arg(
@@ -237,6 +245,17 @@ pub struct StorageInfoArgs {
     about = "Persist a Notion database ID to the active profile's backend settings"
 )]
 pub struct StorageSetDatabaseIdArgs {
+    pub id: String,
+    #[command(flatten)]
+    pub config: ConfigArgs,
+}
+
+#[derive(Debug, Args)]
+#[command(
+    name = "set-type-id",
+    about = "Persist an Anytype type ID to the active profile's backend settings"
+)]
+pub struct StorageSetTypeIdArgs {
     pub id: String,
     #[command(flatten)]
     pub config: ConfigArgs,

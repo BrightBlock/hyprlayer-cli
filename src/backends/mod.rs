@@ -4,6 +4,7 @@ use std::path::Path;
 use crate::agents::AgentTool;
 use crate::config::{BackendKind, EffectiveConfig};
 
+pub mod anytype;
 pub mod common;
 pub mod git;
 pub mod notion;
@@ -48,6 +49,6 @@ pub fn for_kind(kind: BackendKind) -> Box<dyn ThoughtsBackend> {
         BackendKind::Git => Box::new(git::GitBackend),
         BackendKind::Obsidian => Box::new(obsidian::ObsidianBackend),
         BackendKind::Notion => Box::new(notion::NotionBackend),
-        BackendKind::Anytype => panic!("Anytype backend is not yet implemented (phase 4)"),
+        BackendKind::Anytype => Box::new(anytype::AnytypeBackend),
     }
 }

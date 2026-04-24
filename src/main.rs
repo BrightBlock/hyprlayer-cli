@@ -12,7 +12,10 @@ mod version;
 
 use cli::{AiCommands, ProfileCommands, StorageCommands, ThoughtsCommands};
 use commands::ai::{configure as ai_configure, reinstall as ai_reinstall, status as ai_status};
-use commands::storage::{info as storage_info, set_database_id as storage_set_database_id};
+use commands::storage::{
+    info as storage_info, set_database_id as storage_set_database_id,
+    set_type_id as storage_set_type_id,
+};
 use commands::thoughts::profile::{
     create as profile_create, delete as profile_delete, list as profile_list, show as profile_show,
 };
@@ -44,6 +47,7 @@ fn main() -> Result<()> {
         cli::Cli::Storage { command } => match command {
             StorageCommands::Info(args) => storage_info::info(args)?,
             StorageCommands::SetDatabaseId(args) => storage_set_database_id::set_database_id(args)?,
+            StorageCommands::SetTypeId(args) => storage_set_type_id::set_type_id(args)?,
         },
     }
 

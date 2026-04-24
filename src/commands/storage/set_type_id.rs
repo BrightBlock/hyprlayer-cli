@@ -1,14 +1,14 @@
 use anyhow::Result;
 use colored::Colorize;
 
-use crate::cli::StorageSetDatabaseIdArgs;
+use crate::cli::StorageSetTypeIdArgs;
 use crate::config::{BackendKind, HyprlayerConfig, RepoMapping, get_current_repo_path};
 
-pub fn set_database_id(args: StorageSetDatabaseIdArgs) -> Result<()> {
-    let StorageSetDatabaseIdArgs { id, config } = args;
+pub fn set_type_id(args: StorageSetTypeIdArgs) -> Result<()> {
+    let StorageSetTypeIdArgs { id, config } = args;
 
     if id.trim().is_empty() {
-        return Err(anyhow::anyhow!("Database ID cannot be empty"));
+        return Err(anyhow::anyhow!("Type ID cannot be empty"));
     }
 
     let config_path = config.path()?;
@@ -39,14 +39,14 @@ pub fn set_database_id(args: StorageSetDatabaseIdArgs) -> Result<()> {
         }
         None => (thoughts.backend, &mut thoughts.backend_settings),
     };
-    if backend != BackendKind::Notion {
+    if backend != BackendKind::Anytype {
         return Err(anyhow::anyhow!(
-            "Active backend is '{}', but set-database-id is only valid for notion",
+            "Active backend is '{}', but set-type-id is only valid for anytype",
             backend.as_str()
         ));
     }
-    let message = format!("✓ Notion database ID persisted: {}", id);
-    settings.database_id = Some(id);
+    let message = format!("✓ Anytype type ID persisted: {}", id);
+    settings.type_id = Some(id);
 
     hyprlayer_config.save(&config_path)?;
     println!("{}", message.green());
@@ -78,7 +78,8 @@ mod tests {
                 user: "alice".to_string(),
                 backend,
                 backend_settings: BackendSettings {
-                    parent_page_id: Some("p1".to_string()),
+                    space_id: Some("s1".to_string()),
+                    api_token_env: Some("ANYTYPE_API_KEY".to_string()),
                     ..Default::default()
                 },
                 repo_mappings: [(
@@ -96,7 +97,7 @@ mod tests {
     }
 
     #[test]
-    fn errors_when_active_backend_is_not_notion() {
+    fn errors_when_active_backend_is_not_anytype() {
         let tmp = TempDir::new().unwrap();
         let cfg_path = tmp.path().join("config.json");
         let repo_dir = tmp.path().join("repo");
@@ -104,33 +105,33 @@ mod tests {
         seed_config(&cfg_path, BackendKind::Git, &repo_dir.display().to_string()).unwrap();
 
         with_cwd(&repo_dir, || {
-            let err = set_database_id(StorageSetDatabaseIdArgs {
-                id: "db-123".to_string(),
+            let err = set_type_id(StorageSetTypeIdArgs {
+                id: "type-123".to_string(),
                 config: ConfigArgs {
                     config_file: Some(cfg_path.display().to_string()),
                 },
             })
             .unwrap_err();
-            assert!(err.to_string().contains("only valid for notion"));
+            assert!(err.to_string().contains("only valid for anytype"));
         });
     }
 
     #[test]
-    fn updates_notion_database_id_on_success() {
+    fn updates_anytype_type_id_on_success() {
         let tmp = TempDir::new().unwrap();
         let cfg_path = tmp.path().join("config.json");
         let repo_dir = tmp.path().join("repo");
         std::fs::create_dir_all(&repo_dir).unwrap();
         seed_config(
             &cfg_path,
-            BackendKind::Notion,
+            BackendKind::Anytype,
             &repo_dir.display().to_string(),
         )
         .unwrap();
 
         with_cwd(&repo_dir, || {
-            set_database_id(StorageSetDatabaseIdArgs {
-                id: "db-123".to_string(),
+            set_type_id(StorageSetTypeIdArgs {
+                id: "type-123".to_string(),
                 config: ConfigArgs {
                     config_file: Some(cfg_path.display().to_string()),
                 },
@@ -140,7 +141,7 @@ mod tests {
 
         let loaded = HyprlayerConfig::load(&cfg_path).unwrap();
         let t = loaded.thoughts.unwrap();
-        assert_eq!(t.backend_settings.database_id.as_deref(), Some("db-123"));
+        assert_eq!(t.backend_settings.type_id.as_deref(), Some("type-123"));
     }
 
     #[test]
@@ -151,13 +152,13 @@ mod tests {
         std::fs::create_dir_all(&repo_dir).unwrap();
         seed_config(
             &cfg_path,
-            BackendKind::Notion,
+            BackendKind::Anytype,
             &repo_dir.display().to_string(),
         )
         .unwrap();
 
         with_cwd(&repo_dir, || {
-            let err = set_database_id(StorageSetDatabaseIdArgs {
+            let err = set_type_id(StorageSetTypeIdArgs {
                 id: "   ".to_string(),
                 config: ConfigArgs {
                     config_file: Some(cfg_path.display().to_string()),
