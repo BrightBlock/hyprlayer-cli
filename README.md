@@ -51,11 +51,11 @@ Hyprlayer stores thoughts (plans, research, handoffs, notes) in one of four back
 ```bash
 hyprlayer thoughts init --backend git         # default: a separate git repo, synced via `hyprlayer thoughts sync`
 hyprlayer thoughts init --backend obsidian    # local Obsidian vault, no sync (requires --vault-path)
-hyprlayer thoughts init --backend notion      # Notion database, writes via the Notion MCP server
-hyprlayer thoughts init --backend anytype     # Anytype object, writes via the Anytype MCP server
+hyprlayer thoughts init --backend notion      # Notion database, via your agent tool's Notion connector
+hyprlayer thoughts init --backend anytype     # Anytype object, via the Anytype MCP server
 ```
 
-For `notion` and `anytype`, the AI agent reads and writes directly through MCP tools -- hyprlayer registers the MCP server and stays out of the hot path. The target database (Notion) or object type (Anytype) is **created lazily on the first write-oriented slash command** (e.g. the first `/create_plan` call); re-running after deleting the database/type out-of-band auto-heals.
+For `notion`, the AI agent uses your agent tool's Notion connector (e.g. the Claude.ai connector from `/mcp`) -- hyprlayer never registers a Notion MCP server or manages a Notion token. For `anytype`, hyprlayer registers the MCP server automatically (requires the Anytype desktop app running and an `ANYTYPE_API_KEY`). In both cases the target database (Notion) or object type (Anytype) is **created lazily on the first write-oriented slash command** (e.g. the first `/create_plan` call); re-running after deleting the database/type out-of-band auto-heals.
 
 ### Unified metadata schema
 
