@@ -9,7 +9,7 @@ use std::process::Command;
 const REPO: &str = "BrightBlock/hyprlayer-cli";
 const BRANCH: &str = "master";
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentTool {
     Claude,
@@ -334,12 +334,7 @@ fn curl_download_file(url: &str, dest: &Path) -> Result<()> {
     }
 
     let status = Command::new("curl")
-        .args([
-            "-sL",
-            "-o",
-            &dest.display().to_string(),
-            url,
-        ])
+        .args(["-sL", "-o", &dest.display().to_string(), url])
         .status()
         .context("curl not found")?;
 

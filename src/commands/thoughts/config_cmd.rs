@@ -57,6 +57,39 @@ pub fn config(args: ConfigArgsCmd) -> Result<()> {
     println!("  Repos directory: {}", get_str("reposDir").cyan());
     println!("  Global directory: {}", get_str("globalDir").cyan());
     println!("  User: {}", get_str("user").cyan());
+    println!("  Backend: {}", get_str("backend").cyan());
+
+    if let Some(settings) = thoughts.get("backendSettings").and_then(|s| s.as_object())
+        && !settings.is_empty()
+    {
+        println!();
+        println!("{}", "Backend settings:".yellow());
+        print_backend_settings(settings);
+    }
+
+    if let Some(profiles) = thoughts.get("profiles").and_then(|p| p.as_object())
+        && !profiles.is_empty()
+    {
+        println!();
+        println!("{}", "Profiles:".yellow());
+        for (name, profile) in profiles {
+            println!("  {}", name.cyan());
+            let Some(obj) = profile.as_object() else {
+                continue;
+            };
+            if let Some(backend) = obj.get("backend").and_then(|v| v.as_str()) {
+                println!("    Backend: {}", backend.green());
+            }
+            if let Some(settings) = obj.get("backendSettings").and_then(|s| s.as_object())
+                && !settings.is_empty()
+            {
+                for (key, val) in settings {
+                    let display = super::format_backend_setting(key, val);
+                    println!("    {}: {}", key, display);
+                }
+            }
+        }
+    }
 
     let Some(mappings) = thoughts.get("repoMappings").and_then(|m| m.as_object()) else {
         return Ok(());
@@ -83,4 +116,11 @@ pub fn config(args: ConfigArgsCmd) -> Result<()> {
     );
 
     Ok(())
+}
+
+fn print_backend_settings(settings: &serde_json::Map<String, serde_json::Value>) {
+    for (key, val) in settings {
+        let display = super::format_backend_setting(key, val);
+        println!("  {}: {}", key, display.cyan());
+    }
 }

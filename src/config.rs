@@ -6,12 +6,143 @@ use std::path::{Path, PathBuf};
 
 use crate::agents::{AgentTool, OpenCodeProvider};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum BackendKind {
+    #[default]
+    Git,
+    Obsidian,
+    Notion,
+    Anytype,
+}
+
+impl BackendKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BackendKind::Git => "git",
+            BackendKind::Obsidian => "obsidian",
+            BackendKind::Notion => "notion",
+            BackendKind::Anytype => "anytype",
+        }
+    }
+
+    /// Local-filesystem backends create `<code_repo>/thoughts/` symlinks and
+    /// write markdown to disk. Flat-list backends (notion, anytype) delegate
+    /// all I/O to MCP tools the agent invokes.
+    pub fn uses_filesystem(self) -> bool {
+        matches!(self, BackendKind::Git | BackendKind::Obsidian)
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BackendSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vault_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vault_subpath: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_page_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub database_id: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub type_id: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_token_env: Option<String>,
+}
+
+impl BackendSettings {
+    pub fn is_empty(&self) -> bool {
+        *self == BackendSettings::default()
+    }
+
+    pub fn obsidian_root(&self) -> Option<PathBuf> {
+        let vault = expand_path(self.vault_path.as_deref()?);
+        Some(
+            match self.vault_subpath.as_deref().filter(|s| !s.is_empty()) {
+                Some(sub) => vault.join(sub),
+                None => vault,
+            },
+        )
+    }
+
+    /// Return the settings to preserve when switching from `previous_kind`
+    /// to `new_kind`. When the kind is unchanged, keep everything. When it
+    /// changes, discard all fields: values from a prior backend (including
+    /// the shared `api_token_env`) are not meaningful under a new one.
+    pub fn carry_across(
+        &self,
+        previous_kind: BackendKind,
+        new_kind: BackendKind,
+    ) -> BackendSettings {
+        if previous_kind == new_kind {
+            self.clone()
+        } else {
+            BackendSettings::default()
+        }
+    }
+
+    /// Validate the backend-specific required fields are populated.
+    /// `database_id` / `type_id` remain optional at validation time because
+    /// they are populated lazily by the first write-oriented slash command.
+    pub fn validate_for(&self, kind: BackendKind) -> Result<()> {
+        match kind {
+            BackendKind::Git => Ok(()),
+            BackendKind::Obsidian => {
+                if self.vault_path.as_deref().unwrap_or("").is_empty() {
+                    return Err(anyhow::anyhow!(
+                        "Obsidian backend requires vaultPath in settings"
+                    ));
+                }
+                Ok(())
+            }
+            BackendKind::Notion => {
+                if self.parent_page_id.as_deref().unwrap_or("").is_empty() {
+                    return Err(anyhow::anyhow!(
+                        "Notion backend requires parentPageId in settings"
+                    ));
+                }
+                // `api_token_env` is intentionally not required here (and
+                // no longer used at all for notion). Hyprlayer relies on the
+                // agent tool's Notion connector (Claude.ai etc.) instead of
+                // registering a self-hosted MCP, so there is no token for
+                // hyprlayer to manage. The field is still legal in the struct
+                // because it's shared with the anytype backend.
+                Ok(())
+            }
+            BackendKind::Anytype => {
+                if self.space_id.as_deref().unwrap_or("").is_empty() {
+                    return Err(anyhow::anyhow!(
+                        "Anytype backend requires spaceId in settings"
+                    ));
+                }
+                // `api_token_env` is intentionally optional: users who already
+                // have the Anytype MCP server wired up (connector flow, or a
+                // prior self-host install) don't need hyprlayer to re-register
+                // it and therefore don't need to surface the env-var name.
+                // Hyprlayer never reads the token value directly — it's only
+                // passed through to `claude mcp add -e` during registration.
+                Ok(())
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileConfig {
     pub thoughts_repo: String,
     pub repos_dir: String,
     pub global_dir: String,
+    #[serde(default)]
+    pub backend: BackendKind,
+    #[serde(default, skip_serializing_if = "BackendSettings::is_empty")]
+    pub backend_settings: BackendSettings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,6 +190,10 @@ pub struct ThoughtsConfig {
     pub global_dir: String,
     pub user: String,
     #[serde(default)]
+    pub backend: BackendKind,
+    #[serde(default, skip_serializing_if = "BackendSettings::is_empty")]
+    pub backend_settings: BackendSettings,
+    #[serde(default)]
     pub repo_mappings: HashMap<String, RepoMapping>,
     #[serde(default)]
     pub profiles: HashMap<String, ProfileConfig>,
@@ -83,6 +218,9 @@ pub struct EffectiveConfig {
     pub thoughts_repo: String,
     pub repos_dir: String,
     pub global_dir: String,
+    pub user: String,
+    pub backend: BackendKind,
+    pub backend_settings: BackendSettings,
     pub profile_name: Option<String>,
     pub mapped_name: Option<String>,
 }
@@ -118,6 +256,8 @@ impl ThoughtsConfig {
                 thoughts_repo: self.thoughts_repo.clone(),
                 repos_dir: self.repos_dir.clone(),
                 global_dir: self.global_dir.clone(),
+                backend: self.backend,
+                backend_settings: self.backend_settings.clone(),
             })
     }
 
@@ -153,6 +293,9 @@ impl ThoughtsConfig {
             thoughts_repo: dirs.thoughts_repo,
             repos_dir: dirs.repos_dir,
             global_dir: dirs.global_dir,
+            user: self.user.clone(),
+            backend: dirs.backend,
+            backend_settings: dirs.backend_settings,
             profile_name,
             mapped_name: mapping.map(|m| m.repo().to_string()),
         }
@@ -267,6 +410,8 @@ impl HyprlayerConfig {
             repos_dir: old.repos_dir,
             global_dir: old.global_dir,
             user: old.user,
+            backend: BackendKind::default(),
+            backend_settings: BackendSettings::default(),
             repo_mappings: old.repo_mappings,
             profiles: old.profiles,
         };
@@ -547,5 +692,345 @@ mod tests {
             ..Default::default()
         };
         assert!(config.is_thoughts_configured());
+    }
+
+    #[test]
+    fn backend_kind_default_is_git() {
+        assert_eq!(BackendKind::default(), BackendKind::Git);
+    }
+
+    #[test]
+    fn backend_kind_serde_round_trip() {
+        for kind in [
+            BackendKind::Git,
+            BackendKind::Obsidian,
+            BackendKind::Notion,
+            BackendKind::Anytype,
+        ] {
+            let json = serde_json::to_string(&kind).unwrap();
+            let back: BackendKind = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, kind);
+        }
+    }
+
+    #[test]
+    fn backend_kind_serializes_lowercase() {
+        assert_eq!(serde_json::to_string(&BackendKind::Git).unwrap(), "\"git\"");
+        assert_eq!(
+            serde_json::to_string(&BackendKind::Obsidian).unwrap(),
+            "\"obsidian\""
+        );
+        assert_eq!(
+            serde_json::to_string(&BackendKind::Notion).unwrap(),
+            "\"notion\""
+        );
+        assert_eq!(
+            serde_json::to_string(&BackendKind::Anytype).unwrap(),
+            "\"anytype\""
+        );
+    }
+
+    #[test]
+    fn config_without_backend_field_deserializes_to_git() {
+        let json = r#"{
+            "thoughtsRepo": "~/thoughts",
+            "reposDir": "repos",
+            "globalDir": "global",
+            "user": "testuser"
+        }"#;
+        let cfg: ThoughtsConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.backend, BackendKind::Git);
+        assert!(cfg.backend_settings.is_empty());
+    }
+
+    #[test]
+    fn profile_without_backend_field_deserializes_to_git() {
+        let json = r#"{
+            "thoughtsRepo": "~/work-thoughts",
+            "reposDir": "repos",
+            "globalDir": "global"
+        }"#;
+        let profile: ProfileConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(profile.backend, BackendKind::Git);
+        assert!(profile.backend_settings.is_empty());
+    }
+
+    #[test]
+    fn backend_settings_is_empty_for_default() {
+        assert!(BackendSettings::default().is_empty());
+    }
+
+    #[test]
+    fn backend_settings_is_not_empty_when_field_set() {
+        let s = BackendSettings {
+            vault_path: Some("~/vault".to_string()),
+            ..Default::default()
+        };
+        assert!(!s.is_empty());
+    }
+
+    #[test]
+    fn backend_settings_skips_empty_in_serde() {
+        let cfg = ThoughtsConfig {
+            thoughts_repo: "~/thoughts".to_string(),
+            repos_dir: "repos".to_string(),
+            global_dir: "global".to_string(),
+            user: "u".to_string(),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        // Default backend (git) is still emitted because Default isn't skipped
+        // for the enum, but the empty settings struct should be omitted.
+        assert!(!json.contains("backendSettings"));
+    }
+
+    #[test]
+    fn obsidian_root_joins_vault_and_subpath() {
+        let s = BackendSettings {
+            vault_path: Some("/vault".to_string()),
+            vault_subpath: Some("hyprlayer".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            s.obsidian_root().unwrap(),
+            PathBuf::from("/vault/hyprlayer")
+        );
+    }
+
+    #[test]
+    fn obsidian_root_handles_empty_subpath() {
+        let s = BackendSettings {
+            vault_path: Some("/vault".to_string()),
+            vault_subpath: Some("".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(s.obsidian_root().unwrap(), PathBuf::from("/vault"));
+    }
+
+    #[test]
+    fn obsidian_root_handles_missing_subpath() {
+        let s = BackendSettings {
+            vault_path: Some("/vault".to_string()),
+            vault_subpath: None,
+            ..Default::default()
+        };
+        assert_eq!(s.obsidian_root().unwrap(), PathBuf::from("/vault"));
+    }
+
+    #[test]
+    fn obsidian_root_expands_tilde() {
+        let s = BackendSettings {
+            vault_path: Some("~/vault".to_string()),
+            vault_subpath: Some("hyprlayer".to_string()),
+            ..Default::default()
+        };
+        let root = s.obsidian_root().unwrap();
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(root, home.join("vault").join("hyprlayer"));
+    }
+
+    #[test]
+    fn obsidian_root_returns_none_without_vault_path() {
+        let s = BackendSettings::default();
+        assert!(s.obsidian_root().is_none());
+    }
+
+    #[test]
+    fn effective_config_resolves_backend_from_profile() {
+        let mut cfg = ThoughtsConfig {
+            thoughts_repo: "~/t".to_string(),
+            repos_dir: "repos".to_string(),
+            global_dir: "global".to_string(),
+            user: "u".to_string(),
+            backend: BackendKind::Git,
+            ..Default::default()
+        };
+        cfg.profiles.insert(
+            "obs".to_string(),
+            ProfileConfig {
+                thoughts_repo: "~/p".to_string(),
+                repos_dir: "repos".to_string(),
+                global_dir: "global".to_string(),
+                backend: BackendKind::Obsidian,
+                backend_settings: BackendSettings {
+                    vault_path: Some("/vault".to_string()),
+                    ..Default::default()
+                },
+            },
+        );
+        cfg.repo_mappings.insert(
+            "/some/repo".to_string(),
+            RepoMapping::new("myproj", &Some("obs".to_string())),
+        );
+
+        let eff = cfg.effective_config_for("/some/repo");
+        assert_eq!(eff.backend, BackendKind::Obsidian);
+        assert_eq!(eff.backend_settings.vault_path.as_deref(), Some("/vault"));
+        assert_eq!(eff.profile_name.as_deref(), Some("obs"));
+    }
+
+    #[test]
+    fn carry_across_keeps_all_fields_when_kind_unchanged() {
+        let s = BackendSettings {
+            space_id: Some("s".to_string()),
+            type_id: Some("t".to_string()),
+            api_token_env: Some("ANYTYPE_API_KEY".to_string()),
+            ..Default::default()
+        };
+        let carried = s.carry_across(BackendKind::Anytype, BackendKind::Anytype);
+        assert_eq!(carried, s);
+    }
+
+    #[test]
+    fn carry_across_drops_everything_when_kind_changes() {
+        // Reproducer for the bug where `hyprlayer thoughts init --backend notion`
+        // after a prior anytype init leaked ANYTYPE_API_KEY into the notion
+        // settings via shared fields and the struct-update fallback.
+        let stale_anytype = BackendSettings {
+            space_id: Some("old-space".to_string()),
+            type_id: Some("old-type".to_string()),
+            api_token_env: Some("ANYTYPE_API_KEY".to_string()),
+            ..Default::default()
+        };
+        let carried = stale_anytype.carry_across(BackendKind::Anytype, BackendKind::Notion);
+        assert!(carried.is_empty());
+        assert!(carried.api_token_env.is_none());
+        assert!(carried.space_id.is_none());
+        assert!(carried.type_id.is_none());
+    }
+
+    #[test]
+    fn carry_across_drops_obsidian_fields_when_switching_to_notion() {
+        let stale = BackendSettings {
+            vault_path: Some("/vault".to_string()),
+            vault_subpath: Some("hyprlayer".to_string()),
+            ..Default::default()
+        };
+        let carried = stale.carry_across(BackendKind::Obsidian, BackendKind::Notion);
+        assert!(carried.is_empty());
+    }
+
+    #[test]
+    fn carry_across_round_trips_backend_switch() {
+        // Simulates: init anytype → init notion → (carried settings used to
+        // build next `BackendSettings`) must leave no anytype fields behind.
+        let mut settings = BackendSettings {
+            space_id: Some("space-1".to_string()),
+            type_id: Some("type-1".to_string()),
+            api_token_env: Some("ANYTYPE_API_KEY".to_string()),
+            ..Default::default()
+        };
+
+        // Backend switch: anytype → notion. `carry_across` is the only piece
+        // the init path uses to decide what to preserve.
+        settings = settings.carry_across(BackendKind::Anytype, BackendKind::Notion);
+
+        // Now the init flow would populate notion-specific fields on top.
+        settings = BackendSettings {
+            parent_page_id: Some("page-1".to_string()),
+            ..settings
+        };
+
+        assert_eq!(settings.parent_page_id.as_deref(), Some("page-1"));
+        assert!(settings.api_token_env.is_none());
+        assert!(settings.space_id.is_none());
+        assert!(settings.type_id.is_none());
+        assert!(settings.vault_path.is_none());
+        assert!(settings.vault_subpath.is_none());
+    }
+
+    #[test]
+    fn validate_for_git_is_always_ok() {
+        assert!(
+            BackendSettings::default()
+                .validate_for(BackendKind::Git)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn validate_for_obsidian_requires_vault_path() {
+        let empty = BackendSettings::default();
+        assert!(empty.validate_for(BackendKind::Obsidian).is_err());
+
+        let with_vault = BackendSettings {
+            vault_path: Some("/v".to_string()),
+            ..Default::default()
+        };
+        assert!(with_vault.validate_for(BackendKind::Obsidian).is_ok());
+    }
+
+    #[test]
+    fn validate_for_notion_requires_parent_page_only() {
+        let empty = BackendSettings::default();
+        let err = empty.validate_for(BackendKind::Notion).unwrap_err();
+        assert!(err.to_string().contains("parentPageId"));
+
+        // `api_token_env` is intentionally optional — connector/SSO setups
+        // don't have a token at all.
+        let only_parent = BackendSettings {
+            parent_page_id: Some("p".to_string()),
+            ..Default::default()
+        };
+        assert!(only_parent.validate_for(BackendKind::Notion).is_ok());
+
+        let full = BackendSettings {
+            parent_page_id: Some("p".to_string()),
+            api_token_env: Some("NOTION_TOKEN".to_string()),
+            ..Default::default()
+        };
+        assert!(full.validate_for(BackendKind::Notion).is_ok());
+    }
+
+    #[test]
+    fn validate_for_notion_does_not_require_database_id() {
+        let s = BackendSettings {
+            parent_page_id: Some("p".to_string()),
+            database_id: None,
+            ..Default::default()
+        };
+        assert!(s.validate_for(BackendKind::Notion).is_ok());
+    }
+
+    #[test]
+    fn validate_for_anytype_requires_space_id_only() {
+        let empty = BackendSettings::default();
+        let err = empty.validate_for(BackendKind::Anytype).unwrap_err();
+        assert!(err.to_string().contains("spaceId"));
+
+        // `api_token_env` is optional — SSO / pre-registered MCP flows don't
+        // need hyprlayer to surface it.
+        let only_space = BackendSettings {
+            space_id: Some("s".to_string()),
+            ..Default::default()
+        };
+        assert!(only_space.validate_for(BackendKind::Anytype).is_ok());
+
+        let full = BackendSettings {
+            space_id: Some("s".to_string()),
+            api_token_env: Some("ANYTYPE_API_KEY".to_string()),
+            ..Default::default()
+        };
+        assert!(full.validate_for(BackendKind::Anytype).is_ok());
+    }
+
+    #[test]
+    fn effective_config_falls_back_to_top_level_backend() {
+        let cfg = ThoughtsConfig {
+            thoughts_repo: "~/t".to_string(),
+            repos_dir: "repos".to_string(),
+            global_dir: "global".to_string(),
+            user: "u".to_string(),
+            backend: BackendKind::Obsidian,
+            backend_settings: BackendSettings {
+                vault_path: Some("/vault".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let eff = cfg.effective_config_for("/unmapped/repo");
+        assert_eq!(eff.backend, BackendKind::Obsidian);
+        assert_eq!(eff.backend_settings.vault_path.as_deref(), Some("/vault"));
+        assert!(eff.mapped_name.is_none());
     }
 }

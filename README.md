@@ -44,6 +44,38 @@ hyprlayer thoughts init
 
 See the [Getting Started guide](https://brightblock.ai/hyprlayer/getting-started/installation/) for full setup instructions.
 
+## Storage Backends
+
+Hyprlayer stores thoughts (plans, research, handoffs, notes) in one of four backends. Pick one at `init` time:
+
+```bash
+hyprlayer thoughts init --backend git         # default: a separate git repo, synced via `hyprlayer thoughts sync`
+hyprlayer thoughts init --backend obsidian    # local Obsidian vault, no sync (requires --vault-path)
+hyprlayer thoughts init --backend notion      # Notion database, via your agent tool's Notion connector
+hyprlayer thoughts init --backend anytype     # Anytype object, via the Anytype MCP server
+```
+
+For `notion`, the AI agent uses your agent tool's Notion connector (e.g. the Claude.ai connector from `/mcp`) -- hyprlayer never registers a Notion MCP server or manages a Notion token. For `anytype`, hyprlayer registers the MCP server automatically (requires the Anytype desktop app running and an `ANYTYPE_API_KEY`). In both cases the target database (Notion) or object type (Anytype) is **created lazily on the first write-oriented slash command** (e.g. the first `/create_plan` call); re-running after deleting the database/type out-of-band auto-heals.
+
+### Unified metadata schema
+
+Every thought carries the same 10 standardized properties regardless of backend. In `git`/`obsidian` these ride as YAML frontmatter; in `notion` they are first-class database properties; in `anytype` they are type properties.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `title` | text | yes | Human-readable title |
+| `type` | `plan` \| `research` \| `handoff` \| `note` | yes | Primary category |
+| `date` | date (YYYY-MM-DD) | yes | Creation date |
+| `status` | `draft` \| `active` \| `implemented` \| `superseded` \| `archived` | yes | Lifecycle state |
+| `ticket` | text | no | Optional external reference, e.g. `ENG-1234` |
+| `project` | text | yes | Which code repo this relates to |
+| `scope` | `user` \| `shared` \| `global` | yes | Matches the thoughts directory split |
+| `tags` | multi-select | no | Freeform topic labels |
+| `author` | text | yes | Thoughts user |
+| `related` | relation | no | Cross-references: page/object IDs or file paths |
+
+Run `hyprlayer storage info --json` from inside a project to see the resolved backend, settings, and the schema contract that slash commands populate.
+
 ## Workflow
 
 1. **Research** (`/research_codebase`) -- Explore and document how existing code works

@@ -3,9 +3,52 @@ description: Create detailed implementation plans through interactive research a
 model: opus
 ---
 
+> **Path convention**: the `thoughts/shared/...` paths in examples and templates below are literal on `git`/`obsidian` backends. On `notion`/`anytype`, substitute the matching `notion://<id>` / `anytype://<id>` identifier that `hyprlayer storage info` or `thoughts-locator` returns.
+
 # Implementation Plan
 
 You are tasked with creating detailed implementation plans through an interactive, iterative process. You should be skeptical, thorough, and work collaboratively with the user to produce high-quality technical specifications.
+
+## Storage backend dispatch
+
+Before you start, run `hyprlayer storage info --json` and parse the output. The `backend` field tells you where to save any artifacts this command produces. The `schema` field tells you which metadata properties are required — **populate every required field** regardless of backend. If the `hyprlayer` binary is not available or the project isn't mapped, proceed with the `git` branch below using relative `thoughts/shared/...` paths.
+
+### Where to save
+
+- **`git`**: write local markdown files through the project's `thoughts/shared/...` symlinks exactly as today. Prepend the required metadata as YAML frontmatter (see "Required metadata" below). `settings.thoughtsRepo` gives the absolute path. At the end, remind the user to run `hyprlayer thoughts sync` so the artifact is pushed.
+- **`obsidian`**: the project's `thoughts/` symlinks are still present and point into the user's vault, so relative paths like `thoughts/shared/plans/<file>.md` continue to work for writes. Prepend the required metadata as YAML frontmatter — Obsidian's Properties panel picks it up automatically. For absolute on-disk paths, use `settings.contentRoot` + `settings.reposDir` + `mappedName`. Do NOT remind the user to sync — Obsidian has no sync step.
+- **`notion`**: do NOT write local files. Ensure the target database exists:
+  1. If `settings.databaseId` is populated, call `mcp__notion__retrieve-database` with that ID. If it resolves, skip to step 4.
+  2. If `databaseId` is missing or retrieval returns not-found, call `mcp__notion__create-database` under `settings.parentPageId` with `title: "Hyprlayer Thoughts"` and one property per entry in `storage info`'s `schema` array (title → `title`; text → `rich_text`; date → `date`; select → `select` with `options`; tags → `multi_select`; relation → `relation` self-referential).
+  3. Run `hyprlayer storage set-database-id <returned_id>` to persist. Proceed with step 4 using the new ID.
+  4. Create a database row using `mcp__notion__create-page` with `parent.database_id = <id>`. Populate every required schema field as a typed property; the body receives the narrative content from the template below.
+  If the Notion MCP tools are not available in this session, tell the user to run `hyprlayer thoughts init --backend notion` and stop.
+- **`anytype`**: do NOT write local files. Ensure the target type + properties + tags exist before creating the object:
+  1. **Resolve the type.** If `settings.typeId` is populated, call `mcp__anytype__API-get-type` with that ID + `settings.spaceId`. If it resolves, skip to step 4. If it returns not-found / 404 / 410, treat as missing and fall through.
+  2. **Create the type.** Call `mcp__anytype__API-create-type` in `spaceId` with `name: "Hyprlayer Thought"`, `plural_name: "Hyprlayer Thoughts"`, `key: "hyprlayer_thought"`, `layout: "basic"`. Anytype's `properties` array on this endpoint does NOT reliably attach all supplied properties to the type — create them explicitly via `mcp__anytype__API-create-property`, one call per field in `schema` (except `title`, which maps to the object's `name` field and does not need a property). Use `key: "hyprlayer_<field>"` (Anytype snake-cases keys automatically). For each schema field whose `kind` is `select` or `multi_select`/`tags`, pass `tags: [...]` in the create-property call with one entry per `schema.options` value — this bakes the legal tag set in up-front so future writes don't need to create tags inline. If a property key already exists (`bad request: property key "…" already exists`), treat that as success and continue — a prior invocation created it at space scope. **Then call `mcp__anytype__API-update-type`** on the newly-created type with `properties: [...]` listing every field (`{key, name, format}`) — this is what actually links the properties to the type so the UI renders them on every object. Without the update-type step, object creates silently accept typed values but Anytype's property sidebar shows only the built-in `tag`/`backlinks` entries.
+  3. **Persist the type ID.** Run `hyprlayer storage set-type-id <returned_id>`. Proceed with step 4 using the new ID.
+  4. **Ensure select tags exist** for the specific values this write uses. For `type`, `status`, `scope`, and each `tags` value you are about to set, call `mcp__anytype__API-list-tags` (filter by the matching `property_id`) and call `mcp__anytype__API-create-tag` for any values not yet present. Record the returned tag IDs — the object-create call takes tag IDs, not string names. Anytype snake-cases tag keys (e.g. `integration-test` → `integration_test`); the `name` is preserved verbatim, so filter / display by name.
+  5. **Create the object.** Call `mcp__anytype__API-create-object` with `type_key: "hyprlayer_thought"`, `space_id: <spaceId>`, `name: <title>`, `body: <narrative markdown>`, and a `properties` array — one entry per required schema field, using the property `key` (e.g. `hyprlayer_type`) and the matching typed value (`select: <tag_id>`, `multi_select: [<tag_id>, ...]`, `date: "YYYY-MM-DD"`, `text: "..."`). Do NOT dump metadata into the body as frontmatter — Anytype's search relies on typed properties.
+  If the Anytype MCP tools are not available, tell the user to start the Anytype app and run `hyprlayer thoughts init --backend anytype`, then stop. Do NOT silently fall back to writing a local markdown file — that would hide the misconfiguration.
+
+### Required metadata
+
+Read the `schema` array from `storage info --json`. Populate **every field marked `required: true`**. For this command:
+
+| Field | How to determine |
+|---|---|
+| `title` | Derive from the task — short, human-readable |
+| `type` | `plan` |
+| `date` | Today's date in `YYYY-MM-DD` |
+| `status` | `draft` for newly-created plans |
+| `project` | `mappedName` from the same JSON output |
+| `scope` | `shared` unless the user's task clearly implies `user` or `global` |
+| `author` | Pull from `hyprlayer thoughts config --json` (the `user` field) or derive from `git config user.name` |
+| `ticket` | If the task references `ENG-XXXX` or similar, capture it; otherwise null |
+| `tags` | Derive 2-5 topic tags from the task |
+| `related` | Leave empty unless the task explicitly references another plan/research doc |
+
+For `select` fields, the `schema.options` array lists the legal values — do not invent new ones. For `git`/`obsidian`, render the above as YAML frontmatter at the top of the file. For `notion`/`anytype`, set them as typed database/object properties.
 
 ## Initial Response
 
@@ -169,14 +212,9 @@ Once aligned on approach:
 
 After structure approval:
 
-1. **Write the plan** to `thoughts/shared/plans/YYYY-MM-DD-ENG-XXXX-description.md`
-   - Format: `YYYY-MM-DD-ENG-XXXX-description.md` where:
-     - YYYY-MM-DD is today's date
-     - ENG-XXXX is the ticket number (omit if no ticket)
-     - description is a brief kebab-case description
-   - Examples:
-     - With ticket: `2025-01-08-ENG-1478-parent-child-tracking.md`
-     - Without ticket: `2025-01-08-improve-error-handling.md`
+1. **Save the plan** following the storage backend dispatch from the top of this command. The title convention is `YYYY-MM-DD-ENG-XXXX-description` (omit the ticket chunk if there is none), e.g. `2025-01-08-ENG-1478-parent-child-tracking` or `2025-01-08-improve-error-handling`.
+   - For `git`/`obsidian`: write to `thoughts/shared/plans/<title>.md` with YAML frontmatter containing every required schema field.
+   - For `notion`/`anytype`: create the database row / object with every required property populated; the narrative content below becomes the body.
 2. **Use this template structure**:
 
 ````markdown
@@ -278,14 +316,13 @@ After structure approval:
 
 ### Step 5: Sync and Review
 
-1. **Sync the thoughts directory**:
-   - Run `hyprlayer thoughts sync` to sync the newly created plan
-   - This ensures the plan is properly indexed and available
+1. **Sync (git backend only)**:
+   - For `backend: git`, run `hyprlayer thoughts sync` so the plan is pushed upstream.
+   - For `obsidian`/`notion`/`anytype`, skip this step — those backends have no push/pull cycle in hyprlayer.
 
 2. **Present the draft plan location**:
    ```
-   I've created the initial implementation plan at:
-   `thoughts/shared/plans/YYYY-MM-DD-ENG-XXXX-description.md`
+   I've created the initial implementation plan at [path or database row link].
 
    Please review it and let me know:
    - Are the phases properly scoped?
@@ -299,7 +336,7 @@ After structure approval:
    - Adjust technical approach
    - Clarify success criteria (both automated and manual)
    - Add/remove scope items
-   - After making changes, run `hyprlayer thoughts sync` again
+   - For `backend: git`, re-run `hyprlayer thoughts sync` after each round of edits
 
 4. **Continue refining** until the user is satisfied
 

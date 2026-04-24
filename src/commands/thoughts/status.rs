@@ -2,27 +2,24 @@ use anyhow::Result;
 use colored::Colorize;
 use std::path::MAIN_SEPARATOR_STR as SEP;
 
+use crate::backends::{self, BackendContext};
 use crate::cli::StatusArgs;
-use crate::config::{expand_path, get_current_repo_path};
-use crate::git_ops::GitRepo;
+use crate::config::get_current_repo_path;
 
 pub fn status(args: StatusArgs) -> Result<()> {
     println!("{}", "Thoughts Repository Status".blue());
     println!("{}", "=".repeat(50).bright_black());
     println!();
 
-    // Load config
     let hyprlayer_config = args.config.load()?;
     let thoughts_config = hyprlayer_config.thoughts.as_ref().unwrap();
 
-    // Resolve effective config for current repo (profile-aware)
     let current_repo = get_current_repo_path()?;
     let current_repo_str = current_repo.display().to_string();
     let effective = thoughts_config.effective_config_for(&current_repo_str);
 
-    // Show configuration (use effective/profile-resolved values)
     println!("{}", "Configuration:".yellow());
-    println!("  Repository: {}", effective.thoughts_repo.cyan());
+    println!("  Backend: {}", effective.backend.as_str().cyan());
     println!("  Repos directory: {}", effective.repos_dir.cyan());
     println!("  Global directory: {}", effective.global_dir.cyan());
     println!("  User: {}", thoughts_config.user.cyan());
@@ -35,86 +32,35 @@ pub fn status(args: StatusArgs) -> Result<()> {
     );
     println!();
 
-    // Check current repo mapping
     if let Some(ref mapped_name) = effective.mapped_name {
         println!("{}", "Current Repository:".yellow());
         println!("  Path: {}", current_repo_str.cyan());
-        println!(
-            "  Thoughts directory: {}{SEP}{}",
-            effective.repos_dir.cyan(),
-            mapped_name.cyan()
-        );
-        println!(
-            "  Full path: {}{SEP}{}{SEP}{}",
-            effective.thoughts_repo.cyan(),
-            effective.repos_dir.cyan(),
-            mapped_name.cyan()
-        );
 
-        let thoughts_dir = current_repo.join("thoughts");
-        if thoughts_dir.exists() {
-            println!("  Status: {}", "✓ Initialized".green());
-        } else {
-            println!("  Status: {}", "✗ Not initialized".red());
+        if effective.backend.uses_filesystem() {
+            println!(
+                "  Thoughts directory: {}{SEP}{}",
+                effective.repos_dir.cyan(),
+                mapped_name.cyan()
+            );
+
+            let thoughts_dir = current_repo.join("thoughts");
+            if thoughts_dir.exists() {
+                println!("  Status: {}", "✓ Initialized".green());
+            } else {
+                println!("  Status: {}", "✗ Not initialized".red());
+            }
         }
     } else {
         println!("{}", "Current repository not mapped to thoughts".yellow());
     }
     println!();
 
-    // Show thoughts repository git status
-    let expanded_repo = expand_path(&effective.thoughts_repo);
-    if !expanded_repo.exists() {
-        println!(
-            "{}",
-            format!(
-                "Thoughts repository not found at {}",
-                effective.thoughts_repo
-            )
-            .red()
-        );
-        return Ok(());
-    }
-
-    println!("{}", "Thoughts Repository Git Status:".yellow());
-    let git_repo = match GitRepo::open(&expanded_repo) {
-        Ok(repo) => repo,
-        Err(e) => {
-            println!("  Error: {}", e.to_string().red());
-            return Ok(());
-        }
-    };
-
-    // Show last commit
-    let last_commit = git_repo
-        .get_last_commit()
-        .unwrap_or_else(|_| "No commits yet".bright_black().to_string());
-    println!("  Last commit: {}", last_commit);
-
-    // Show remote status
-    let remote_status = git_repo
-        .remote_url()
-        .map(|_| "origin configured".green().to_string())
-        .unwrap_or_else(|| "No remote configured".bright_black().to_string());
-    println!("  Remote: {}", remote_status);
-
-    // Show uncommitted changes
-    match git_repo.has_changes() {
-        Ok(true) => {
-            println!();
-            println!("{}", "Uncommitted changes:".yellow());
-            print!("{}", git_repo.status()?);
-            println!();
-            println!(
-                "{}",
-                "Run 'hyprlayer thoughts sync' to commit these changes".bright_black()
-            );
-        }
-        Ok(false) => {
-            println!();
-            println!("{}", "✓ No uncommitted changes".green());
-        }
-        Err(e) => println!("  Error checking status: {}", e),
+    let agent_tool = hyprlayer_config.ai.as_ref().and_then(|a| a.agent_tool);
+    let ctx = BackendContext::new(&current_repo, &effective).with_agent_tool(agent_tool);
+    let backend = backends::for_kind(effective.backend);
+    let report = backend.status(&ctx)?;
+    for line in report.lines {
+        println!("{}", line);
     }
 
     Ok(())

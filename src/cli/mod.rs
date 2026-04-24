@@ -20,6 +20,11 @@ pub enum Cli {
         #[command(subcommand)]
         command: AiCommands,
     },
+    /// Inspect the active storage backend for thoughts content
+    Storage {
+        #[command(subcommand)]
+        command: StorageCommands,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -49,4 +54,11 @@ pub enum ProfileCommands {
     List(ProfileListArgs),
     Show(ProfileShowArgs),
     Delete(ProfileDeleteArgs),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum StorageCommands {
+    Info(StorageInfoArgs),
+    SetDatabaseId(StorageSetDatabaseIdArgs),
+    SetTypeId(StorageSetTypeIdArgs),
 }
