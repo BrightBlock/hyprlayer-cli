@@ -37,6 +37,18 @@ pub fn show(args: ProfileShowArgs) -> Result<()> {
     println!("  Thoughts repository: {}", get_str("thoughtsRepo").cyan());
     println!("  Repos directory: {}", get_str("reposDir").cyan());
     println!("  Global directory: {}", get_str("globalDir").cyan());
+    println!("  Backend: {}", get_str("backend").cyan());
+
+    if let Some(settings) = profile.get("backendSettings").and_then(|s| s.as_object())
+        && !settings.is_empty()
+    {
+        println!();
+        println!("{}", "Backend settings:".yellow());
+        for (key, val) in settings {
+            let display = super::super::format_backend_setting(key, val);
+            println!("  {}: {}", key, display.cyan());
+        }
+    }
 
     Ok(())
 }

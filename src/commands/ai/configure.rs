@@ -1,6 +1,6 @@
 use anyhow::Result;
 use colored::Colorize;
-use dialoguer::{theme::ColorfulTheme, Select};
+use dialoguer::{Select, theme::ColorfulTheme};
 
 use crate::agents::{AgentTool, OpenCodeProvider};
 use crate::cli::AiConfigureArgs;
@@ -59,7 +59,7 @@ pub fn configure(args: AiConfigureArgs) -> Result<()> {
         };
 
     let ai = hyprlayer_config.ai_mut();
-    ai.agent_tool = Some(agent_tool.clone());
+    ai.agent_tool = Some(agent_tool);
     ai.opencode_provider = opencode_provider;
     ai.opencode_sonnet_model = opencode_sonnet_model;
     ai.opencode_opus_model = opencode_opus_model;
@@ -110,7 +110,7 @@ fn prompt_for_agent_tool(theme: &ColorfulTheme) -> Result<AgentTool> {
         .default(0)
         .interact()?;
 
-    Ok(AgentTool::ALL[selection].clone())
+    Ok(AgentTool::ALL[selection])
 }
 
 fn prompt_for_opencode_provider(theme: &ColorfulTheme) -> Result<OpenCodeProvider> {

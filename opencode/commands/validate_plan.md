@@ -3,9 +3,24 @@ description: Validate implementation against plan, verify success criteria, iden
 subtask: false
 ---
 
+> **Path convention**: the `thoughts/shared/...` paths in examples and templates below are literal on `git`/`obsidian` backends. On `notion`/`anytype`, substitute the matching `notion://<id>` / `anytype://<id>` identifier that `hyprlayer storage info` or `thoughts-locator` returns.
+
 # Validate Plan
 
 You are tasked with validating that an implementation plan was correctly executed, verifying all success criteria and identifying any deviations or issues.
+
+## Storage backend dispatch
+
+Before you start, run `hyprlayer storage info --json` and parse the `backend` field. This command reads an existing plan to validate it:
+
+- **`git`**: read from `thoughts/shared/plans/<name>.md` via the symlink, or the absolute path under `settings.thoughtsRepo`.
+- **`obsidian`**: read via the project's `thoughts/shared/plans/<name>.md` symlink (identical to git), or via absolute path under `settings.contentRoot`.
+- **`notion`**: use `mcp__notion__retrieve-page` with the page ID the user provides, or query via `mcp__notion__query-database` filtered by `type = plan` + `project = <mappedName>`. Checkboxes in the plan body come back as Notion toggle/to-do blocks — enumerate block children to count done vs. pending.
+- **`anytype`**: use `mcp__anytype__API-get-object` with the object ID + `settings.spaceId`, or `mcp__anytype__API-list-objects` filtered by `type = plan`.
+
+The `status` property (legal values: `schema.options` for `status`) is the authoritative lifecycle marker. If the validation concludes the plan is fully implemented, surface that promoting `status` from `active` to `implemented` is the follow-up — but do not modify the artifact yourself in this command.
+
+If `hyprlayer storage info` is not available or the project isn't mapped, proceed with `git` behavior using relative `thoughts/shared/plans/...` paths.
 
 ## Initial Setup
 
