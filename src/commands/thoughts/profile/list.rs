@@ -30,6 +30,7 @@ pub fn list(args: ProfileListArgs) -> Result<()> {
     println!("  Thoughts repository: {}", get_str("thoughtsRepo").cyan());
     println!("  Repos directory: {}", get_str("reposDir").cyan());
     println!("  Global directory: {}", get_str("globalDir").cyan());
+    println!("  Backend: {}", get_str("backend").cyan());
     println!();
 
     let Some(profiles) = thoughts.get("profiles").and_then(|p| p.as_object()) else {
@@ -60,6 +61,17 @@ pub fn list(args: ProfileListArgs) -> Result<()> {
         );
         println!("    Repos directory: {}", get_profile_str("reposDir"));
         println!("    Global directory: {}", get_profile_str("globalDir"));
+        println!("    Backend: {}", get_profile_str("backend"));
+
+        if let Some(settings) = profile.get("backendSettings").and_then(|s| s.as_object())
+            && !settings.is_empty()
+        {
+            for (key, val) in settings {
+                let display = super::super::format_backend_setting(key, val);
+                println!("    {}: {}", key, display);
+            }
+        }
+
         println!();
     }
 
