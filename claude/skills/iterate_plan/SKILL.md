@@ -1,9 +1,9 @@
 ---
-description: Iterate on existing implementation plans with thorough research and updates
+name: iterate_plan
+description: Iterate on an existing implementation plan with thorough research and surgical updates. Use when the user asks to update, refine, or rewrite parts of an existing plan. Mutates an existing thoughts artifact (a plan).
 model: opus
+allowed-tools: Bash, Read, Grep, Glob, Agent, Write, Edit, mcp__claude_ai_Notion__*, mcp__anytype__*
 ---
-
-> **Path convention**: the `thoughts/shared/...` paths in examples and templates below are literal on `git`/`obsidian` backends. On `notion`/`anytype`, substitute the matching `notion://<id>` / `anytype://<id>` identifier that `hyprlayer storage info` or `thoughts-locator` returns.
 
 # Iterate Implementation Plan
 
@@ -11,16 +11,7 @@ You are tasked with updating existing implementation plans based on user feedbac
 
 ## Storage backend dispatch
 
-Before you start, run `hyprlayer storage info --json` and parse the `backend` field. This command reads an existing plan and updates it. The backend determines how to retrieve and modify it:
-
-- **`git`**: read from `thoughts/shared/plans/<name>.md` via the symlink, or the absolute path under `settings.thoughtsRepo`. Edit the file directly. Also update frontmatter `last_updated` / `last_updated_by` if those fields are populated. At the end, for `backend: git` remind the user to run `hyprlayer thoughts sync`.
-- **`obsidian`**: read via the project's `thoughts/shared/plans/<name>.md` symlink (identical to git), or via absolute path under `settings.contentRoot`. Edit the file directly. Do NOT remind the user to sync.
-- **`notion`**: use `mcp__notion__retrieve-page` with the page ID the user provides, or query via `mcp__notion__query-database` filtered by `type = plan` + `project = <mappedName>`. Update narrative via `mcp__notion__append-block-children` / `mcp__notion__update-block`, and update properties (e.g. `status`, `tags`) via `mcp__notion__update-page`. Use schema-legal `status` values (`schema.options`).
-- **`anytype`**: use `mcp__anytype__API-get-object` with the object ID + `settings.spaceId`, or `mcp__anytype__API-list-objects` filtered by `type = plan`. Update via `mcp__anytype__API-update-object`.
-
-**Required metadata on update**: any new or changed content should keep existing schema fields valid — if the iteration bumps lifecycle (e.g. `draft` → `active`), write the new `status`. Do not invent new `select` values — use only those in `schema.options`. Do not drop required fields during edits.
-
-If `hyprlayer storage info` is not available or the project isn't mapped, proceed with `git` behavior using relative `thoughts/shared/plans/...` paths.
+Read `~/.claude/skills/_thoughts/storage-backend.md` for the per-backend mechanics — see the "How to read existing artifacts" and "How to update existing artifacts" sections. Read `~/.claude/skills/_thoughts/required-metadata.md` for the schema-required fields and legal `select` values. For this command: artifact type is `plan`; the title is unchanged unless the user asks to rename it. Update `last_updated` / `last_updated_by` if those fields are populated. Do not drop required schema fields during edits.
 
 ## Initial Response
 

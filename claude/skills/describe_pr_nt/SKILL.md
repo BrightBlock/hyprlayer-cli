@@ -1,5 +1,7 @@
 ---
-description: Generate comprehensive PR descriptions following repository templates
+name: describe_pr_nt
+description: Generate comprehensive PR descriptions using a built-in template, no-thoughts variant (writes to /tmp instead of thoughts/shared/prs). Use when the user asks to describe a PR in a repo without a thoughts/shared/pr_description.md template.
+allowed-tools: Bash, Read
 ---
 
 # Generate PR Description

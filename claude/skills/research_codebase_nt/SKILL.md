@@ -1,9 +1,9 @@
 ---
-description: Document codebase as-is without evaluation or recommendations
+name: research_codebase_nt
+description: Document codebase as-is without evaluation or recommendations, no-thoughts variant (omits thoughts-locator/thoughts-analyzer agents). Use when the user asks to map a codebase that does not use the standard thoughts directory. Read-only; produces a research artifact via the active storage backend.
 model: opus
+allowed-tools: Bash, Read, Grep, Glob, Agent
 ---
-
-> **Path convention**: the `thoughts/shared/...` paths in examples and templates below are literal on `git`/`obsidian` backends. On `notion`/`anytype`, substitute the matching `notion://<id>` / `anytype://<id>` identifier that `hyprlayer storage info` or `thoughts-locator` returns.
 
 # Research Codebase
 
@@ -11,18 +11,7 @@ You are tasked with conducting comprehensive research across the codebase to ans
 
 ## Storage backend dispatch
 
-Before you start, run `hyprlayer storage info --json` and parse the output. The `backend` field tells you where to save the research document. The `schema` field lists required metadata — **populate every required field** regardless of backend. If the `hyprlayer` binary is not available or the project isn't mapped, proceed with the `git` branch using relative `thoughts/shared/research/...` paths.
-
-### Where to save
-
-- **`git`**: write to `thoughts/shared/research/<title>.md` via the symlink. Prepend the required metadata as YAML frontmatter. `settings.thoughtsRepo` gives the absolute path. At the end, remind the user to run `hyprlayer thoughts sync`.
-- **`obsidian`**: the project's `thoughts/` symlinks point into the user's vault, so `thoughts/shared/research/<title>.md` works for writes. Prepend YAML frontmatter — Obsidian's Properties panel picks it up. Do NOT remind the user to sync.
-- **`notion`**: do NOT write local files. Ensure the target database exists (retrieve-database → create-database if missing → persist ID with `hyprlayer storage set-database-id`). Create the research entry via `mcp__notion__create-page` with `parent.database_id = <id>`, populating every required schema field as a typed property; body receives narrative content. If the Notion MCP tools are not available, tell the user to run `hyprlayer thoughts init --backend notion` and stop.
-- **`anytype`**: do NOT write local files. Ensure the target type exists (get-type → create-type + create-property if missing → persist ID with `hyprlayer storage set-type-id`). Create an object via `mcp__anytype__API-create-object`, populating every required schema field as a property. If the Anytype MCP tools are not available, tell the user to start the Anytype app and run `hyprlayer thoughts init --backend anytype`, then stop.
-
-### Required metadata
-
-Populate every `required: true` field from `storage info`'s `schema` array. For this command: `type: research`, `status: draft` (or `active` if ongoing), `project: <mappedName>`, `scope: shared`, `date: YYYY-MM-DD`, `author` from `hyprlayer thoughts config --json`, `ticket` if referenced, 2-5 `tags`, and `title` matching the research question. Legal `select` values are in `schema.options`. Render as YAML frontmatter for `git`/`obsidian`; typed properties for `notion`/`anytype`.
+Read `~/.claude/skills/_thoughts/storage-backend.md` and follow it for where to save the artifact. Read `~/.claude/skills/_thoughts/required-metadata.md` for the schema-required fields and the backend-specific title format. For this command: artifact type is `research`; the title is derived from the research question.
 
 ## CRITICAL: YOUR ONLY JOB IS TO DOCUMENT AND EXPLAIN THE CODEBASE AS IT EXISTS TODAY
 - DO NOT suggest improvements or changes unless the user explicitly asks for them
@@ -95,7 +84,7 @@ Then wait for the user's research query.
 
 5. **Gather metadata for the research document:**
    - Run Bash() tools to generate all relevant metadata
-   - Determine the artifact title as `YYYY-MM-DD-ENG-XXXX-description` (omit the ticket chunk if there is none)
+   - Determine the artifact title per the backend-specific rule in `~/.claude/skills/_thoughts/required-metadata.md`
    - Destination is resolved by the storage backend dispatch:
      - For `git`/`obsidian`: `thoughts/shared/research/<title>.md`
      - For `notion`/`anytype`: a database row / object with `type: research`

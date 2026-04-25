@@ -1,8 +1,9 @@
 ---
-description: Implement technical plans with verification
+name: implement_plan
+description: Implement an existing technical plan, checking off items and verifying success criteria as work progresses. Side-effecting; user-only — never auto-invoke. Use when the user asks to implement a previously approved plan.
+allowed-tools: Bash, Read, Edit, Write, Grep, Glob, Agent
+disable-model-invocation: true
 ---
-
-> **Path convention**: the `thoughts/shared/...` paths in examples and templates below are literal on `git`/`obsidian` backends. On `notion`/`anytype`, substitute the matching `notion://<id>` / `anytype://<id>` identifier that `hyprlayer storage info` or `thoughts-locator` returns.
 
 # Implement Plan
 
@@ -10,14 +11,7 @@ You are tasked with implementing an approved technical plan. These plans contain
 
 ## Storage backend dispatch
 
-Before you start, run `hyprlayer storage info --json` and parse the `backend` field. This command reads an existing plan and updates it in place (checking off items, bumping `status`), so the backend determines how to retrieve and modify it:
-
-- **`git`**: read from `thoughts/shared/plans/<name>.md` via the symlink, or the absolute path under `settings.thoughtsRepo`. Edit the file directly to check off items (`- [x]`) and, once fully implemented, update the frontmatter `status` to `implemented`. At the end, for `backend: git` also run `hyprlayer thoughts sync`.
-- **`obsidian`**: read via the project's `thoughts/shared/plans/<name>.md` symlink (identical to git), or via absolute path under `settings.contentRoot`. Edit the file directly. Do NOT remind the user to sync.
-- **`notion`**: use `mcp__notion__retrieve-page` with the page ID the user provides, or query the database with `mcp__notion__query-database` filtered by `type = plan` + `project = <mappedName>` if searching by title. Update progress with `mcp__notion__update-page` (for properties like `status`) and `mcp__notion__append-block-children` / `mcp__notion__update-block` for the body. Legal `status` values are in `schema.options`: promote from `draft` → `active` → `implemented` as work progresses.
-- **`anytype`**: use `mcp__anytype__API-get-object` with the object ID + `settings.spaceId`, or `mcp__anytype__API-list-objects` filtered by type `HyprlayerThought` and property `type = plan`. Update via `mcp__anytype__API-update-object`. Promote `status` as above.
-
-If `hyprlayer storage info` is not available or the project isn't mapped, proceed with `git` behavior using relative `thoughts/shared/plans/...` paths.
+Read `~/.claude/skills/_thoughts/storage-backend.md` for the per-backend mechanics — see the "How to read existing artifacts" and "How to update existing artifacts" sections. Read `~/.claude/skills/_thoughts/required-metadata.md` for legal `select` values (in particular for `status`). For this command: artifact type is `plan`; you read the plan, check off items as you go (`- [x]`), and once fully implemented promote `status` from `active` to `implemented` per the rules in those files.
 
 ## Getting Started
 

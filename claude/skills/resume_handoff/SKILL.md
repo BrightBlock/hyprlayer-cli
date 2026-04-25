@@ -1,8 +1,9 @@
 ---
-description: Resume work from handoff document with context analysis and validation
+name: resume_handoff
+description: Resume work from a handoff document with context analysis, validation against current state, and a generated action plan. Side-effecting; user-only — never auto-invoke. Use when the user asks to resume from a prior handoff (by path or by ticket number).
+allowed-tools: Bash, Read, Edit, Write, Grep, Glob, Agent, mcp__claude_ai_Notion__*, mcp__anytype__*
+disable-model-invocation: true
 ---
-
-> **Path convention**: the `thoughts/shared/...` paths in examples and templates below are literal on `git`/`obsidian` backends. On `notion`/`anytype`, substitute the matching `notion://<id>` / `anytype://<id>` identifier that `hyprlayer storage info` or `thoughts-locator` returns.
 
 # Resume work from a handoff document
 
@@ -10,16 +11,12 @@ You are tasked with resuming work from a handoff document through an interactive
 
 ## Storage backend dispatch
 
-Before you start, run `hyprlayer storage info --json` and parse the `backend` field. This command reads an existing handoff from storage:
+Read `~/.claude/skills/_thoughts/storage-backend.md` for the per-backend mechanics — see the "How to read existing artifacts" section. For this command: artifact type is `handoff`. If the user provides only a ticket number (e.g. `ENG-2124`), find the most recent handoff for that ticket per the backend's rules:
 
-- **`git`**: read from `thoughts/shared/handoffs/ENG-XXXX/<name>.md` via the symlink, or the absolute path under `settings.thoughtsRepo`. If the user provides only a ticket number (e.g. `ENG-2124`), list `thoughts/shared/handoffs/ENG-2124/` and pick the most recent file by the `YYYY-MM-DD_HH-MM-SS` prefix. For `backend: git` you may first run `hyprlayer thoughts sync` to ensure latest handoffs are pulled.
-- **`obsidian`**: read via the project's `thoughts/shared/handoffs/...` symlink (identical to git), or via absolute path under `settings.contentRoot`. Skip any sync step — Obsidian has no pull.
-- **`notion`**: use `mcp__notion__retrieve-page` with the page ID the user provides, or query via `mcp__notion__query-database` filtered by `type = handoff` + `project = <mappedName>` + (optional) `ticket = ENG-XXXX`, sorted by `date` descending, to find the most recent handoff for a ticket.
-- **`anytype`**: use `mcp__anytype__API-get-object` with the object ID + `settings.spaceId`, or `mcp__anytype__API-list-objects` filtered by `type = handoff`, sorted by `date` descending.
+- **`git`** / **`obsidian`**: list `thoughts/shared/handoffs/ENG-2124/` and pick the most recent file by the `YYYY-MM-DD_HH-MM-SS` filename prefix.
+- **`notion`** / **`anytype`**: query the database/type filtered by `type = handoff` + `project = <mappedName>` + `ticket = ENG-XXXX`, sorted by `date` descending.
 
-If the referenced handoff points to related artifacts (plan, research docs), apply the same dispatch logic to retrieve those — use the same backend, use schema fields to locate them.
-
-If `hyprlayer storage info` is not available or the project isn't mapped, proceed with `git` behavior using relative `thoughts/shared/handoffs/...` paths.
+If the referenced handoff points to related artifacts (plan, research docs), apply the same dispatch logic to retrieve those — use the same backend; use the artifacts' `type` schema field to locate them.
 
 ## Initial Response
 
@@ -34,11 +31,11 @@ When this command is invoked:
 
 2. **If a ticket number (like ENG-XXXX) was provided**:
    - For `backend: git`, run `hyprlayer thoughts sync` to ensure your `thoughts/` directory is up to date. For `obsidian`/`notion`/`anytype`, skip this step.
-   - Locate the most recent handoff per the storage backend dispatch above. For `git`/`obsidian`, tickets will be located in `thoughts/shared/handoffs/ENG-XXXX/`. **List this directory's contents.** For `notion`/`anytype`, query the database/type filtered by `type = handoff` + `ticket = ENG-XXXX` sorted by `date` descending.
-   - There may be zero, one or multiple files in the directory.
-   - **If there are zero files in the directory, or the directory does not exist**: tell the user: "I'm sorry, I can't seem to find that handoff document. Can you please provide me with a path to it?"
-   - **If there is only one file in the directory**: proceed with that handoff
-   - **If there are multiple files in the directory**: using the date and time specified in the file name (it will be in the format `YYYY-MM-DD_HH-MM-SS` in 24-hour time format), proceed with the _most recent_ handoff document.
+   - Locate the most recent handoff per the storage backend dispatch above.
+   - There may be zero, one or multiple matching handoffs.
+   - **If there are zero matches**: tell the user: "I'm sorry, I can't seem to find that handoff document. Can you please provide me with a path to it?"
+   - **If there is only one match**: proceed with that handoff
+   - **If there are multiple matches**: select the most recent (by `YYYY-MM-DD_HH-MM-SS` filename prefix for git/obsidian, or by `date` property descending for notion/anytype)
    - Immediately read the handoff document FULLY
    - Immediately read any research or plan documents that it links to under `thoughts/shared/plans` or `thoughts/shared/research`; do NOT use a sub-agent to read these critical files.
    - Begin the analysis process by ingesting relevant context from the handoff document, reading additional files it mentions

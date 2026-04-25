@@ -1,8 +1,8 @@
 ---
-description: Validate implementation against plan, verify success criteria, identify issues
+name: validate_plan
+description: Validate that an implementation plan was correctly executed, run its automated success criteria, and report deviations and remaining manual steps. Read-only on the plan artifact. Use when the user asks to validate or audit an implementation against an existing plan.
+allowed-tools: Bash, Read, Grep, Glob, Agent
 ---
-
-> **Path convention**: the `thoughts/shared/...` paths in examples and templates below are literal on `git`/`obsidian` backends. On `notion`/`anytype`, substitute the matching `notion://<id>` / `anytype://<id>` identifier that `hyprlayer storage info` or `thoughts-locator` returns.
 
 # Validate Plan
 
@@ -10,16 +10,9 @@ You are tasked with validating that an implementation plan was correctly execute
 
 ## Storage backend dispatch
 
-Before you start, run `hyprlayer storage info --json` and parse the `backend` field. This command reads an existing plan to validate it:
+Read `~/.claude/skills/_thoughts/storage-backend.md` for the per-backend mechanics — see the "How to read existing artifacts" section. Read `~/.claude/skills/_thoughts/required-metadata.md` for legal `select` values (in particular for `status`). For this command: artifact type is `plan`; this is read-only — you do not modify the artifact. If your validation concludes the plan is fully implemented, surface that promoting `status` from `active` to `implemented` is the follow-up, but do not perform the mutation here.
 
-- **`git`**: read from `thoughts/shared/plans/<name>.md` via the symlink, or the absolute path under `settings.thoughtsRepo`.
-- **`obsidian`**: read via the project's `thoughts/shared/plans/<name>.md` symlink (identical to git), or via absolute path under `settings.contentRoot`.
-- **`notion`**: use `mcp__notion__retrieve-page` with the page ID the user provides, or query via `mcp__notion__query-database` filtered by `type = plan` + `project = <mappedName>`. Checkboxes in the plan body come back as Notion toggle/to-do blocks — enumerate block children to count done vs. pending.
-- **`anytype`**: use `mcp__anytype__API-get-object` with the object ID + `settings.spaceId`, or `mcp__anytype__API-list-objects` filtered by `type = plan`.
-
-The `status` property (legal values: `schema.options` for `status`) is the authoritative lifecycle marker. If the validation concludes the plan is fully implemented, surface that promoting `status` from `active` to `implemented` is the follow-up — but do not modify the artifact yourself in this command.
-
-If `hyprlayer storage info` is not available or the project isn't mapped, proceed with `git` behavior using relative `thoughts/shared/plans/...` paths.
+For `notion`/`anytype`, checkboxes inside the plan body come back as toggle/to-do block children (Notion) or the body markdown (Anytype) — enumerate them to count done vs. pending.
 
 ## Initial Setup
 

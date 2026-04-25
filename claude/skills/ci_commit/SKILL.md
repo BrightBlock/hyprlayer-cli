@@ -1,5 +1,8 @@
 ---
-description: Create git commits for session changes with clear, atomic messages
+name: ci_commit
+description: Create git commits for session changes with clear, atomic messages, without prompting the user for confirmation. Side-effecting; user-only — never auto-invoke. Use when the user asks for a non-interactive (CI-style) commit run.
+allowed-tools: Bash, Read
+disable-model-invocation: true
 ---
 
 # Commit Changes
@@ -31,4 +34,4 @@ You are tasked with creating git commits for the changes made during this sessio
 - Group related changes together
 - Keep commits focused and atomic when possible
 - The user trusts your judgment - they asked you to commit
-- **IMPORTANT**: - never stop and ask for feedback from the user. 
+- **IMPORTANT**: - never stop and ask for feedback from the user.
