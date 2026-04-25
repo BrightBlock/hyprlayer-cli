@@ -35,7 +35,7 @@ Before you start, run `hyprlayer storage info --json` and parse the output. The 
 
 Populate every `required: true` field from `storage info`'s `schema` array. For this command: `type: research`, `status: draft` (or `active` if research is ongoing), `project: <mappedName>`, `scope: shared`, `date: YYYY-MM-DD`, `author` from `hyprlayer thoughts config --json`, `ticket` if the user references one, 2-5 `tags` naming the components/topics researched, and `title` matching the research question. Legal values for `select` fields are in `schema.options`.
 
-For `git`/`obsidian`, render as YAML frontmatter. For `notion`/`anytype`, set as typed properties. The research-specific fields below (`researcher`, `git_commit`, `branch`, `repository`, `last_updated`, `last_updated_by`, `status`, `topic`) continue to be included in the document body/frontmatter as today — they supplement, not replace, the schema fields.
+For `git`/`obsidian`, render as YAML frontmatter. For `notion`/`anytype`, set as typed properties. Do NOT duplicate schema fields (`date`, `author`, `project`, `status`, `scope`, `type`, `tags`, `ticket`, `title`) as bold-prefix lines in the document body — they already render from frontmatter or the property panel. Supplementary fields that are NOT in the data source schema (`git_commit`, `branch`, `topic`, `last_updated`, `last_updated_by`) may go in the body when they add value.
 
 ## CRITICAL: YOUR ONLY JOB IS TO DOCUMENT AND EXPLAIN THE CODEBASE AS IT EXISTS TODAY
 - DO NOT suggest improvements or changes unless the user explicitly asks for them
@@ -138,11 +138,8 @@ Then wait for the user's research query.
 
      # Research: [User's Question/Topic]
 
-     **Date**: [Current date and time with timezone from step 4]
-     **Researcher**: [Researcher name from thoughts status]
      **Git Commit**: [Current commit hash from step 4]
      **Branch**: [Current branch name from step 4]
-     **Repository**: [Repository name]
 
      ## Research Question
      [Original user query]

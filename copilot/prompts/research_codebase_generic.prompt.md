@@ -98,11 +98,8 @@ Then wait for the user's research query.
 
      # Research: [User's Question/Topic]
 
-     **Date**: [Current date and time with timezone from step 4]
-     **Researcher**: [Researcher name]
      **Git Commit**: [Current commit hash from step 4]
      **Branch**: [Current branch name from step 4]
-     **Repository**: [Repository name]
 
      ## Research Question
      [Original user query]
