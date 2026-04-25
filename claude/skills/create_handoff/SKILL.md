@@ -1,8 +1,8 @@
 ---
-description: Create handoff document for transferring work to another session
+name: create_handoff
+description: Create a handoff document for transferring work to another session. Use when the user asks to create a handoff, summarize the session for a future agent, or capture context for a clean restart. Produces a thoughts artifact (a handoff).
+allowed-tools: Bash, Read, Write, Edit, mcp__claude_ai_Notion__*, mcp__anytype__*
 ---
-
-> **Path convention**: the `thoughts/shared/...` paths in examples and templates below are literal on `git`/`obsidian` backends. On `notion`/`anytype`, substitute the matching `notion://<id>` / `anytype://<id>` identifier that `hyprlayer storage info` or `thoughts-locator` returns.
 
 # Create Handoff
 
@@ -10,35 +10,20 @@ You are tasked with writing a handoff document to hand off your work to another 
 
 ## Storage backend dispatch
 
-Before you start, run `hyprlayer storage info --json` and parse the output. The `backend` field tells you where to save the handoff. The `schema` field lists required metadata — **populate every required field** regardless of backend. If the `hyprlayer` binary is not available or the project isn't mapped, proceed with the `git` branch using relative `thoughts/shared/handoffs/...` paths.
-
-### Where to save
-
-- **`git`**: write to `thoughts/shared/handoffs/ENG-XXXX/<title>.md` (or `thoughts/shared/handoffs/general/<title>.md` if no ticket) via the symlink. Prepend the required metadata as YAML frontmatter. At the end, run `hyprlayer thoughts sync` so the handoff is available to the resuming session.
-- **`obsidian`**: the project's `thoughts/` symlinks point into the user's vault. `thoughts/shared/handoffs/ENG-XXXX/<title>.md` works for writes. Prepend YAML frontmatter — Obsidian's Properties panel picks it up. Do NOT run sync (Obsidian has no sync step).
-- **`notion`**: do NOT write local files. Ensure the target database exists:
-  1. If `settings.databaseId` is populated, call `mcp__notion__retrieve-database` with that ID. If it resolves, skip to step 4.
-  2. If missing or not-found, call `mcp__notion__create-database` under `settings.parentPageId` with `title: "Hyprlayer Thoughts"` and one property per entry in `schema`.
-  3. Run `hyprlayer storage set-database-id <returned_id>` to persist.
-  4. Create a database row via `mcp__notion__create-page` with `parent.database_id = <id>`. Populate every required schema field as a typed property; the handoff narrative becomes the body.
-  If the Notion MCP tools are not available, tell the user to run `hyprlayer thoughts init --backend notion` and stop.
-- **`anytype`**: do NOT write local files. Ensure the target type exists (get-type → create-type + create-property if missing → persist via `hyprlayer storage set-type-id`), then create an object via `mcp__anytype__API-create-object`, populating every required schema field. If the Anytype MCP tools are not available, tell the user to start the Anytype app and run `hyprlayer thoughts init --backend anytype`, then stop.
-
-### Required metadata
-
-Populate every `required: true` field from `storage info`'s `schema` array. For this command: `type: handoff`, `status: active` (the handoff is actionable), `project: <mappedName>`, `scope: shared`, `date: YYYY-MM-DD`, `author` from `hyprlayer thoughts config --json`, `ticket` if referenced, 2-5 `tags`, and a `title` like `"ENG-XXXX: short description"`. Legal `select` values are in `schema.options`. Render as YAML frontmatter for `git`/`obsidian`; typed properties for `notion`/`anytype`.
+Read `~/.claude/skills/_thoughts/storage-backend.md` and follow it for where to save the artifact. Read `~/.claude/skills/_thoughts/required-metadata.md` for the schema-required fields and the backend-specific title format. For this command: artifact type is `handoff`; status is `active` (the handoff is actionable); the title is `ENG-XXXX: short description` (or `general: short description` when there is no ticket).
 
 The `type: implementation_strategy` field used by the existing handoff template is domain-specific and continues to appear in the body/frontmatter as today — it supplements the schema-level `type: handoff`.
 
 ## Process
 ### 1. Filepath & Metadata
 Use the following information to understand how to create your document:
-    - create your file under `thoughts/shared/handoffs/ENG-XXXX/YYYY-MM-DD_HH-MM-SS_ENG-ZZZZ_description.md`, where:
+    - For `git`/`obsidian`, create your file under `thoughts/shared/handoffs/ENG-XXXX/YYYY-MM-DD_HH-MM-SS_ENG-ZZZZ_description.md`, where:
         - YYYY-MM-DD is today's date
         - HH-MM-SS is the hours, minutes and seconds based on the current time, in 24-hour format (i.e. use `13:00` for `1:00 pm`)
         - ENG-XXXX is the ticket number (replace with `general` if no ticket)
         - ENG-ZZZZ is the ticket number (omit if no ticket)
         - description is a brief kebab-case description
+    - For `notion`/`anytype`, use the human-readable title format from `required-metadata.md` and let the storage backend assign IDs.
     - Run the `scripts/spec_metadata.sh` script to generate all relevant metadata
     - Examples:
         - With ticket: `2025-01-08_13-55-22_ENG-2166_create-context-compaction.md`

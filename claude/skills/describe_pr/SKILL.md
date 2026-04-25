@@ -1,5 +1,7 @@
 ---
-description: Generate comprehensive PR descriptions following repository templates
+name: describe_pr
+description: Generate comprehensive PR descriptions following the repository's pr_description.md template. Use when the user asks to describe an existing PR (including running its automated verification commands and updating the PR via gh pr edit).
+allowed-tools: Bash, Read
 ---
 
 # Generate PR Description
@@ -12,6 +14,7 @@ You are tasked with generating a comprehensive pull request description followin
    - First, check if `thoughts/shared/pr_description.md` exists
    - If it doesn't exist, inform the user that their `hyprlayer thoughts` setup is incomplete and they need to create a PR description template at `thoughts/shared/pr_description.md`
    - Read the template carefully to understand all sections and requirements
+
 
 2. **Identify the PR to describe:**
    - Check if the current branch has an associated PR: `gh pr view --json url,number,title,state 2>/dev/null`

@@ -23,3 +23,21 @@ Before you start, run `hyprlayer storage info --json` and parse the output. The 
   4. **Ensure select tags exist** for the specific values this write uses. For `type`, `status`, `scope`, and each `tags` value you are about to set, call `mcp__anytype__API-list-tags` (filter by the matching `property_id`) and call `mcp__anytype__API-create-tag` for any values not yet present. Record the returned tag IDs — the object-create call takes tag IDs, not string names. Anytype snake-cases tag keys (e.g. `integration-test` → `integration_test`); the `name` is preserved verbatim, so filter / display by name.
   5. **Create the object.** Call `mcp__anytype__API-create-object` with `type_key: "hyprlayer_thought"`, `space_id: <spaceId>`, `name: <title>`, `body: <narrative markdown>`, and a `properties` array — one entry per required schema field, using the property `key` (e.g. `hyprlayer_type`) and the matching typed value (`select: <tag_id>`, `multi_select: [<tag_id>, ...]`, `date: "YYYY-MM-DD"`, `text: "..."`). Do NOT dump metadata into the body as frontmatter — Anytype's search relies on typed properties.
   If the Anytype MCP tools are not available, tell the user to start the Anytype app and run `hyprlayer thoughts init --backend anytype`, then stop. Do NOT silently fall back to writing a local markdown file — that would hide the misconfiguration.
+
+## How to read existing artifacts
+
+For skills that retrieve an artifact (e.g. `validate_plan`, `resume_handoff`, `implement_plan`, `iterate_plan`):
+
+- **`git`** / **`obsidian`**: read the markdown file through the project's `thoughts/shared/<type>s/<name>.md` symlink (or the absolute path under `settings.thoughtsRepo` / `settings.contentRoot`). For `git`, you may first run `hyprlayer thoughts sync` to pull the latest. For `obsidian`, skip the sync. If the user passes only a ticket number, list `thoughts/shared/<type>s/ENG-XXXX/` (handoffs use ticket-scoped subdirs with `YYYY-MM-DD_HH-MM-SS` filename prefixes — pick the most recent).
+- **`notion`**: call `mcp__notion__retrieve-page` with the page ID the user provides. To search by title or property, query the database (the data source URL appears in `<data-source>` tags from `mcp__notion__notion-fetch` on the database) filtered by `type = <artifact_type>` + `project = <mappedName>` (and `ticket = ENG-XXXX` for handoffs); sort by `date` descending to find the most recent.
+- **`anytype`**: call `mcp__anytype__API-get-object` with the object ID + `settings.spaceId`. To search, call `mcp__anytype__API-list-objects` filtered by type + property (`type = <artifact_type>`); sort by `date` descending.
+
+## How to update existing artifacts
+
+For skills that mutate an artifact (e.g. `implement_plan` checking off items and promoting `status`, `iterate_plan` rewriting sections):
+
+- **`git`** / **`obsidian`**: edit the file directly with the Edit tool. Update YAML frontmatter fields (e.g. `status`, `last_updated`, `last_updated_by`) when the schema supports them. For `git`, run `hyprlayer thoughts sync` at the end. For `obsidian`, skip the sync.
+- **`notion`**: update body content via `mcp__notion__notion-update-page` with `command: "update_content"` (search-and-replace) for surgical edits, or `command: "replace_content"` for wholesale rewrites. Update typed properties (e.g. `status`, `last_updated`) via `command: "update_properties"`. Use only `select` values from `schema.options` — do not invent new ones.
+- **`anytype`**: update via `mcp__anytype__API-update-object`, passing the new `body` and a `properties` array for changed fields. Tag values must be passed as tag IDs (call `mcp__anytype__API-list-tags` to resolve names → IDs first).
+
+Do not drop required schema fields during edits. Promote `status` per the rules in `required-metadata.md` (`draft` → `active` → `implemented` for plans; the active skill names what its mutation should be).
