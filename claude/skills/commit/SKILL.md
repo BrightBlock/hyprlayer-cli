@@ -1,5 +1,8 @@
 ---
-description: Create git commits with user approval and no Claude attribution
+name: commit
+description: Create git commits with user approval and no Claude attribution. Side-effecting; user-only — never auto-invoke.
+allowed-tools: Bash, Read
+disable-model-invocation: true
 ---
 
 # Commit Changes

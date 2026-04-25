@@ -1,9 +1,9 @@
 ---
-description: Document codebase as-is with thoughts directory for historical context
+name: research_codebase
+description: Document codebase as-is with thoughts directory for historical context. Use when the user asks to research, document, or map an existing codebase area. Read-only; produces a thoughts artifact.
 model: opus
+allowed-tools: Bash, Read, Grep, Glob, Agent, mcp__claude_ai_Notion__*, mcp__anytype__*
 ---
-
-> **Path convention**: the `thoughts/shared/...` paths in examples and templates below are literal on `git`/`obsidian` backends. On `notion`/`anytype`, substitute the matching `notion://<id>` / `anytype://<id>` identifier that `hyprlayer storage info` or `thoughts-locator` returns.
 
 # Research Codebase
 
@@ -11,31 +11,7 @@ You are tasked with conducting comprehensive research across the codebase to ans
 
 ## Storage backend dispatch
 
-Before you start, run `hyprlayer storage info --json` and parse the output. The `backend` field tells you where to save the research document. The `schema` field lists required metadata — **populate every required field** regardless of backend. If the `hyprlayer` binary is not available or the project isn't mapped, proceed with the `git` branch using relative `thoughts/shared/research/...` paths.
-
-### Where to save
-
-- **`git`**: write to `thoughts/shared/research/<title>.md` via the symlink. Prepend the required metadata as YAML frontmatter (see below). `settings.thoughtsRepo` gives the absolute path. At the end, remind the user to run `hyprlayer thoughts sync`.
-- **`obsidian`**: the project's `thoughts/` symlinks point into the user's vault, so `thoughts/shared/research/<title>.md` works for writes. Prepend YAML frontmatter — Obsidian's Properties panel picks it up. Do NOT remind the user to sync.
-- **`notion`**: do NOT write local files. Ensure the target database exists:
-  1. If `settings.databaseId` is populated, call `mcp__notion__retrieve-database` with that ID. If it resolves, skip to step 4.
-  2. If `databaseId` is missing or retrieval returns not-found, call `mcp__notion__create-database` under `settings.parentPageId` with `title: "Hyprlayer Thoughts"` and one property per entry in `storage info`'s `schema` array (title → `title`; text → `rich_text`; date → `date`; select → `select` with `options`; tags → `multi_select`; relation → `relation` self-referential).
-  3. Run `hyprlayer storage set-database-id <returned_id>` to persist.
-  4. Create a database row using `mcp__notion__create-page` with `parent.database_id = <id>`. Populate every required schema field as a typed property; the body receives the narrative content.
-  If the Notion MCP tools are not available, tell the user to run `hyprlayer thoughts init --backend notion` and stop.
-- **`anytype`**: do NOT write local files. Ensure the target type + properties + tags exist before creating the object:
-  1. **Resolve the type.** If `settings.typeId` is populated, call `mcp__anytype__API-get-type` with that ID + `settings.spaceId`. If it resolves, skip to step 4. If it returns not-found / 404 / 410, treat as missing and fall through.
-  2. **Create the type + properties.** Call `mcp__anytype__API-create-type` in `spaceId` with `name: "Hyprlayer Thought"`, `plural_name: "Hyprlayer Thoughts"`, `key: "hyprlayer_thought"`, `layout: "basic"`. Then create each schema field (except `title` — maps to `name`) via `mcp__anytype__API-create-property` with `key: "hyprlayer_<field>"`. For `select` / `multi_select` fields, pass `tags: [...]` in the create-property call with one entry per `schema.options` value. Treat "property key already exists" as success. **Then call `mcp__anytype__API-update-type`** with `properties: [...]` listing every field — this is what links the properties to the type so the UI renders them.
-  3. **Persist the type ID.** Run `hyprlayer storage set-type-id <returned_id>`. Proceed with step 4 using the new ID.
-  4. **Ensure select tags exist** for this write's values. For `type`, `status`, `scope`, and each `tags` value, call `mcp__anytype__API-list-tags` and create missing ones via `mcp__anytype__API-create-tag`. Record returned tag IDs — the object-create call takes IDs, not string names.
-  5. **Create the object.** `mcp__anytype__API-create-object` with `type_key: "hyprlayer_thought"`, `space_id`, `name: <title>`, `body: <narrative>`, and a `properties` array of typed values (`select: <tag_id>`, `multi_select: [<tag_id>, …]`, `date: "YYYY-MM-DD"`, `text: "…"`). Do NOT dump metadata as frontmatter in the body — Anytype's search relies on typed properties.
-  If the Anytype MCP tools are not available, tell the user to start the Anytype app and run `hyprlayer thoughts init --backend anytype`, then stop.
-
-### Required metadata
-
-Populate every `required: true` field from `storage info`'s `schema` array. For this command: `type: research`, `status: draft` (or `active` if research is ongoing), `project: <mappedName>`, `scope: shared`, `date: YYYY-MM-DD`, `author` from `hyprlayer thoughts config --json`, `ticket` if the user references one, 2-5 `tags` naming the components/topics researched, and `title` matching the research question. Legal values for `select` fields are in `schema.options`.
-
-For `git`/`obsidian`, render as YAML frontmatter. For `notion`/`anytype`, set as typed properties. Do NOT duplicate schema fields (`date`, `author`, `project`, `status`, `scope`, `type`, `tags`, `ticket`, `title`) as bold-prefix lines in the document body — they already render from frontmatter or the property panel. Supplementary fields that are NOT in the data source schema (`git_commit`, `branch`, `topic`, `last_updated`, `last_updated_by`) may go in the body when they add value.
+Read `~/.claude/skills/_thoughts/storage-backend.md` and follow it for where to save the artifact. Read `~/.claude/skills/_thoughts/required-metadata.md` for the schema-required fields and the backend-specific title format. For this command: artifact type is `research`; the title is derived from the research question.
 
 ## CRITICAL: YOUR ONLY JOB IS TO DOCUMENT AND EXPLAIN THE CODEBASE AS IT EXISTS TODAY
 - DO NOT suggest improvements or changes unless the user explicitly asks for them
@@ -114,7 +90,7 @@ Then wait for the user's research query.
 
 5. **Gather metadata for the research document:**
    - Run the `hack/spec_metadata.sh` script to generate all relevant metadata
-   - Determine the artifact title as `YYYY-MM-DD-ENG-XXXX-description` (omit the ticket chunk if there is none), e.g. `2025-01-08-ENG-1478-parent-child-tracking` or `2025-01-08-authentication-flow`.
+   - Determine the artifact title per the backend-specific rule in `~/.claude/skills/_thoughts/required-metadata.md`: kebab-case dated slug (e.g. `2025-01-08-authentication-flow`) for `git`/`obsidian`; normal human-readable heading (e.g. `Authentication flow`) for `notion`/`anytype`.
    - Destination is resolved by the storage backend dispatch at the top of this command:
      - For `git`/`obsidian`: `thoughts/shared/research/<title>.md`
      - For `notion`/`anytype`: a database row / object with `type: research`
@@ -232,5 +208,5 @@ Then wait for the user's research query.
   - Always include frontmatter at the beginning of research documents
   - Keep frontmatter fields consistent across all research documents
   - Update frontmatter when adding follow-up research
-  - Use snake_case for multi-word field names (e.g., `last_updated`, `git_commit`)
+  - Use snake_case for multi_word field names (e.g., `last_updated`, `git_commit`)
   - Tags should be relevant to the research topic and components studied

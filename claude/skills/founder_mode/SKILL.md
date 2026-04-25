@@ -1,5 +1,8 @@
 ---
-description: Create JIRA ticket and PR for experimental features after implementation
+name: founder_mode
+description: Create a JIRA ticket and PR retroactively for an experimental feature that bypassed the standard ticketing flow. Side-effecting; user-only — never auto-invoke. Use when the user asks to "founder-mode" a commit or retroactively ticket and PR something already on the local branch.
+allowed-tools: Bash, Read
+disable-model-invocation: true
 ---
 
 you're working on an experimental feature that didn't get the proper ticketing and pr stuff set up.
@@ -7,7 +10,7 @@ you're working on an experimental feature that didn't get the proper ticketing a
 assuming you just made a commit, here are the next steps:
 
 
-1. get the sha of the commit you just made (if you didn't make one, read `~/.claude/commands/commit.md` and make one)
+1. get the sha of the commit you just made (if you didn't make one, read `~/.claude/skills/commit/SKILL.md` and make one)
 
 2. think deeply about what you just implemented, then use the **jira-ticket-reader** agent to create a JIRA ticket about what you just did, and transition it to 'In Progress' - it should have a description with headers for "Problem to solve" and "Proposed solution"
 3. fetch the ticket to get the ticket key for the git branch name
@@ -16,4 +19,4 @@ assuming you just made a commit, here are the next steps:
 6. git cherry-pick 'COMMITHASH'
 7. git push -u origin 'BRANCHNAME'
 8. gh pr create --fill
-9. read 'thoughts/global/shared/describe_pr.md' and follow the instructions
+9. read `~/.claude/skills/describe_pr/SKILL.md` and follow the instructions

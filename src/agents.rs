@@ -138,10 +138,14 @@ impl AgentTool {
         let Ok(dest) = self.dest_dir() else {
             return false;
         };
+        self.is_installed_at(&dest)
+    }
+
+    /// Test-friendly variant of `is_installed` that takes an explicit destination path.
+    fn is_installed_at(&self, dest: &Path) -> bool {
         match self {
-            Self::Claude | Self::OpenCode => {
-                dest.join("commands").is_dir() && dest.join("agents").is_dir()
-            }
+            Self::Claude => dest.join("skills").is_dir() && dest.join("agents").is_dir(),
+            Self::OpenCode => dest.join("commands").is_dir() && dest.join("agents").is_dir(),
             Self::Copilot => dest.join("prompts").is_dir() && dest.join("agents").is_dir(),
         }
     }
@@ -609,6 +613,38 @@ mod tests {
         assert!(research.contains("model: github-copilot/claude-opus-4.5"));
 
         fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn claude_is_installed_requires_skills() {
+        let temp_root = std::env::temp_dir().join("hyprlayer_test_claude_is_installed");
+        fs::remove_dir_all(&temp_root).ok();
+
+        // skills/ + agents/ → installed
+        let case_skills = temp_root.join("skills_and_agents");
+        fs::create_dir_all(case_skills.join("skills")).unwrap();
+        fs::create_dir_all(case_skills.join("agents")).unwrap();
+        assert!(AgentTool::Claude.is_installed_at(&case_skills));
+
+        // legacy commands/ + agents/ → NOT installed (regression guard:
+        // old layout must report not-installed so `configure --no-force`
+        // re-runs the install and provisions skills/)
+        let case_legacy = temp_root.join("commands_and_agents");
+        fs::create_dir_all(case_legacy.join("commands")).unwrap();
+        fs::create_dir_all(case_legacy.join("agents")).unwrap();
+        assert!(!AgentTool::Claude.is_installed_at(&case_legacy));
+
+        // skills/ alone → not installed
+        let case_skills_only = temp_root.join("skills_only");
+        fs::create_dir_all(case_skills_only.join("skills")).unwrap();
+        assert!(!AgentTool::Claude.is_installed_at(&case_skills_only));
+
+        // agents/ alone → not installed
+        let case_agents_only = temp_root.join("agents_only");
+        fs::create_dir_all(case_agents_only.join("agents")).unwrap();
+        assert!(!AgentTool::Claude.is_installed_at(&case_agents_only));
+
+        fs::remove_dir_all(&temp_root).ok();
     }
 
     #[test]

@@ -1,9 +1,9 @@
 ---
-description: Iterate on existing implementation plans with thorough research and updates
+name: iterate_plan_nt
+description: Iterate on an existing implementation plan, no-thoughts variant (omits thoughts-locator/thoughts-analyzer agents). Use when the user asks to update a plan in a project that does not use the standard thoughts directory.
 model: opus
+allowed-tools: Bash, Read, Grep, Glob, Agent, Write, Edit
 ---
-
-> **Path convention**: the `thoughts/shared/...` paths in examples and templates below are literal on `git`/`obsidian` backends. On `notion`/`anytype`, substitute the matching `notion://<id>` / `anytype://<id>` identifier that `hyprlayer storage info` or `thoughts-locator` returns.
 
 # Iterate Implementation Plan
 
@@ -11,16 +11,7 @@ You are tasked with updating existing implementation plans based on user feedbac
 
 ## Storage backend dispatch
 
-Before you start, run `hyprlayer storage info --json` and parse the `backend` field. This command reads an existing plan and updates it. The backend determines how to retrieve and modify it:
-
-- **`git`**: read from `thoughts/shared/plans/<name>.md` via the symlink, or the absolute path under `settings.thoughtsRepo`. Edit the file directly. For `backend: git` remind the user to run `hyprlayer thoughts sync` at the end.
-- **`obsidian`**: read via `thoughts/shared/plans/<name>.md` (identical to git) or via absolute path under `settings.contentRoot`. Edit directly. Do NOT remind the user to sync.
-- **`notion`**: use `mcp__notion__retrieve-page` with the page ID the user provides, or query via `mcp__notion__query-database` filtered by `type = plan` + `project = <mappedName>`. Update body via `mcp__notion__append-block-children` / `mcp__notion__update-block` and properties via `mcp__notion__update-page`.
-- **`anytype`**: use `mcp__anytype__API-get-object` with the object ID + `settings.spaceId`, or `mcp__anytype__API-list-objects` filtered by `type = plan`. Update via `mcp__anytype__API-update-object`.
-
-**Required metadata on update**: do not drop required schema fields. For `status` and other `select` fields, only use values from `schema.options`.
-
-If `hyprlayer storage info` is not available or the project isn't mapped, proceed with `git` behavior using relative `thoughts/shared/plans/...` paths.
+Read `~/.claude/skills/_thoughts/storage-backend.md` for the per-backend mechanics — see the "How to read existing artifacts" and "How to update existing artifacts" sections. Read `~/.claude/skills/_thoughts/required-metadata.md` for the schema-required fields and legal `select` values. For this command: artifact type is `plan`; do not drop required schema fields during edits.
 
 ## Initial Response
 
