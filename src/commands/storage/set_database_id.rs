@@ -1,5 +1,4 @@
 use anyhow::Result;
-use colored::Colorize;
 
 use crate::cli::StorageSetDatabaseIdArgs;
 use crate::config::{BackendKind, HyprlayerConfig, RepoMapping, get_current_repo_path};
@@ -45,14 +44,8 @@ pub fn set_database_id(args: StorageSetDatabaseIdArgs) -> Result<()> {
             backend.as_str()
         ));
     }
-    let message = format!("✓ Notion database ID persisted: {}", id);
     settings.database_id = Some(id);
-
     hyprlayer_config.save(&config_path)?;
-    println!("{}", message.green());
-    if let Some(ref p) = profile_name {
-        println!("  (profile: {})", p.cyan());
-    }
     Ok(())
 }
 

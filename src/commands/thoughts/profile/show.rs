@@ -22,10 +22,6 @@ pub fn show(args: ProfileShowArgs) -> Result<()> {
         return Ok(());
     }
 
-    println!("{}", format!("Profile: {}", profile_name).blue());
-    println!("{}", "=".repeat(50).bright_black());
-    println!();
-
     let profile = config_json
         .get("thoughts")
         .and_then(|t| t.get("profiles"))

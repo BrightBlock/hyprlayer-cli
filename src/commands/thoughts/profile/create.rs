@@ -12,11 +12,6 @@ use crate::git_ops::GitRepo;
 fn prompt_for_profile_config(profile_name: &str) -> Result<(String, String, String)> {
     let theme = ColorfulTheme::default();
 
-    println!(
-        "{}",
-        format!("\n=== Creating Profile: {} ===\n", profile_name).blue()
-    );
-
     let default_repo = format!(
         "{}{SEP}{}",
         get_default_thoughts_repo()?.display(),
@@ -125,34 +120,11 @@ pub fn create(args: ProfileCreateArgs) -> Result<()> {
     fs::create_dir_all(config_dir)?;
     fs::write(&config_path, serde_json::to_string_pretty(&config_json)?)?;
 
-    // Initialize profile's thoughts repository
-    println!(
-        "{}",
-        "\nInitializing profile thoughts repository...".bright_black()
-    );
     let expanded_repo = expand_path(&thoughts_repo);
     fs::create_dir_all(&expanded_repo)?;
     if !GitRepo::is_repo(&expanded_repo) {
         let _ = GitRepo::init(&expanded_repo);
     }
-
-    println!(
-        "{}",
-        format!("\n✅ Profile \"{}\" created successfully!", sanitized_name).green()
-    );
-    println!();
-    println!("{}", "=== Profile Configuration ===".blue());
-    println!("  Name: {}", sanitized_name.cyan());
-    println!("  Thoughts repository: {}", thoughts_repo.cyan());
-    println!("  Repos directory: {}", repos_dir.cyan());
-    println!("  Global directory: {}", global_dir.cyan());
-    println!();
-    println!("{}", "Next steps:".bright_black());
-    println!(
-        "  1. Run \"hyprlayer thoughts init --profile {}\" in a repository",
-        sanitized_name.cyan()
-    );
-    println!("  2. Your thoughts will sync to the profile's repository");
 
     Ok(())
 }

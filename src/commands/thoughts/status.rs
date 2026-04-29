@@ -7,10 +7,6 @@ use crate::cli::StatusArgs;
 use crate::config::get_current_repo_path;
 
 pub fn status(args: StatusArgs) -> Result<()> {
-    println!("{}", "Thoughts Repository Status".blue());
-    println!("{}", "=".repeat(50).bright_black());
-    println!();
-
     let hyprlayer_config = args.config.load()?;
     let thoughts_config = hyprlayer_config.thoughts.as_ref().unwrap();
 
@@ -45,9 +41,9 @@ pub fn status(args: StatusArgs) -> Result<()> {
 
             let thoughts_dir = current_repo.join("thoughts");
             if thoughts_dir.exists() {
-                println!("  Status: {}", "✓ Initialized".green());
+                println!("  Status: {}", "Initialized".green());
             } else {
-                println!("  Status: {}", "✗ Not initialized".red());
+                println!("  Status: {}", "Not initialized".red());
             }
         }
     } else {
