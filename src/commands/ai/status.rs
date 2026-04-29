@@ -40,10 +40,6 @@ pub fn status(args: AiStatusArgs) -> Result<()> {
         return Ok(());
     }
 
-    println!("{}", "AI Tool Configuration".blue());
-    println!("{}", "=".repeat(50).bright_black());
-    println!();
-
     agent_tool.print_status(ai_config);
 
     println!();

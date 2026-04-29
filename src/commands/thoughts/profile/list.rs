@@ -16,10 +16,6 @@ pub fn list(args: ProfileListArgs) -> Result<()> {
         return Ok(());
     }
 
-    println!("{}", "Thoughts Profiles".blue());
-    println!("{}", "=".repeat(50).bright_black());
-    println!();
-
     let Some(thoughts) = config_json.get("thoughts") else {
         return Ok(());
     };

@@ -24,27 +24,20 @@ impl ThoughtsBackend for AnytypeBackend {
             .backend_settings
             .validate_for(BackendKind::Anytype)?;
 
-        let hooks_updated = crate::hooks::setup_git_hooks(ctx.code_repo, false)?;
-        if !hooks_updated.is_empty() {
-            println!(
-                "{}",
-                format!("✓ Updated git hooks: {}", hooks_updated.join(", ")).yellow()
-            );
-        }
+        crate::hooks::setup_git_hooks(ctx.code_repo, false)?;
 
         // Stale `thoughts/` from a prior filesystem backend: warn, don't
         // auto-remove. Use `symlink_metadata` so broken symlinks still trip.
         let stale = ctx.code_repo.join("thoughts");
         if stale.symlink_metadata().is_ok() {
-            println!(
+            eprintln!(
                 "{}",
                 format!(
-                    "ℹ️  A `thoughts/` directory exists at {} — likely stale symlinks from a \
-                     previous backend. Anytype content lives in the app, not on disk. \
-                     You can `rm -rf thoughts/` once you're sure you don't need the old links.",
+                    "Warning: stale `thoughts/` directory at {}. Anytype content lives \
+                     in the app. Remove with `rm -rf thoughts/` if you don't need the old links.",
                     stale.display()
                 )
-                .bright_black()
+                .yellow()
             );
         }
 
@@ -52,13 +45,7 @@ impl ThoughtsBackend for AnytypeBackend {
             anyhow::anyhow!("AI tool not configured. Run 'hyprlayer ai configure' first.")
         })?;
 
-        if is_anytype_mcp_registered(agent) {
-            println!(
-                "{}",
-                format!("✓ Anytype MCP already wired up with {agent} — skipping registration")
-                    .green()
-            );
-        } else {
+        if !is_anytype_mcp_registered(agent) {
             let env_var = ctx
                 .effective
                 .backend_settings
@@ -66,11 +53,11 @@ impl ThoughtsBackend for AnytypeBackend {
                 .as_deref()
                 .unwrap_or(DEFAULT_ANYTYPE_TOKEN_ENV);
             if std::env::var(env_var).is_err() {
-                println!(
+                eprintln!(
                     "{}",
                     format!(
-                        "⚠️  Env var {} is not set in the current shell — set it before starting your AI tool. \
-                         Issue an API key in the Anytype app under Settings → API Keys.",
+                        "Warning: env var {} is not set. Set it before starting your AI tool. \
+                         Issue an API key in Anytype under Settings → API Keys.",
                         env_var
                     )
                     .yellow()
@@ -79,31 +66,10 @@ impl ThoughtsBackend for AnytypeBackend {
             register_anytype_mcp(agent, env_var)?;
         }
 
-        if ctx
-            .effective
-            .backend_settings
-            .type_id
-            .as_deref()
-            .unwrap_or("")
-            .is_empty()
-        {
-            println!(
-                "{}",
-                "No Anytype type configured yet. Your first /create_plan (or similar) in \
-                 this repo will create a HyprlayerThought type in the configured space and \
-                 persist the ID."
-                    .bright_black()
-            );
-        }
-
         Ok(())
     }
 
     fn sync(&self, _ctx: &BackendContext, _message: Option<&str>) -> Result<()> {
-        println!(
-            "{}",
-            "Anytype backend — the AI agent reads and writes directly via MCP".bright_black()
-        );
         Ok(())
     }
 
@@ -125,9 +91,9 @@ impl ThoughtsBackend for AnytypeBackend {
         if let Some(name) = settings.api_token_env.as_deref() {
             let set = std::env::var(name).is_ok();
             let status = if set {
-                "✓ set".green().to_string()
+                "set".green().to_string()
             } else {
-                "✗ not set".red().to_string()
+                "not set".red().to_string()
             };
             lines.push(format!("  API token env: {} ({})", name.cyan(), status));
         }
@@ -181,23 +147,10 @@ fn run_mcp_add(cli: &str, extra_args: &[&str], label: &str, env_var: &str) -> Re
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         if stderr.contains("already") {
-            println!(
-                "{}",
-                format!(
-                    "ℹ️  Anytype MCP server was already registered with {}",
-                    label
-                )
-                .bright_black()
-            );
             return Ok(());
         }
         return Err(anyhow::anyhow!("{} mcp add failed: {}", cli, stderr.trim()));
     }
-
-    println!(
-        "{}",
-        format!("✓ Registered Anytype MCP server with {}", label).green()
-    );
     Ok(())
 }
 
@@ -254,8 +207,8 @@ pub fn is_anytype_mcp_registered(agent: AgentTool) -> bool {
 fn mcp_registration_status(agent: Option<AgentTool>) -> Option<String> {
     let agent = agent?;
     match probe_anytype_mcp(agent)? {
-        true => Some(format!("✓ registered with {agent}").green().to_string()),
-        false => Some(format!("✗ not registered with {agent}").red().to_string()),
+        true => Some(format!("registered with {agent}").green().to_string()),
+        false => Some(format!("not registered with {agent}").red().to_string()),
     }
 }
 

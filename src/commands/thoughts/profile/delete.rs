@@ -1,5 +1,4 @@
 use anyhow::Result;
-use colored::Colorize;
 use std::fs;
 
 use crate::cli::ProfileDeleteArgs;
@@ -67,11 +66,6 @@ pub fn delete(args: ProfileDeleteArgs) -> Result<()> {
     }
 
     fs::write(&config_path, serde_json::to_string_pretty(&config_json)?)?;
-
-    println!(
-        "{}",
-        format!("✅ Profile \"{}\" deleted", profile_name).green()
-    );
 
     Ok(())
 }

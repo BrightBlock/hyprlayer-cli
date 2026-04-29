@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use colored::Colorize;
 use git2::{Repository, Status, StatusOptions};
 use std::process::Command;
 use std::time::UNIX_EPOCH;
@@ -101,7 +100,6 @@ impl GitRepo {
             self.repo
                 .commit(Some("HEAD"), &sig, &sig, message, &tree, parents.as_slice())?;
 
-        println!("{}", "✅ Committed successfully".green());
         Ok(())
     }
 
@@ -173,7 +171,6 @@ impl GitRepo {
             return Err(anyhow::anyhow!("git push failed: {}", stderr));
         }
 
-        println!("{}", "✅ Pushed to remote".green());
         Ok(())
     }
 }

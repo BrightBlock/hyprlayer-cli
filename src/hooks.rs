@@ -5,7 +5,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const HOOK_VERSION: &str = "1";
+const HOOK_VERSION: &str = "2";
 
 /// Install the pre-commit hook (always) and, when `include_auto_sync` is true,
 /// the post-commit hook. With `include_auto_sync = false`, any previously-
@@ -138,7 +138,7 @@ fn pre_commit_content() -> String {
 # Version: {HOOK_VERSION}
 
 if git diff --cached --name-only | grep -q "^thoughts/"; then
-    echo "❌ Cannot commit thoughts/ to code repository"
+    echo "Cannot commit thoughts/ to code repository"
     echo "The thoughts directory should only exist in your separate thoughts repository."
     git reset HEAD -- thoughts/
     exit 1

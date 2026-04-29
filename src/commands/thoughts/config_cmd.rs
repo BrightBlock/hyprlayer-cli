@@ -30,10 +30,6 @@ pub fn config(args: ConfigArgsCmd) -> Result<()> {
         return Ok(());
     }
 
-    // Display configuration
-    println!("{}", "Thoughts Configuration".blue());
-    println!("{}", "=".repeat(50).bright_black());
-    println!();
     println!("{}", "Settings:".yellow());
     println!(
         "  Config file: {}",
