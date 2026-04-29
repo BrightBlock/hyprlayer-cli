@@ -102,7 +102,7 @@ pub struct InitArgs {
     #[arg(
         long,
         help = "Env var name holding the Anytype API token (default: ANYTYPE_API_KEY). \
-                Ignored for notion — hyprlayer uses the agent tool's Notion connector."
+                Ignored for notion (uses agent tool's connector)."
     )]
     pub api_token_env: Option<String>,
     #[arg(

@@ -31,7 +31,7 @@ impl ThoughtsBackend for ObsidianBackend {
             println!(
                 "{}",
                 format!(
-                    "⚠️  {} does not contain a .obsidian/ folder — open it in Obsidian to make it a vault.",
+                    "{} does not contain a .obsidian/ folder — open it in Obsidian to make it a vault.",
                     vault_root.display()
                 )
                 .yellow()
@@ -42,30 +42,11 @@ impl ThoughtsBackend for ObsidianBackend {
         common::setup_directory_structure_at(&root, ctx)?;
         common::setup_symlinks_into(&root, ctx)?;
 
-        let hooks_updated = crate::hooks::setup_git_hooks(ctx.code_repo, false)?;
-        if !hooks_updated.is_empty() {
-            println!(
-                "{}",
-                format!("✓ Updated git hooks: {}", hooks_updated.join(", ")).yellow()
-            );
-        }
-
-        println!(
-            "{}",
-            format!("Obsidian content root: {}", root.display()).green()
-        );
-        println!(
-            "Open the vault ({}) in Obsidian to browse your thoughts.",
-            vault_root.display()
-        );
+        crate::hooks::setup_git_hooks(ctx.code_repo, false)?;
         Ok(())
     }
 
     fn sync(&self, _ctx: &BackendContext, _message: Option<&str>) -> Result<()> {
-        println!(
-            "{}",
-            "Obsidian vault — no remote sync (files are already on disk)".bright_black()
-        );
         Ok(())
     }
 
@@ -82,7 +63,7 @@ impl ThoughtsBackend for ObsidianBackend {
         ));
 
         if !root.exists() {
-            lines.push(format!("  Status: {}", "✗ Content root missing".red()));
+            lines.push(format!("  Status: {}", "Content root missing".red()));
             return Ok(StatusReport { lines });
         }
 

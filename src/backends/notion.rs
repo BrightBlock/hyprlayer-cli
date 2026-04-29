@@ -21,51 +21,22 @@ impl ThoughtsBackend for NotionBackend {
             .backend_settings
             .validate_for(BackendKind::Notion)?;
 
-        let hooks_updated = crate::hooks::setup_git_hooks(ctx.code_repo, false)?;
-        if !hooks_updated.is_empty() {
-            println!(
-                "{}",
-                format!("✓ Updated git hooks: {}", hooks_updated.join(", ")).yellow()
-            );
-        }
+        crate::hooks::setup_git_hooks(ctx.code_repo, false)?;
 
         // Use `symlink_metadata` (not `exists`) so broken symlinks — the most
         // likely "stale" shape after the user deletes the old thoughts repo —
         // still trip the warning.
         let stale = ctx.code_repo.join("thoughts");
         if stale.symlink_metadata().is_ok() {
-            println!(
+            eprintln!(
                 "{}",
                 format!(
-                    "ℹ️  A `thoughts/` directory exists at {} — likely stale symlinks from a \
-                     previous backend. Notion content lives in the database, not on disk. \
-                     You can `rm -rf thoughts/` once you're sure you don't need the old links.",
+                    "Warning: stale `thoughts/` directory at {}. Notion content lives \
+                     in the database. Remove with `rm -rf thoughts/` if you don't need the \
+                     old links.",
                     stale.display()
                 )
-                .bright_black()
-            );
-        }
-
-        println!(
-            "{}",
-            "ℹ️  Notion MCP: hyprlayer relies on your agent tool's Notion connector (Claude \
-             Code: `/mcp` → Notion). Nothing to register here."
-                .bright_black()
-        );
-
-        if ctx
-            .effective
-            .backend_settings
-            .database_id
-            .as_deref()
-            .unwrap_or("")
-            .is_empty()
-        {
-            println!(
-                "{}",
-                "No Notion database configured yet. Your first /create_plan (or similar) in \
-                 this repo will create one under the configured parent page and persist the ID."
-                    .bright_black()
+                .yellow()
             );
         }
 
@@ -73,10 +44,6 @@ impl ThoughtsBackend for NotionBackend {
     }
 
     fn sync(&self, _ctx: &BackendContext, _message: Option<&str>) -> Result<()> {
-        println!(
-            "{}",
-            "Notion backend — the AI agent reads and writes directly via MCP".bright_black()
-        );
         Ok(())
     }
 
@@ -96,10 +63,10 @@ impl ThoughtsBackend for NotionBackend {
         }
 
         // `claude mcp list` doesn't see connectors, so any probe here would
-        // mislabel every connector user as "✗ not registered".
+        // mislabel every connector user as "not registered".
         lines.push(format!(
             "  MCP: {}",
-            "via agent connector (not managed by hyprlayer)".bright_black()
+            "via agent connector".bright_black()
         ));
 
         Ok(StatusReport { lines })

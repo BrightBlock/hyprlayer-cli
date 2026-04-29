@@ -2,7 +2,7 @@ use anyhow::Result;
 use colored::Colorize;
 use dialoguer::{Confirm, Input, Select, theme::ColorfulTheme};
 use std::fs;
-use std::path::{MAIN_SEPARATOR_STR as SEP, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use crate::backends::{self, BackendContext};
 use crate::cli::InitArgs;
@@ -32,14 +32,10 @@ pub fn init(args: InitArgs) -> Result<()> {
 
     let current_repo = get_current_repo_path()?;
 
-    if !GitRepo::is_repo(&current_repo) {
-        return Err(anyhow::anyhow!("Not in a git repository"));
-    }
-
     if backend == Some(BackendKind::Notion) && api_token_env.is_some() {
         return Err(anyhow::anyhow!(
-            "--api-token-env is not valid with --backend notion. Notion uses the agent \
-             tool's connector and hyprlayer does not manage a token."
+            "--api-token-env is not valid with --backend notion (uses the agent tool's \
+             connector — no token to manage)."
         ));
     }
 
@@ -97,7 +93,6 @@ pub fn init(args: InitArgs) -> Result<()> {
         {
             hyprlayer_config.thoughts_mut().remove_mappings(&orphaned);
             hyprlayer_config.save(&config_path)?;
-            println!("{}", "Stale mappings removed.".green());
         }
     }
 
@@ -109,6 +104,8 @@ pub fn init(args: InitArgs) -> Result<()> {
 
     let existing_profile = hyprlayer_config.thoughts_mut().resolve_dirs(&profile);
     let backend_kind = resolve_backend_interactive(backend, existing_profile.backend)?;
+
+    require_git_repo_for_filesystem_backend(&current_repo, backend_kind)?;
 
     let agent_tool = hyprlayer_config.ai.as_ref().and_then(|a| a.agent_tool);
     let refreshed = prompt_for_thoughts_fields(
@@ -132,13 +129,7 @@ pub fn init(args: InitArgs) -> Result<()> {
         let repos_path = content_root.join(&resolved.repos_dir);
         fs::create_dir_all(&repos_path)?;
 
-        select_or_create_directory(
-            &repos_path,
-            &current_repo,
-            directory,
-            &content_root,
-            &resolved.repos_dir,
-        )?
+        select_or_create_directory(&repos_path, &current_repo, directory)?
     } else {
         let default_name = get_repo_name_from_path(&current_repo);
         let chosen = match directory {
@@ -160,15 +151,8 @@ pub fn init(args: InitArgs) -> Result<()> {
         .repo_mappings
         .insert(current_repo.display().to_string(), mapping);
     hyprlayer_config.save(&config_path)?;
-    println!("{}", "✅ Global thoughts configuration saved".green());
 
-    dispatch_backend_init(
-        &hyprlayer_config,
-        &current_repo,
-        backend_kind,
-        &resolved,
-        &mapped_name,
-    )?;
+    dispatch_backend_init(&hyprlayer_config, &current_repo, backend_kind)?;
 
     Ok(())
 }
@@ -246,6 +230,9 @@ fn init_non_interactive(
 
     let existing_profile = hyprlayer_config.thoughts_mut().resolve_dirs(&profile);
     let backend_kind = backend_flag.unwrap_or(existing_profile.backend);
+
+    require_git_repo_for_filesystem_backend(&current_repo, backend_kind)?;
+
     let prior_settings = existing_profile
         .backend_settings
         .carry_across(existing_profile.backend, backend_kind);
@@ -284,16 +271,6 @@ fn init_non_interactive(
         let target_dir = repos_path.join(&mapped_name);
         if !target_dir.exists() {
             fs::create_dir_all(&target_dir)?;
-            println!(
-                "{}",
-                format!(
-                    "Created thoughts directory: {}{SEP}{}{SEP}{}",
-                    content_root.display().to_string().cyan(),
-                    resolved.repos_dir.cyan(),
-                    mapped_name.cyan()
-                )
-                .green()
-            );
         }
     }
 
@@ -303,16 +280,22 @@ fn init_non_interactive(
         .repo_mappings
         .insert(current_repo.display().to_string(), mapping);
     hyprlayer_config.save(&config_path)?;
-    println!("{}", "✅ Global thoughts configuration saved".green());
 
-    dispatch_backend_init(
-        &hyprlayer_config,
-        &current_repo,
-        backend_kind,
-        &resolved,
-        &mapped_name,
-    )?;
+    dispatch_backend_init(&hyprlayer_config, &current_repo, backend_kind)?;
 
+    Ok(())
+}
+
+/// Filesystem backends (git, obsidian) install commit hooks into the working
+/// repo, so they need a real git tree. Notion and Anytype store everything
+/// externally and have no such requirement.
+fn require_git_repo_for_filesystem_backend(
+    current_repo: &Path,
+    backend_kind: BackendKind,
+) -> Result<()> {
+    if backend_kind.uses_filesystem() && !GitRepo::is_repo(current_repo) {
+        return Err(anyhow::anyhow!("Not in a git repository"));
+    }
     Ok(())
 }
 
@@ -324,27 +307,31 @@ fn resolve_backend_interactive(
         return Ok(kind);
     }
 
-    if current != BackendKind::Git {
-        // Respect the existing non-git backend without re-prompting.
-        return Ok(current);
-    }
+    let kinds = [
+        BackendKind::Git,
+        BackendKind::Obsidian,
+        BackendKind::Notion,
+        BackendKind::Anytype,
+    ];
+    let default_idx = kinds.iter().position(|k| *k == current).unwrap_or(0);
+    let items: Vec<String> = kinds
+        .iter()
+        .map(|k| {
+            if *k == current {
+                format!("{} (current)", k.as_str())
+            } else {
+                k.as_str().to_string()
+            }
+        })
+        .collect();
 
-    // First-run: offer a short menu. Keep git as the default so existing
-    // users see no change when they press enter.
-    let items = ["git (default)", "obsidian", "notion", "anytype"];
     let selection = Select::with_theme(&ColorfulTheme::default())
         .with_prompt("Storage backend for thoughts")
         .items(&items)
-        .default(0)
+        .default(default_idx)
         .interact()?;
 
-    Ok(match selection {
-        0 => BackendKind::Git,
-        1 => BackendKind::Obsidian,
-        2 => BackendKind::Notion,
-        3 => BackendKind::Anytype,
-        _ => unreachable!(),
-    })
+    Ok(kinds[selection])
 }
 
 /// Prompt the user for thoughts directory configuration, preserving any
@@ -363,8 +350,6 @@ fn prompt_for_thoughts_fields(
     agent_tool: Option<crate::agents::AgentTool>,
 ) -> Result<ThoughtsConfig> {
     let theme = ColorfulTheme::default();
-    println!("{}", "=== Initial Thoughts Setup ===".blue());
-    println!();
 
     let prior_settings = existing_profile
         .backend_settings
@@ -461,30 +446,6 @@ fn prompt_for_thoughts_fields(
     };
 
     let user = prompt_for_username(&theme, &existing.user)?;
-
-    if backend_kind.uses_filesystem() {
-        println!();
-        println!("{}", "Creating thoughts structure:".yellow());
-        let preview = ProfileConfig {
-            thoughts_repo: thoughts_repo.clone(),
-            repos_dir: repos_dir.clone(),
-            global_dir: global_dir.clone(),
-            backend: backend_kind,
-            backend_settings: backend_settings.clone(),
-        };
-        println!("  {}{SEP}", display_root(backend_kind, &preview).cyan());
-        println!(
-            "    ├── {}{SEP}     {}",
-            repos_dir.cyan(),
-            "(project-specific thoughts)".bright_black()
-        );
-        println!(
-            "    └── {}{SEP}    {}",
-            global_dir.cyan(),
-            "(cross-project thoughts)".bright_black()
-        );
-        println!();
-    }
 
     let mut out = ThoughtsConfig {
         user,
@@ -589,7 +550,7 @@ fn prompt_anytype_settings(
     let api_token_env = if mcp_already_registered {
         println!(
             "{}",
-            "✓ Anytype MCP already wired up — skipping token env-var prompt.".bright_black()
+            "Anytype MCP already wired up — skipping token env-var prompt.".bright_black()
         );
         existing.api_token_env.clone()
     } else if let Some(v) = flags.api_token_env.clone() {
@@ -602,8 +563,7 @@ fn prompt_anytype_settings(
         Some(
             Input::<String>::with_theme(theme)
                 .with_prompt(
-                    "Env var NAME that holds your Anytype API key \
-                     (hyprlayer stores the name only, not the value)",
+                    "Env var NAME holding your Anytype API key (name only, never the value)",
                 )
                 .default(default_env)
                 .interact()?,
@@ -684,18 +644,10 @@ fn check_existing_setup(current_repo: &Path, force: bool) -> Result<bool> {
         return Ok(true);
     }
 
-    println!(
-        "{}",
-        "Thoughts directory already configured for this repository.".yellow()
-    );
     let reconfigure = Confirm::with_theme(&ColorfulTheme::default())
-        .with_prompt("Do you want to reconfigure?")
+        .with_prompt("Already configured for this repository. Reconfigure?")
         .default(false)
         .interact()?;
-
-    if !reconfigure {
-        println!("Setup cancelled.");
-    }
     Ok(reconfigure)
 }
 
@@ -727,29 +679,9 @@ fn resolve_content_root(backend_kind: BackendKind, resolved: &ProfileConfig) -> 
     }
 }
 
-fn display_root(backend_kind: BackendKind, resolved: &ProfileConfig) -> String {
-    match backend_kind {
-        BackendKind::Git => resolved.thoughts_repo.clone(),
-        BackendKind::Obsidian => resolved
-            .backend_settings
-            .obsidian_root()
-            .map(|p| p.display().to_string())
-            .unwrap_or_default(),
-        _ => String::new(),
-    }
-}
-
 fn ensure_content_root(content_root: &Path) -> Result<()> {
     if !content_root.exists() {
         fs::create_dir_all(content_root)?;
-        println!(
-            "{}",
-            format!(
-                "Created thoughts content root at {}",
-                content_root.display()
-            )
-            .green()
-        );
     }
     Ok(())
 }
@@ -852,28 +784,21 @@ fn select_or_create_directory(
     repos_path: &Path,
     current_repo: &Path,
     directory: Option<String>,
-    content_root: &Path,
-    repos_dir: &str,
 ) -> Result<String> {
     if let Some(dir) = directory {
-        return use_existing_directory(repos_path, &dir, content_root, repos_dir);
+        return use_existing_directory(repos_path, &dir);
     }
 
     let existing_repos = list_existing_repos(repos_path)?;
 
     if existing_repos.is_empty() {
-        prompt_for_new_directory(current_repo, content_root, repos_dir)
+        prompt_for_new_directory(current_repo)
     } else {
-        select_or_create_from_existing(&existing_repos, current_repo, content_root, repos_dir)
+        select_or_create_from_existing(&existing_repos, current_repo)
     }
 }
 
-fn use_existing_directory(
-    repos_path: &Path,
-    dir: &str,
-    content_root: &Path,
-    repos_dir: &str,
-) -> Result<String> {
+fn use_existing_directory(repos_path: &Path, dir: &str) -> Result<String> {
     let sanitized = sanitize_directory_name(dir);
     if !repos_path.join(&sanitized).exists() {
         return Err(anyhow::anyhow!(
@@ -881,16 +806,6 @@ fn use_existing_directory(
             sanitized
         ));
     }
-    println!(
-        "{}",
-        format!(
-            "✓ Using existing: {}{SEP}{}{SEP}{}",
-            content_root.display().to_string().cyan(),
-            repos_dir.cyan(),
-            sanitized.cyan()
-        )
-        .green()
-    );
     Ok(sanitized)
 }
 
@@ -906,11 +821,7 @@ fn list_existing_repos(repos_path: &Path) -> Result<Vec<String>> {
         .collect())
 }
 
-fn prompt_for_new_directory(
-    current_repo: &Path,
-    content_root: &Path,
-    repos_dir: &str,
-) -> Result<String> {
+fn prompt_for_new_directory(current_repo: &Path) -> Result<String> {
     let default_name = get_repo_name_from_path(current_repo);
     let input: String = Input::with_theme(&ColorfulTheme::default())
         .with_prompt(format!(
@@ -920,25 +831,12 @@ fn prompt_for_new_directory(
         .default(default_name)
         .interact()?;
 
-    let sanitized = sanitize_directory_name(&input);
-    println!(
-        "{}",
-        format!(
-            "✓ Will create: {}{SEP}{}{SEP}{}",
-            content_root.display().to_string().cyan(),
-            repos_dir.cyan(),
-            sanitized.cyan()
-        )
-        .green()
-    );
-    Ok(sanitized)
+    Ok(sanitize_directory_name(&input))
 }
 
 fn select_or_create_from_existing(
     existing_repos: &[String],
     current_repo: &Path,
-    content_root: &Path,
-    repos_dir: &str,
 ) -> Result<String> {
     let mut options: Vec<String> = existing_repos
         .iter()
@@ -953,7 +851,7 @@ fn select_or_create_from_existing(
         .interact()?;
 
     if selection == options.len() - 1 {
-        prompt_for_new_directory(current_repo, content_root, repos_dir)
+        prompt_for_new_directory(current_repo)
     } else {
         Ok(existing_repos[selection].clone())
     }
@@ -963,8 +861,6 @@ fn dispatch_backend_init(
     config: &HyprlayerConfig,
     current_repo: &Path,
     backend_kind: BackendKind,
-    resolved: &ProfileConfig,
-    mapped_name: &str,
 ) -> Result<()> {
     let current_repo_str = current_repo.display().to_string();
     let effective = config
@@ -978,112 +874,57 @@ fn dispatch_backend_init(
     let backend_impl = backends::for_kind(backend_kind);
     backend_impl.init(&ctx)?;
 
-    print_summary(
-        backend_kind,
-        resolved,
-        mapped_name,
-        current_repo,
-        &effective,
-    );
     Ok(())
 }
 
-fn print_summary(
-    backend_kind: BackendKind,
-    resolved: &ProfileConfig,
-    mapped_name: &str,
-    current_repo: &Path,
-    effective: &crate::config::EffectiveConfig,
-) {
-    println!("{}", "✅ Thoughts setup complete!".green());
-    println!();
-    println!("{}", "=== Summary ===".blue());
-    println!();
-    println!("Backend: {}", backend_kind.as_str().cyan());
-    println!();
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
 
-    if backend_kind.uses_filesystem() {
-        println!("Repository structure created:");
-        println!("  {}{SEP}", current_repo.display().to_string().cyan());
-        println!("    └── thoughts{SEP}");
-
-        let root_display = display_root(backend_kind, resolved);
-
-        println!(
-            "         ├── {}{SEP}     → {}{SEP}{}{SEP}{}{SEP}{}{SEP}",
-            effective.user.cyan(),
-            root_display.cyan(),
-            resolved.repos_dir.cyan(),
-            mapped_name.cyan(),
-            effective.user.cyan(),
-        );
-        println!(
-            "         ├── shared{SEP}      → {}{SEP}{}{SEP}{}{SEP}shared{SEP}",
-            root_display.cyan(),
-            resolved.repos_dir.cyan(),
-            mapped_name.cyan(),
-        );
-        println!(
-            "         └── global{SEP}      → {}{SEP}{}{SEP}",
-            root_display.cyan(),
-            resolved.global_dir.cyan(),
-        );
-        println!();
-    } else {
-        println!("Project identifier: {}", mapped_name.cyan());
-        println!(
-            "{}",
-            "  (used as the `project` metadata field on every thought)".bright_black()
-        );
-        println!();
+    #[test]
+    fn require_git_repo_passes_for_notion_outside_git() {
+        let tmp = tempdir().unwrap();
+        require_git_repo_for_filesystem_backend(tmp.path(), BackendKind::Notion).unwrap();
+        require_git_repo_for_filesystem_backend(tmp.path(), BackendKind::Anytype).unwrap();
     }
 
-    match backend_kind {
-        BackendKind::Git => {
-            println!("Protection enabled:");
-            println!(
-                "  {} Pre-commit hook: Prevents committing thoughts/",
-                "✓".green()
-            );
-            println!(
-                "  {} Post-commit hook: Auto-syncs thoughts after commits",
-                "✓".green()
-            );
-        }
-        BackendKind::Obsidian => {
-            println!("Protection enabled:");
-            println!(
-                "  {} Pre-commit hook: Prevents committing thoughts/",
-                "✓".green()
-            );
-            println!(
-                "{}",
-                "  (no post-commit auto-sync — Obsidian vaults sync themselves)".bright_black()
-            );
-        }
-        BackendKind::Notion => {
-            println!(
-                "{}",
-                "The Notion MCP server has been registered with your AI tool.".bright_black()
-            );
-            println!(
-                "{}",
-                "Your first /create_plan (or similar) will create the database under the \
-                 configured parent page and persist its ID."
-                    .bright_black()
-            );
-        }
-        BackendKind::Anytype => {
-            println!(
-                "{}",
-                "The Anytype MCP server has been registered with your AI tool.".bright_black()
-            );
-            println!(
-                "{}",
-                "Your first /create_plan (or similar) will create a HyprlayerThought type \
-                 in the configured space and persist its ID."
-                    .bright_black()
-            );
-        }
+    #[test]
+    fn require_git_repo_errors_for_filesystem_backends_outside_git() {
+        let tmp = tempdir().unwrap();
+        assert!(
+            require_git_repo_for_filesystem_backend(tmp.path(), BackendKind::Git)
+                .unwrap_err()
+                .to_string()
+                .contains("Not in a git repository")
+        );
+        assert!(
+            require_git_repo_for_filesystem_backend(tmp.path(), BackendKind::Obsidian).is_err()
+        );
+    }
+
+    #[test]
+    fn require_git_repo_passes_for_filesystem_backend_inside_git() {
+        let tmp = tempdir().unwrap();
+        GitRepo::init(tmp.path()).unwrap();
+        require_git_repo_for_filesystem_backend(tmp.path(), BackendKind::Git).unwrap();
+        require_git_repo_for_filesystem_backend(tmp.path(), BackendKind::Obsidian).unwrap();
+    }
+
+    /// `resolve_backend_interactive` short-circuits only on an explicit flag.
+    /// Every flag-less call drops into the interactive menu (with the current
+    /// backend pre-selected), so the user always sees what's set and can
+    /// switch. We can't drive the menu in a unit test, so we cover the flag
+    /// branch only.
+    #[test]
+    fn resolve_backend_short_circuits_on_explicit_flag() {
+        assert_eq!(
+            resolve_backend_interactive(Some(BackendKind::Notion), BackendKind::Git).unwrap(),
+            BackendKind::Notion,
+        );
+        assert_eq!(
+            resolve_backend_interactive(Some(BackendKind::Git), BackendKind::Notion).unwrap(),
+            BackendKind::Git,
+        );
     }
 }

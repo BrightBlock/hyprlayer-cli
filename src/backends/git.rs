@@ -20,14 +20,7 @@ impl ThoughtsBackend for GitBackend {
         initialize_git_if_needed(&root)?;
         common::setup_symlinks_into(&root, ctx)?;
 
-        let hooks_updated = hooks::setup_git_hooks(ctx.code_repo, true)?;
-        if !hooks_updated.is_empty() {
-            println!(
-                "{}",
-                format!("✓ Updated git hooks: {}", hooks_updated.join(", ")).yellow()
-            );
-        }
-
+        hooks::setup_git_hooks(ctx.code_repo, true)?;
         Ok(())
     }
 
@@ -39,7 +32,6 @@ impl ThoughtsBackend for GitBackend {
             ));
         }
 
-        println!("{}", "Creating searchable index...".blue());
         create_search_directory(&thoughts_dir)?;
 
         let expanded_repo = expand_path(&ctx.effective.thoughts_repo);
@@ -62,35 +54,23 @@ impl ThoughtsBackend for GitBackend {
                 )
             });
             git_repo.commit(&commit_message)?;
-            println!("{}", "✅ Thoughts synchronized".green());
-        } else {
-            println!("{}", "No changes to commit".bright_black());
         }
 
         if git_repo.remote_url().is_none() {
-            println!(
-                "{}",
-                "ℹ️  No remote configured for thoughts repository".yellow()
-            );
             return Ok(());
         }
 
-        println!("{}", "Pulling latest changes...".bright_black());
         if let Err(e) = git_repo.pull_rebase() {
-            println!(
+            eprintln!(
                 "{}",
-                format!("Warning: Could not pull latest changes: {}", e).yellow()
+                format!("Warning: pull --rebase failed: {}", e).yellow()
             );
         }
 
-        if had_changes {
-            println!("{}", "Pushing to remote...".bright_black());
-            if let Err(e) = git_repo.push() {
-                println!(
-                    "{}",
-                    format!("⚠️  Could not push to remote: {}", e).yellow()
-                );
-            }
+        if had_changes
+            && let Err(e) = git_repo.push()
+        {
+            eprintln!("{}", format!("Warning: push failed: {}", e).yellow());
         }
 
         Ok(())
@@ -165,7 +145,7 @@ impl ThoughtsBackend for GitBackend {
             }
             Ok(false) => {
                 lines.push(String::new());
-                lines.push(format!("{}", "✓ No uncommitted changes".green()));
+                lines.push(format!("{}", "No uncommitted changes".green()));
             }
             Err(e) => lines.push(format!("  Error checking status: {}", e)),
         }
@@ -255,7 +235,6 @@ fn create_search_directory(thoughts_dir: &Path) -> Result<()> {
     let mut visited = HashSet::new();
     let all_files = find_files_following_symlinks(thoughts_dir, thoughts_dir, &mut visited)?;
 
-    let mut linked_count = 0;
     for rel_path in all_files {
         let source_path = thoughts_dir.join(&rel_path);
         let target_path = search_dir.join(&rel_path);
@@ -264,20 +243,9 @@ fn create_search_directory(thoughts_dir: &Path) -> Result<()> {
             fs::create_dir_all(parent)?;
         }
 
-        let linked = fs::canonicalize(&source_path)
-            .and_then(|real| fs::hard_link(real, &target_path))
-            .is_ok();
-        linked_count += usize::from(linked);
+        let _ = fs::canonicalize(&source_path)
+            .and_then(|real| fs::hard_link(real, &target_path));
     }
-
-    println!(
-        "{}",
-        format!(
-            "Created {} hard links in searchable directory",
-            linked_count
-        )
-        .bright_black()
-    );
 
     Ok(())
 }

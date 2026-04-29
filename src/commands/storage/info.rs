@@ -90,9 +90,6 @@ fn backend_settings_json(eff: &EffectiveConfig) -> Value {
 }
 
 fn print_human(eff: &EffectiveConfig, project_path: &str) {
-    println!("{}", "Storage Backend".blue());
-    println!("{}", "=".repeat(50).bright_black());
-    println!();
     println!("Backend: {}", eff.backend.as_str().cyan());
     println!("Project: {}", project_path.cyan());
     if let Some(profile) = eff.profile_name.as_deref() {
@@ -169,9 +166,9 @@ fn print_env_ref(env_var: Option<&str>) {
     };
     let set = std::env::var(name).is_ok();
     let status = if set {
-        "(✓ set)".green().to_string()
+        "(set)".green().to_string()
     } else {
-        "(✗ not set)".red().to_string()
+        "(not set)".red().to_string()
     };
     println!("  API token env: {} {}", name.cyan(), status);
 }

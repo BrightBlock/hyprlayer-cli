@@ -1,5 +1,4 @@
 use anyhow::Result;
-use colored::Colorize;
 use dialoguer::{Select, theme::ColorfulTheme};
 
 use crate::agents::{AgentTool, OpenCodeProvider};
@@ -18,32 +17,21 @@ pub fn configure(args: AiConfigureArgs) -> Result<()> {
         .and_then(|ai| ai.agent_tool.as_ref());
 
     if let (Some(agent), false) = (existing_agent, force) {
-        println!(
-            "{}",
-            format!("AI tool already configured: {}", agent).yellow()
-        );
-        println!("{}", "Use --force to reconfigure.".bright_black());
-
         if !agent.is_installed() {
-            println!();
-            println!("{}", "Agent files not found. Installing...".yellow());
             let opencode_provider = hyprlayer_config
                 .ai
                 .as_ref()
                 .and_then(|ai| ai.opencode_provider.as_ref());
             agent.install(opencode_provider)?;
-            println!(
-                "{}",
-                format!("Agent files installed to {}", agent.dest_display()).green()
-            );
+            return Ok(());
         }
-        return Ok(());
+        return Err(anyhow::anyhow!(
+            "Already configured: {}. Use --force to reconfigure.",
+            agent
+        ));
     }
 
     let theme = ColorfulTheme::default();
-    println!("{}", "=== AI Tool Configuration ===".blue());
-    println!();
-
     let agent_tool = prompt_for_agent_tool(&theme)?;
 
     let (opencode_provider, opencode_sonnet_model, opencode_opus_model) =
@@ -65,39 +53,12 @@ pub fn configure(args: AiConfigureArgs) -> Result<()> {
     ai.opencode_opus_model = opencode_opus_model;
 
     hyprlayer_config.save(&config_path)?;
-    println!();
-    println!("{}", "Configuration saved.".green());
 
-    println!();
     let opencode_provider_ref = hyprlayer_config
         .ai
         .as_ref()
         .and_then(|ai| ai.opencode_provider.as_ref());
     agent_tool.install(opencode_provider_ref)?;
-    println!(
-        "{}",
-        format!(
-            "{} agent files installed to {}",
-            agent_tool,
-            agent_tool.dest_display()
-        )
-        .green()
-    );
-
-    if let Some(ref p) = hyprlayer_config
-        .ai
-        .as_ref()
-        .and_then(|ai| ai.opencode_provider.as_ref())
-    {
-        println!("{}", format!("Configured for {} provider", p).green());
-    }
-
-    println!();
-    println!("{}", "AI configuration complete!".green());
-    println!(
-        "{}",
-        "Run 'hyprlayer thoughts init' to set up thoughts for a repository.".bright_black()
-    );
 
     Ok(())
 }
