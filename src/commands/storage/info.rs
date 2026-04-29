@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 
 use crate::backends::schema::schema_as_json_value;
 use crate::cli::StorageInfoArgs;
-use crate::config::{BackendKind, EffectiveConfig, expand_path, get_current_repo_path};
+use crate::config::{BackendConfig, EffectiveConfig, expand_path, get_current_repo_path};
 
 fn expand_display(s: &str) -> String {
     expand_path(s).display().to_string()
@@ -38,12 +38,8 @@ pub fn info(args: StorageInfoArgs) -> Result<()> {
 
 fn default_effective() -> EffectiveConfig {
     EffectiveConfig {
-        thoughts_repo: String::new(),
-        repos_dir: String::new(),
-        global_dir: String::new(),
         user: String::new(),
-        backend: BackendKind::default(),
-        backend_settings: Default::default(),
+        backend: BackendConfig::default(),
         profile_name: None,
         mapped_name: None,
     }
@@ -51,7 +47,7 @@ fn default_effective() -> EffectiveConfig {
 
 fn build_json(eff: &EffectiveConfig, project_path: &str) -> Value {
     json!({
-        "backend": eff.backend,
+        "backend": eff.backend.kind(),
         "settings": backend_settings_json(eff),
         "projectPath": project_path,
         "mappedName": eff.mapped_name,
@@ -62,35 +58,35 @@ fn build_json(eff: &EffectiveConfig, project_path: &str) -> Value {
 }
 
 fn backend_settings_json(eff: &EffectiveConfig) -> Value {
-    match eff.backend {
-        BackendKind::Git => json!({
-            "thoughtsRepo": expand_display(&eff.thoughts_repo),
-            "reposDir": eff.repos_dir,
-            "globalDir": eff.global_dir,
+    match &eff.backend {
+        BackendConfig::Git(g) => json!({
+            "thoughtsRepo": expand_display(&g.thoughts_repo),
+            "reposDir": g.repos_dir,
+            "globalDir": g.global_dir,
         }),
-        BackendKind::Obsidian => json!({
-            "vaultPath": eff.backend_settings.vault_path.as_deref().map(expand_display).unwrap_or_default(),
-            "vaultSubpath": eff.backend_settings.vault_subpath.clone().unwrap_or_default(),
-            "contentRoot": eff.backend_settings.obsidian_root().map(|p| p.display().to_string()).unwrap_or_default(),
-            "reposDir": eff.repos_dir,
-            "globalDir": eff.global_dir,
+        BackendConfig::Obsidian(o) => json!({
+            "vaultPath": if o.vault_path.is_empty() { String::new() } else { expand_display(&o.vault_path) },
+            "vaultSubpath": o.vault_subpath.clone().unwrap_or_default(),
+            "contentRoot": o.obsidian_root().map(|p| p.display().to_string()).unwrap_or_default(),
+            "reposDir": o.repos_dir,
+            "globalDir": o.global_dir,
         }),
         // No `apiTokenEnv`: notion uses the agent's connector (see
         // `backends::notion`), and slash commands branch on the key's absence.
-        BackendKind::Notion => json!({
-            "parentPageId": eff.backend_settings.parent_page_id,
-            "databaseId": eff.backend_settings.database_id,
+        BackendConfig::Notion(n) => json!({
+            "parentPageId": if n.parent_page_id.is_empty() { Value::Null } else { Value::String(n.parent_page_id.clone()) },
+            "databaseId": n.database_id,
         }),
-        BackendKind::Anytype => json!({
-            "spaceId": eff.backend_settings.space_id,
-            "typeId": eff.backend_settings.type_id,
-            "apiTokenEnv": eff.backend_settings.api_token_env,
+        BackendConfig::Anytype(a) => json!({
+            "spaceId": if a.space_id.is_empty() { Value::Null } else { Value::String(a.space_id.clone()) },
+            "typeId": a.type_id,
+            "apiTokenEnv": a.api_token_env,
         }),
     }
 }
 
 fn print_human(eff: &EffectiveConfig, project_path: &str) {
-    println!("Backend: {}", eff.backend.as_str().cyan());
+    println!("Backend: {}", eff.backend.kind().as_str().cyan());
     println!("Project: {}", project_path.cyan());
     if let Some(profile) = eff.profile_name.as_deref() {
         println!("Profile: {}", profile.cyan());
@@ -105,48 +101,54 @@ fn print_human(eff: &EffectiveConfig, project_path: &str) {
     }
     println!();
     println!("{}", "Settings:".yellow());
-    match eff.backend {
-        BackendKind::Git => {
+    match &eff.backend {
+        BackendConfig::Git(g) => {
             println!(
                 "  Thoughts repo: {}",
-                expand_display(&eff.thoughts_repo).cyan()
+                expand_display(&g.thoughts_repo).cyan()
             );
-            println!("  Repos directory: {}", eff.repos_dir.cyan());
-            println!("  Global directory: {}", eff.global_dir.cyan());
+            println!("  Repos directory: {}", g.repos_dir.cyan());
+            println!("  Global directory: {}", g.global_dir.cyan());
         }
-        BackendKind::Obsidian => {
-            let vault_path = eff
-                .backend_settings
-                .vault_path
-                .as_deref()
-                .map(expand_display)
-                .unwrap_or_else(|| "(not set)".to_string());
+        BackendConfig::Obsidian(o) => {
+            let vault_path = if o.vault_path.is_empty() {
+                "(not set)".to_string()
+            } else {
+                expand_display(&o.vault_path)
+            };
             println!("  Vault path: {}", vault_path.cyan());
             println!(
                 "  Vault subpath: {}",
-                eff.backend_settings
-                    .vault_subpath
-                    .as_deref()
-                    .unwrap_or("")
-                    .cyan()
+                o.vault_subpath.as_deref().unwrap_or("").cyan()
             );
-            if let Some(root) = eff.backend_settings.obsidian_root() {
+            if let Some(root) = o.obsidian_root() {
                 println!("  Content root: {}", root.display().to_string().cyan());
             }
-            println!("  Repos directory: {}", eff.repos_dir.cyan());
-            println!("  Global directory: {}", eff.global_dir.cyan());
+            println!("  Repos directory: {}", o.repos_dir.cyan());
+            println!("  Global directory: {}", o.global_dir.cyan());
         }
-        BackendKind::Notion => {
+        BackendConfig::Notion(n) => {
             print_opt(
                 "  Parent page ID",
-                eff.backend_settings.parent_page_id.as_deref(),
+                if n.parent_page_id.is_empty() {
+                    None
+                } else {
+                    Some(n.parent_page_id.as_str())
+                },
             );
-            print_opt("  Database ID", eff.backend_settings.database_id.as_deref());
+            print_opt("  Database ID", n.database_id.as_deref());
         }
-        BackendKind::Anytype => {
-            print_opt("  Space ID", eff.backend_settings.space_id.as_deref());
-            print_opt("  Type ID", eff.backend_settings.type_id.as_deref());
-            print_env_ref(eff.backend_settings.api_token_env.as_deref());
+        BackendConfig::Anytype(a) => {
+            print_opt(
+                "  Space ID",
+                if a.space_id.is_empty() {
+                    None
+                } else {
+                    Some(a.space_id.as_str())
+                },
+            );
+            print_opt("  Type ID", a.type_id.as_deref());
+            print_env_ref(a.api_token_env.as_deref());
         }
     }
 }
@@ -176,16 +178,16 @@ fn print_env_ref(env_var: Option<&str>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::BackendSettings;
+    use crate::config::{AnytypeConfig, GitConfig, NotionConfig, ObsidianConfig};
 
     fn base_effective() -> EffectiveConfig {
         EffectiveConfig {
-            thoughts_repo: "/tmp/thoughts".to_string(),
-            repos_dir: "repos".to_string(),
-            global_dir: "global".to_string(),
             user: "alice".to_string(),
-            backend: BackendKind::Git,
-            backend_settings: BackendSettings::default(),
+            backend: BackendConfig::Git(GitConfig {
+                thoughts_repo: "/tmp/thoughts".to_string(),
+                repos_dir: "repos".to_string(),
+                global_dir: "global".to_string(),
+            }),
             profile_name: None,
             mapped_name: Some("myproj".to_string()),
         }
@@ -213,12 +215,12 @@ mod tests {
     #[test]
     fn json_payload_for_obsidian_includes_content_root() {
         let eff = EffectiveConfig {
-            backend: BackendKind::Obsidian,
-            backend_settings: BackendSettings {
-                vault_path: Some("/vault".to_string()),
+            backend: BackendConfig::Obsidian(ObsidianConfig {
+                vault_path: "/vault".to_string(),
                 vault_subpath: Some("hyprlayer".to_string()),
-                ..Default::default()
-            },
+                repos_dir: "repos".to_string(),
+                global_dir: "global".to_string(),
+            }),
             ..base_effective()
         };
         let payload = build_json(&eff, "/code/myproj");
@@ -240,18 +242,14 @@ mod tests {
     fn json_payload_for_notion_includes_settings_without_token_env() {
         // Notion uses the agent tool's Notion connector (Claude.ai etc.),
         // not a self-hosted MCP server, so hyprlayer never stores a token env
-        // name. `apiTokenEnv` must not appear under the notion branch even if
-        // a stale value leaked in from a prior backend — slash commands rely
-        // on the missing key to decide not to surface token-related guidance.
+        // name. `apiTokenEnv` must not appear under the notion branch — slash
+        // commands rely on the missing key to decide not to surface
+        // token-related guidance.
         let eff = EffectiveConfig {
-            backend: BackendKind::Notion,
-            backend_settings: BackendSettings {
-                parent_page_id: Some("p1".to_string()),
+            backend: BackendConfig::Notion(NotionConfig {
+                parent_page_id: "p1".to_string(),
                 database_id: Some("d1".to_string()),
-                // Populated to prove the payload strips it for notion.
-                api_token_env: Some("SHOULD_NOT_APPEAR".to_string()),
-                ..Default::default()
-            },
+            }),
             ..base_effective()
         };
         let payload = build_json(&eff, "/code/myproj");
@@ -272,13 +270,11 @@ mod tests {
         // null (not omitted, not an empty string) so the dispatch branches
         // `typeId == null` vs populated correctly.
         let eff = EffectiveConfig {
-            backend: BackendKind::Anytype,
-            backend_settings: BackendSettings {
-                space_id: Some("s1".to_string()),
+            backend: BackendConfig::Anytype(AnytypeConfig {
+                space_id: "s1".to_string(),
                 type_id: None,
                 api_token_env: Some("ANYTYPE_API_KEY".to_string()),
-                ..Default::default()
-            },
+            }),
             ..base_effective()
         };
         let payload = build_json(&eff, "/code/myproj");
@@ -289,11 +285,12 @@ mod tests {
         assert_eq!(payload["schema"].as_array().unwrap().len(), 10);
 
         let with_type = EffectiveConfig {
-            backend_settings: BackendSettings {
+            backend: BackendConfig::Anytype(AnytypeConfig {
+                space_id: "s1".to_string(),
                 type_id: Some("t1".to_string()),
-                ..eff.backend_settings.clone()
-            },
-            ..eff
+                api_token_env: Some("ANYTYPE_API_KEY".to_string()),
+            }),
+            ..base_effective()
         };
         let payload = build_json(&with_type, "/code/myproj");
         assert_eq!(payload["settings"]["typeId"], "t1");

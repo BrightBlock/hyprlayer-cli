@@ -2,9 +2,8 @@ use anyhow::Result;
 use colored::Colorize;
 use std::process::Command;
 
-use super::{BackendContext, StatusReport, ThoughtsBackend};
+use super::{BackendContext, StatusReport, ThoughtsBackend, common};
 use crate::agents::AgentTool;
-use crate::config::BackendKind;
 
 /// The Anytype MCP server command the agent tool invokes.
 const ANYTYPE_MCP_COMMAND: &str = "npx";
@@ -20,35 +19,23 @@ pub struct AnytypeBackend;
 
 impl ThoughtsBackend for AnytypeBackend {
     fn init(&self, ctx: &BackendContext) -> Result<()> {
-        ctx.effective
-            .backend_settings
-            .validate_for(BackendKind::Anytype)?;
+        let any = ctx.effective.backend.require_anytype()?;
+        if any.space_id.is_empty() {
+            return Err(anyhow::anyhow!(
+                "Anytype backend requires spaceId in settings"
+            ));
+        }
 
         crate::hooks::setup_git_hooks(ctx.code_repo, false)?;
 
-        // Stale `thoughts/` from a prior filesystem backend: warn, don't
-        // auto-remove. Use `symlink_metadata` so broken symlinks still trip.
-        let stale = ctx.code_repo.join("thoughts");
-        if stale.symlink_metadata().is_ok() {
-            eprintln!(
-                "{}",
-                format!(
-                    "Warning: stale `thoughts/` directory at {}. Anytype content lives \
-                     in the app. Remove with `rm -rf thoughts/` if you don't need the old links.",
-                    stale.display()
-                )
-                .yellow()
-            );
-        }
+        common::warn_stale_thoughts_dir(ctx.code_repo, "Anytype content lives in the app");
 
         let agent = ctx.agent_tool.ok_or_else(|| {
             anyhow::anyhow!("AI tool not configured. Run 'hyprlayer ai configure' first.")
         })?;
 
         if !is_anytype_mcp_registered(agent) {
-            let env_var = ctx
-                .effective
-                .backend_settings
+            let env_var = any
                 .api_token_env
                 .as_deref()
                 .unwrap_or(DEFAULT_ANYTYPE_TOKEN_ENV);
@@ -75,12 +62,16 @@ impl ThoughtsBackend for AnytypeBackend {
 
     fn status(&self, ctx: &BackendContext) -> Result<StatusReport> {
         let mut lines = Vec::new();
-        let settings = &ctx.effective.backend_settings;
+        let any = ctx.effective.backend.require_anytype()?;
 
-        let space = settings.space_id.as_deref().unwrap_or("(not set)");
+        let space = if any.space_id.is_empty() {
+            "(not set)"
+        } else {
+            any.space_id.as_str()
+        };
         lines.push(format!("  Space ID: {}", space.cyan()));
 
-        match settings.type_id.as_deref() {
+        match any.type_id.as_deref() {
             Some(id) if !id.is_empty() => lines.push(format!("  Type ID: {}", id.cyan())),
             _ => lines.push(format!(
                 "  Type ID: {}",
@@ -88,7 +79,7 @@ impl ThoughtsBackend for AnytypeBackend {
             )),
         }
 
-        if let Some(name) = settings.api_token_env.as_deref() {
+        if let Some(name) = any.api_token_env.as_deref() {
             let set = std::env::var(name).is_ok();
             let status = if set {
                 "set".green().to_string()
@@ -215,17 +206,13 @@ fn mcp_registration_status(agent: Option<AgentTool>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{BackendKind, BackendSettings, EffectiveConfig};
+    use crate::config::{AnytypeConfig, BackendConfig, EffectiveConfig};
     use tempfile::TempDir;
 
-    fn anytype_effective(settings: BackendSettings) -> EffectiveConfig {
+    fn anytype_effective(any: AnytypeConfig) -> EffectiveConfig {
         EffectiveConfig {
-            thoughts_repo: String::new(),
-            repos_dir: "repos".to_string(),
-            global_dir: "global".to_string(),
             user: "alice".to_string(),
-            backend: BackendKind::Anytype,
-            backend_settings: settings,
+            backend: BackendConfig::Anytype(any),
             profile_name: None,
             mapped_name: Some("myproj".to_string()),
         }
@@ -234,7 +221,11 @@ mod tests {
     #[test]
     fn sync_is_noop() {
         let tmp = TempDir::new().unwrap();
-        let eff = anytype_effective(BackendSettings::default());
+        let eff = anytype_effective(AnytypeConfig {
+            space_id: "s1".to_string(),
+            type_id: None,
+            api_token_env: None,
+        });
         let ctx = BackendContext::new(tmp.path(), &eff);
         AnytypeBackend.sync(&ctx, None).unwrap();
     }
@@ -242,10 +233,10 @@ mod tests {
     #[test]
     fn status_reports_env_var_presence() {
         let tmp = TempDir::new().unwrap();
-        let eff = anytype_effective(BackendSettings {
-            space_id: Some("s1".to_string()),
+        let eff = anytype_effective(AnytypeConfig {
+            space_id: "s1".to_string(),
+            type_id: None,
             api_token_env: Some("HYPRLAYER_TEST_ANYTYPE_TOKEN_PRESENT".to_string()),
-            ..Default::default()
         });
         unsafe { std::env::remove_var("HYPRLAYER_TEST_ANYTYPE_TOKEN_PRESENT") };
         let ctx = BackendContext::new(tmp.path(), &eff);
@@ -258,10 +249,10 @@ mod tests {
     #[test]
     fn status_omits_env_row_when_unset() {
         let tmp = TempDir::new().unwrap();
-        let eff = anytype_effective(BackendSettings {
-            space_id: Some("s1".to_string()),
+        let eff = anytype_effective(AnytypeConfig {
+            space_id: "s1".to_string(),
+            type_id: None,
             api_token_env: None,
-            ..Default::default()
         });
         let ctx = BackendContext::new(tmp.path(), &eff);
         let report = AnytypeBackend.status(&ctx).unwrap();
@@ -272,11 +263,10 @@ mod tests {
     #[test]
     fn status_reports_missing_type_id_as_pending() {
         let tmp = TempDir::new().unwrap();
-        let eff = anytype_effective(BackendSettings {
-            space_id: Some("s1".to_string()),
-            api_token_env: Some("ANYTYPE_API_KEY".to_string()),
+        let eff = anytype_effective(AnytypeConfig {
+            space_id: "s1".to_string(),
             type_id: None,
-            ..Default::default()
+            api_token_env: Some("ANYTYPE_API_KEY".to_string()),
         });
         let ctx = BackendContext::new(tmp.path(), &eff);
         let report = AnytypeBackend.status(&ctx).unwrap();
