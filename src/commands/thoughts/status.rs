@@ -4,7 +4,7 @@ use std::path::MAIN_SEPARATOR_STR as SEP;
 
 use crate::backends::{self, BackendContext};
 use crate::cli::StatusArgs;
-use crate::config::get_current_repo_path;
+use crate::config::{BackendConfig, get_current_repo_path};
 
 pub fn status(args: StatusArgs) -> Result<()> {
     let hyprlayer_config = args.config.load()?;
@@ -15,9 +15,23 @@ pub fn status(args: StatusArgs) -> Result<()> {
     let effective = thoughts_config.effective_config_for(&current_repo_str);
 
     println!("{}", "Configuration:".yellow());
-    println!("  Backend: {}", effective.backend.as_str().cyan());
-    println!("  Repos directory: {}", effective.repos_dir.cyan());
-    println!("  Global directory: {}", effective.global_dir.cyan());
+    println!("  Backend: {}", effective.backend.kind().as_str().cyan());
+    match &effective.backend {
+        BackendConfig::Git(g) => {
+            println!("  Thoughts repo: {}", g.thoughts_repo.cyan());
+            println!("  Repos directory: {}", g.repos_dir.cyan());
+            println!("  Global directory: {}", g.global_dir.cyan());
+        }
+        BackendConfig::Obsidian(o) => {
+            println!("  Vault path: {}", o.vault_path.cyan());
+            if let Some(sub) = &o.vault_subpath {
+                println!("  Vault subpath: {}", sub.cyan());
+            }
+            println!("  Repos directory: {}", o.repos_dir.cyan());
+            println!("  Global directory: {}", o.global_dir.cyan());
+        }
+        BackendConfig::Notion(_) | BackendConfig::Anytype(_) => {}
+    }
     println!("  User: {}", thoughts_config.user.cyan());
     if let Some(ref profile) = effective.profile_name {
         println!("  Profile: {}", profile.cyan());
@@ -32,10 +46,10 @@ pub fn status(args: StatusArgs) -> Result<()> {
         println!("{}", "Current Repository:".yellow());
         println!("  Path: {}", current_repo_str.cyan());
 
-        if effective.backend.uses_filesystem() {
+        if let Some(repos_dir) = effective.backend.filesystem_repos_dir() {
             println!(
                 "  Thoughts directory: {}{SEP}{}",
-                effective.repos_dir.cyan(),
+                repos_dir.cyan(),
                 mapped_name.cyan()
             );
 
@@ -53,7 +67,7 @@ pub fn status(args: StatusArgs) -> Result<()> {
 
     let agent_tool = hyprlayer_config.ai.as_ref().and_then(|a| a.agent_tool);
     let ctx = BackendContext::new(&current_repo, &effective).with_agent_tool(agent_tool);
-    let backend = backends::for_kind(effective.backend);
+    let backend = backends::for_kind(effective.backend.kind());
     let report = backend.status(&ctx)?;
     for line in report.lines {
         println!("{}", line);

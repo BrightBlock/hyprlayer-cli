@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use super::common::FilesystemDirs;
 use super::{BackendContext, StatusReport, ThoughtsBackend, common};
 use crate::config::expand_path;
 use crate::git_ops::GitRepo;
@@ -13,18 +14,32 @@ pub struct GitBackend;
 
 impl ThoughtsBackend for GitBackend {
     fn init(&self, ctx: &BackendContext) -> Result<()> {
-        let root = expand_path(&ctx.effective.thoughts_repo);
+        let git = ctx.effective.backend.require_git()?;
+        let mapped =
+            ctx.effective.mapped_name.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("Cannot create thoughts tree: repo is not mapped")
+            })?;
+        let dirs = FilesystemDirs {
+            repos_dir: &git.repos_dir,
+            global_dir: &git.global_dir,
+            user: &ctx.effective.user,
+            mapped_name: mapped,
+        };
+
+        let root = expand_path(&git.thoughts_repo);
         fs::create_dir_all(&root)?;
 
-        common::setup_directory_structure_at(&root, ctx)?;
+        common::setup_directory_structure_at(&root, &dirs)?;
         initialize_git_if_needed(&root)?;
-        common::setup_symlinks_into(&root, ctx)?;
+        common::setup_symlinks_into(&root, ctx.code_repo, &dirs)?;
 
         hooks::setup_git_hooks(ctx.code_repo, true)?;
         Ok(())
     }
 
     fn sync(&self, ctx: &BackendContext, message: Option<&str>) -> Result<()> {
+        let git = ctx.effective.backend.require_git()?;
+
         let thoughts_dir = ctx.code_repo.join("thoughts");
         if !thoughts_dir.exists() {
             return Err(anyhow::anyhow!(
@@ -34,11 +49,11 @@ impl ThoughtsBackend for GitBackend {
 
         create_search_directory(&thoughts_dir)?;
 
-        let expanded_repo = expand_path(&ctx.effective.thoughts_repo);
+        let expanded_repo = expand_path(&git.thoughts_repo);
         if !expanded_repo.exists() {
             return Err(anyhow::anyhow!(
                 "Thoughts repository not found at {}",
-                ctx.effective.thoughts_repo
+                git.thoughts_repo
             ));
         }
 
@@ -67,9 +82,7 @@ impl ThoughtsBackend for GitBackend {
             );
         }
 
-        if had_changes
-            && let Err(e) = git_repo.push()
-        {
+        if had_changes && let Err(e) = git_repo.push() {
             eprintln!("{}", format!("Warning: push failed: {}", e).yellow());
         }
 
@@ -79,17 +92,15 @@ impl ThoughtsBackend for GitBackend {
     fn status(&self, ctx: &BackendContext) -> Result<StatusReport> {
         use std::path::MAIN_SEPARATOR_STR as SEP;
         let mut lines = Vec::new();
-        let expanded_repo = expand_path(&ctx.effective.thoughts_repo);
+        let git = ctx.effective.backend.require_git()?;
+        let expanded_repo = expand_path(&git.thoughts_repo);
 
-        lines.push(format!(
-            "  Repository: {}",
-            ctx.effective.thoughts_repo.cyan()
-        ));
+        lines.push(format!("  Repository: {}", git.thoughts_repo.cyan()));
         if let Some(name) = &ctx.effective.mapped_name {
             lines.push(format!(
                 "  Full path: {}{SEP}{}{SEP}{}",
-                ctx.effective.thoughts_repo.cyan(),
-                ctx.effective.repos_dir.cyan(),
+                git.thoughts_repo.cyan(),
+                git.repos_dir.cyan(),
                 name.cyan()
             ));
         }
@@ -97,12 +108,9 @@ impl ThoughtsBackend for GitBackend {
 
         if !expanded_repo.exists() {
             lines.push(
-                format!(
-                    "Thoughts repository not found at {}",
-                    ctx.effective.thoughts_repo
-                )
-                .red()
-                .to_string(),
+                format!("Thoughts repository not found at {}", git.thoughts_repo)
+                    .red()
+                    .to_string(),
             );
             return Ok(StatusReport { lines });
         }
@@ -243,8 +251,7 @@ fn create_search_directory(thoughts_dir: &Path) -> Result<()> {
             fs::create_dir_all(parent)?;
         }
 
-        let _ = fs::canonicalize(&source_path)
-            .and_then(|real| fs::hard_link(real, &target_path));
+        let _ = fs::canonicalize(&source_path).and_then(|real| fs::hard_link(real, &target_path));
     }
 
     Ok(())

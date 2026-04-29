@@ -6,7 +6,10 @@ use std::fs;
 use std::path::MAIN_SEPARATOR_STR as SEP;
 
 use crate::cli::ProfileCreateArgs;
-use crate::config::{expand_path, get_default_thoughts_repo, sanitize_directory_name};
+use crate::config::{
+    BackendConfig, GitConfig, HyprlayerConfig, ProfileConfig, expand_path,
+    get_default_thoughts_repo, sanitize_directory_name,
+};
 use crate::git_ops::GitRepo;
 
 fn prompt_for_profile_config(profile_name: &str) -> Result<(String, String, String)> {
@@ -48,21 +51,18 @@ pub fn create(args: ProfileCreateArgs) -> Result<()> {
     } = args;
     let config_path = config.path()?;
 
-    let content = if config_path.exists() {
-        fs::read_to_string(&config_path)?
-    } else {
-        "{}".to_string()
-    };
+    if !config_path.exists() {
+        return Err(anyhow::anyhow!(
+            "Thoughts not configured. Run 'hyprlayer thoughts init' first."
+        ));
+    }
 
-    let mut config_json: serde_json::Value = serde_json::from_str(&content)?;
-
-    // Get thoughts config
-    let thoughts_config = config_json
-        .get_mut("thoughts")
-        .and_then(|t| t.as_object_mut())
+    let mut hyprlayer_config = HyprlayerConfig::load(&config_path)?;
+    let thoughts = hyprlayer_config
+        .thoughts
+        .as_mut()
         .ok_or_else(|| anyhow::anyhow!("Thoughts not configured"))?;
 
-    // Sanitize profile name
     let sanitized_name = sanitize_directory_name(&profile_name);
     if sanitized_name != profile_name {
         println!(
@@ -75,50 +75,28 @@ pub fn create(args: ProfileCreateArgs) -> Result<()> {
         );
     }
 
-    // Check if profile exists
-    let profile_exists = thoughts_config
-        .get("profiles")
-        .and_then(|p| p.as_object())
-        .is_some_and(|obj| obj.contains_key(&sanitized_name));
-
-    if profile_exists {
+    if thoughts.profiles.contains_key(&sanitized_name) {
         return Err(anyhow::anyhow!(
             "Profile \"{}\" already exists",
             sanitized_name
         ));
     }
 
-    // Get or create profiles object
-    let profiles = thoughts_config
-        .get_mut("profiles")
-        .and_then(|p| p.as_object_mut());
-
     let (thoughts_repo, repos_dir, global_dir) = match (repo, repos_dir, global_dir) {
         (Some(r), Some(rd), Some(gd)) => (r, rd, gd),
         _ => prompt_for_profile_config(&sanitized_name)?,
     };
 
-    // Create profile object
-    let profile = serde_json::json!({
-        "thoughtsRepo": thoughts_repo,
-        "reposDir": repos_dir,
-        "globalDir": global_dir,
-    });
+    let profile = ProfileConfig {
+        backend: BackendConfig::Git(GitConfig {
+            thoughts_repo: thoughts_repo.clone(),
+            repos_dir,
+            global_dir,
+        }),
+    };
+    thoughts.profiles.insert(sanitized_name.clone(), profile);
 
-    // Add to profiles
-    if let Some(p) = profiles {
-        p.insert(sanitized_name.clone(), profile);
-    } else {
-        thoughts_config.insert(
-            "profiles".to_string(),
-            serde_json::json!({ sanitized_name.clone(): profile }),
-        );
-    }
-
-    // Save config
-    let config_dir = config_path.parent().unwrap();
-    fs::create_dir_all(config_dir)?;
-    fs::write(&config_path, serde_json::to_string_pretty(&config_json)?)?;
+    hyprlayer_config.save(&config_path)?;
 
     let expanded_repo = expand_path(&thoughts_repo);
     fs::create_dir_all(&expanded_repo)?;
