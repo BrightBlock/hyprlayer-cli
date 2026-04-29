@@ -2,6 +2,7 @@ use anyhow::Result;
 use colored::Colorize;
 
 use crate::cli::ProfileListArgs;
+use crate::commands::thoughts::backend_display::print_backend_block;
 
 pub fn list(args: ProfileListArgs) -> Result<()> {
     let ProfileListArgs { json, config } = args;
@@ -16,24 +17,17 @@ pub fn list(args: ProfileListArgs) -> Result<()> {
         return Ok(());
     }
 
-    let Some(thoughts) = config_json.get("thoughts") else {
+    let hyprlayer_config = config.load_if_exists()?;
+    let Some(thoughts) = hyprlayer_config.as_ref().and_then(|c| c.thoughts.as_ref()) else {
         return Ok(());
     };
-
-    let get_str = |key: &str| thoughts.get(key).and_then(|v| v.as_str()).unwrap_or("N/A");
 
     println!("{}", "Default Configuration:".yellow());
-    println!("  Thoughts repository: {}", get_str("thoughtsRepo").cyan());
-    println!("  Repos directory: {}", get_str("reposDir").cyan());
-    println!("  Global directory: {}", get_str("globalDir").cyan());
-    println!("  Backend: {}", get_str("backend").cyan());
+    println!("  Backend: {}", thoughts.backend.kind().as_str().cyan());
+    print_backend_block(&thoughts.backend, "  ", false);
     println!();
 
-    let Some(profiles) = thoughts.get("profiles").and_then(|p| p.as_object()) else {
-        return Ok(());
-    };
-
-    if profiles.is_empty() {
+    if thoughts.profiles.is_empty() {
         println!("{}", "No profiles configured.".bright_black());
         println!();
         println!(
@@ -43,31 +37,16 @@ pub fn list(args: ProfileListArgs) -> Result<()> {
         return Ok(());
     }
 
-    println!("{}", format!("Profiles ({}):", profiles.len()).yellow());
+    println!(
+        "{}",
+        format!("Profiles ({}):", thoughts.profiles.len()).yellow()
+    );
     println!();
 
-    for (name, profile) in profiles {
-        let get_profile_str =
-            |key: &str| profile.get(key).and_then(|v| v.as_str()).unwrap_or("N/A");
-
+    for (name, profile) in &thoughts.profiles {
         println!("  {}:", name.cyan());
-        println!(
-            "    Thoughts repository: {}",
-            get_profile_str("thoughtsRepo")
-        );
-        println!("    Repos directory: {}", get_profile_str("reposDir"));
-        println!("    Global directory: {}", get_profile_str("globalDir"));
-        println!("    Backend: {}", get_profile_str("backend"));
-
-        if let Some(settings) = profile.get("backendSettings").and_then(|s| s.as_object())
-            && !settings.is_empty()
-        {
-            for (key, val) in settings {
-                let display = super::super::format_backend_setting(key, val);
-                println!("    {}: {}", key, display);
-            }
-        }
-
+        println!("    Backend: {}", profile.backend.kind().as_str().cyan());
+        print_backend_block(&profile.backend, "    ", false);
         println!();
     }
 

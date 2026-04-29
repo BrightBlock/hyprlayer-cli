@@ -4,6 +4,8 @@ use std::fs;
 use std::process::Command;
 
 use crate::cli::ConfigArgsCmd;
+use crate::commands::thoughts::backend_display::print_backend_block;
+use crate::config::HyprlayerConfig;
 
 pub fn config(args: ConfigArgsCmd) -> Result<()> {
     let ConfigArgsCmd { edit, json, config } = args;
@@ -41,67 +43,33 @@ pub fn config(args: ConfigArgsCmd) -> Result<()> {
         return Ok(());
     }
 
-    let content = fs::read_to_string(&config_path)?;
-    let config: serde_json::Value = serde_json::from_str(&content)?;
-
-    let Some(thoughts) = config.get("thoughts") else {
+    let hyprlayer_config = HyprlayerConfig::load(&config_path)?;
+    let Some(thoughts) = hyprlayer_config.thoughts else {
         return Ok(());
     };
 
-    let get_str = |key: &str| thoughts.get(key).and_then(|v| v.as_str()).unwrap_or("N/A");
-    println!("  Thoughts repository: {}", get_str("thoughtsRepo").cyan());
-    println!("  Repos directory: {}", get_str("reposDir").cyan());
-    println!("  Global directory: {}", get_str("globalDir").cyan());
-    println!("  User: {}", get_str("user").cyan());
-    println!("  Backend: {}", get_str("backend").cyan());
+    println!("  User: {}", thoughts.user.cyan());
+    println!("  Backend: {}", thoughts.backend.kind().as_str().cyan());
+    print_backend_block(&thoughts.backend, "  ", true);
 
-    if let Some(settings) = thoughts.get("backendSettings").and_then(|s| s.as_object())
-        && !settings.is_empty()
-    {
-        println!();
-        println!("{}", "Backend settings:".yellow());
-        print_backend_settings(settings);
-    }
-
-    if let Some(profiles) = thoughts.get("profiles").and_then(|p| p.as_object())
-        && !profiles.is_empty()
-    {
+    if !thoughts.profiles.is_empty() {
         println!();
         println!("{}", "Profiles:".yellow());
-        for (name, profile) in profiles {
+        for (name, profile) in &thoughts.profiles {
             println!("  {}", name.cyan());
-            let Some(obj) = profile.as_object() else {
-                continue;
-            };
-            if let Some(backend) = obj.get("backend").and_then(|v| v.as_str()) {
-                println!("    Backend: {}", backend.green());
-            }
-            if let Some(settings) = obj.get("backendSettings").and_then(|s| s.as_object())
-                && !settings.is_empty()
-            {
-                for (key, val) in settings {
-                    let display = super::format_backend_setting(key, val);
-                    println!("    {}: {}", key, display);
-                }
-            }
+            println!("    Backend: {}", profile.backend.kind().as_str().green());
+            print_backend_block(&profile.backend, "    ", true);
         }
     }
 
-    let Some(mappings) = thoughts.get("repoMappings").and_then(|m| m.as_object()) else {
-        return Ok(());
-    };
-
     println!();
     println!("{}", "Repository Mappings:".yellow());
-    if mappings.is_empty() {
+    if thoughts.repo_mappings.is_empty() {
         println!("  {}", "No repositories mapped yet".bright_black());
     } else {
-        for (repo, mapping) in mappings {
+        for (repo, mapping) in &thoughts.repo_mappings {
             println!("  {}", repo.cyan());
-            mapping
-                .get("repo")
-                .and_then(|r| r.as_str())
-                .inspect(|name| println!("    → {}", name.green()));
+            println!("    → {}", mapping.repo().green());
         }
     }
 
@@ -112,11 +80,4 @@ pub fn config(args: ConfigArgsCmd) -> Result<()> {
     );
 
     Ok(())
-}
-
-fn print_backend_settings(settings: &serde_json::Map<String, serde_json::Value>) {
-    for (key, val) in settings {
-        let display = super::format_backend_setting(key, val);
-        println!("  {}: {}", key, display.cyan());
-    }
 }

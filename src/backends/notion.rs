@@ -1,8 +1,7 @@
 use anyhow::Result;
 use colored::Colorize;
 
-use super::{BackendContext, StatusReport, ThoughtsBackend};
-use crate::config::BackendKind;
+use super::{BackendContext, StatusReport, ThoughtsBackend, common};
 
 pub struct NotionBackend;
 
@@ -17,28 +16,16 @@ impl ThoughtsBackend for NotionBackend {
     /// connector is wired up — auth errors surface at first tool call, not
     /// here.
     fn init(&self, ctx: &BackendContext) -> Result<()> {
-        ctx.effective
-            .backend_settings
-            .validate_for(BackendKind::Notion)?;
+        let notion = ctx.effective.backend.require_notion()?;
+        if notion.parent_page_id.is_empty() {
+            return Err(anyhow::anyhow!(
+                "Notion backend requires parentPageId in settings"
+            ));
+        }
 
         crate::hooks::setup_git_hooks(ctx.code_repo, false)?;
 
-        // Use `symlink_metadata` (not `exists`) so broken symlinks — the most
-        // likely "stale" shape after the user deletes the old thoughts repo —
-        // still trip the warning.
-        let stale = ctx.code_repo.join("thoughts");
-        if stale.symlink_metadata().is_ok() {
-            eprintln!(
-                "{}",
-                format!(
-                    "Warning: stale `thoughts/` directory at {}. Notion content lives \
-                     in the database. Remove with `rm -rf thoughts/` if you don't need the \
-                     old links.",
-                    stale.display()
-                )
-                .yellow()
-            );
-        }
+        common::warn_stale_thoughts_dir(ctx.code_repo, "Notion content lives in the database");
 
         Ok(())
     }
@@ -49,12 +36,16 @@ impl ThoughtsBackend for NotionBackend {
 
     fn status(&self, ctx: &BackendContext) -> Result<StatusReport> {
         let mut lines = Vec::new();
-        let settings = &ctx.effective.backend_settings;
+        let notion = ctx.effective.backend.require_notion()?;
 
-        let parent = settings.parent_page_id.as_deref().unwrap_or("(not set)");
+        let parent = if notion.parent_page_id.is_empty() {
+            "(not set)"
+        } else {
+            notion.parent_page_id.as_str()
+        };
         lines.push(format!("  Parent page ID: {}", parent.cyan()));
 
-        match settings.database_id.as_deref() {
+        match notion.database_id.as_deref() {
             Some(id) if !id.is_empty() => lines.push(format!("  Database ID: {}", id.cyan())),
             _ => lines.push(format!(
                 "  Database ID: {}",
@@ -64,10 +55,7 @@ impl ThoughtsBackend for NotionBackend {
 
         // `claude mcp list` doesn't see connectors, so any probe here would
         // mislabel every connector user as "not registered".
-        lines.push(format!(
-            "  MCP: {}",
-            "via agent connector".bright_black()
-        ));
+        lines.push(format!("  MCP: {}", "via agent connector".bright_black()));
 
         Ok(StatusReport { lines })
     }
@@ -76,17 +64,13 @@ impl ThoughtsBackend for NotionBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{BackendKind, BackendSettings, EffectiveConfig};
+    use crate::config::{BackendConfig, EffectiveConfig, NotionConfig};
     use tempfile::TempDir;
 
-    fn notion_effective(settings: BackendSettings) -> EffectiveConfig {
+    fn notion_effective(notion: NotionConfig) -> EffectiveConfig {
         EffectiveConfig {
-            thoughts_repo: String::new(),
-            repos_dir: "repos".to_string(),
-            global_dir: "global".to_string(),
             user: "alice".to_string(),
-            backend: BackendKind::Notion,
-            backend_settings: settings,
+            backend: BackendConfig::Notion(notion),
             profile_name: None,
             mapped_name: Some("myproj".to_string()),
         }
@@ -95,7 +79,10 @@ mod tests {
     #[test]
     fn sync_is_noop() {
         let tmp = TempDir::new().unwrap();
-        let eff = notion_effective(BackendSettings::default());
+        let eff = notion_effective(NotionConfig {
+            parent_page_id: "p1".to_string(),
+            database_id: None,
+        });
         let ctx = BackendContext::new(tmp.path(), &eff);
         NotionBackend.sync(&ctx, None).unwrap();
     }
@@ -103,23 +90,15 @@ mod tests {
     #[test]
     fn status_reports_parent_and_database_without_token_or_mcp_rows() {
         let tmp = TempDir::new().unwrap();
-        let eff = notion_effective(BackendSettings {
-            parent_page_id: Some("p1".to_string()),
+        let eff = notion_effective(NotionConfig {
+            parent_page_id: "p1".to_string(),
             database_id: Some("db1".to_string()),
-            // Populate api_token_env to prove we do NOT surface it — hyprlayer
-            // explicitly does not manage a notion token anymore.
-            api_token_env: Some("HYPRLAYER_SHOULD_NOT_SURFACE".to_string()),
-            ..Default::default()
         });
         let ctx = BackendContext::new(tmp.path(), &eff);
         let report = NotionBackend.status(&ctx).unwrap();
         let joined = report.lines.join("\n");
         assert!(joined.contains("p1"));
         assert!(joined.contains("db1"));
-        assert!(
-            !joined.contains("HYPRLAYER_SHOULD_NOT_SURFACE"),
-            "status must not surface api_token_env for notion: {joined}"
-        );
         assert!(
             !joined.contains("API token env"),
             "status must not include an API-token-env row for notion: {joined}"
@@ -134,10 +113,9 @@ mod tests {
     #[test]
     fn status_reports_missing_database_id_as_pending() {
         let tmp = TempDir::new().unwrap();
-        let eff = notion_effective(BackendSettings {
-            parent_page_id: Some("p1".to_string()),
+        let eff = notion_effective(NotionConfig {
+            parent_page_id: "p1".to_string(),
             database_id: None,
-            ..Default::default()
         });
         let ctx = BackendContext::new(tmp.path(), &eff);
         let report = NotionBackend.status(&ctx).unwrap();

@@ -1,10 +1,9 @@
 #[cfg(windows)]
 use anyhow::Context;
 use anyhow::Result;
+use colored::Colorize;
 use std::fs;
 use std::path::Path;
-
-use super::BackendContext;
 
 /// Build the `KEY=VALUE` pair to pass as `<cli> mcp add -e <pair>`.
 ///
@@ -24,49 +23,62 @@ pub fn resolve_mcp_env_pair(env_var: &str) -> Result<String> {
     Ok(format!("{}={}", env_var, value))
 }
 
+/// Warn (don't auto-remove) when a `<code_repo>/thoughts/` directory or
+/// symlink is left over from a prior filesystem backend. Used by Notion and
+/// Anytype, which store content externally and have no use for the path.
+/// Uses `symlink_metadata` so broken symlinks — the most likely shape after
+/// the user deletes the old thoughts repo — still trip the warning.
+pub fn warn_stale_thoughts_dir(code_repo: &Path, content_location: &str) {
+    let stale = code_repo.join("thoughts");
+    if stale.symlink_metadata().is_err() {
+        return;
+    }
+    eprintln!(
+        "{}",
+        format!(
+            "Warning: stale `thoughts/` directory at {}. {content_location}. \
+             Remove with `rm -rf thoughts/` if you don't need the old links.",
+            stale.display()
+        )
+        .yellow()
+    );
+}
+
+/// The filesystem-only fields used by the Git and Obsidian backends to lay
+/// out the on-disk thoughts tree. Notion and Anytype have no analogue.
+pub struct FilesystemDirs<'a> {
+    pub repos_dir: &'a str,
+    pub global_dir: &'a str,
+    pub user: &'a str,
+    pub mapped_name: &'a str,
+}
+
 /// Create the `repos/<mapped>/<user>`, `repos/<mapped>/shared`,
 /// `global/<user>`, `global/shared` tree rooted at `root`.
-pub fn setup_directory_structure_at(root: &Path, ctx: &BackendContext) -> Result<()> {
-    let mapped = ctx
-        .effective
-        .mapped_name
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("Cannot create thoughts tree: repo is not mapped"))?;
-
-    let repo_thoughts_path = root.join(&ctx.effective.repos_dir).join(mapped);
-    fs::create_dir_all(repo_thoughts_path.join(&ctx.effective.user))?;
+pub fn setup_directory_structure_at(root: &Path, dirs: &FilesystemDirs) -> Result<()> {
+    let repo_thoughts_path = root.join(dirs.repos_dir).join(dirs.mapped_name);
+    fs::create_dir_all(repo_thoughts_path.join(dirs.user))?;
     fs::create_dir_all(repo_thoughts_path.join("shared"))?;
 
-    let global_path = root.join(&ctx.effective.global_dir);
-    fs::create_dir_all(global_path.join(&ctx.effective.user))?;
+    let global_path = root.join(dirs.global_dir);
+    fs::create_dir_all(global_path.join(dirs.user))?;
     fs::create_dir_all(global_path.join("shared"))?;
 
     Ok(())
 }
 
 /// Create `<code_repo>/thoughts/` with symlinks into the tree rooted at `root`.
-pub fn setup_symlinks_into(root: &Path, ctx: &BackendContext) -> Result<()> {
-    let mapped = ctx
-        .effective
-        .mapped_name
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("Cannot create symlinks: repo is not mapped"))?;
-
-    let thoughts_dir = ctx.code_repo.join("thoughts");
-    let repo_thoughts_path = root.join(&ctx.effective.repos_dir).join(mapped);
-    let global_path = root.join(&ctx.effective.global_dir);
+pub fn setup_symlinks_into(root: &Path, code_repo: &Path, dirs: &FilesystemDirs) -> Result<()> {
+    let thoughts_dir = code_repo.join("thoughts");
+    let repo_thoughts_path = root.join(dirs.repos_dir).join(dirs.mapped_name);
+    let global_path = root.join(dirs.global_dir);
 
     if thoughts_dir.exists() {
         fs::remove_dir_all(&thoughts_dir)?;
     }
     fs::create_dir(&thoughts_dir)?;
 
-    create_symlinks(
-        &thoughts_dir,
-        &repo_thoughts_path,
-        &global_path,
-        &ctx.effective.user,
-    )
+    create_symlinks(&thoughts_dir, &repo_thoughts_path, &global_path, dirs.user)
 }
 
 #[cfg(unix)]

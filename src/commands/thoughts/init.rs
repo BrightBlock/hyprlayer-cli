@@ -7,9 +7,9 @@ use std::path::{Path, PathBuf};
 use crate::backends::{self, BackendContext};
 use crate::cli::InitArgs;
 use crate::config::{
-    BackendKind, BackendSettings, HyprlayerConfig, ProfileConfig, RepoMapping, ThoughtsConfig,
-    expand_path, get_current_repo_path, get_default_thoughts_repo, get_repo_name_from_path,
-    sanitize_directory_name,
+    AnytypeConfig, BackendConfig, BackendKind, GitConfig, HyprlayerConfig, NotionConfig,
+    ObsidianConfig, ProfileConfig, RepoMapping, ThoughtsConfig, expand_path, get_current_repo_path,
+    get_default_thoughts_repo, get_repo_name_from_path, sanitize_directory_name,
 };
 use crate::git_ops::GitRepo;
 
@@ -103,7 +103,7 @@ pub fn init(args: InitArgs) -> Result<()> {
     }
 
     let existing_profile = hyprlayer_config.thoughts_mut().resolve_dirs(&profile);
-    let backend_kind = resolve_backend_interactive(backend, existing_profile.backend)?;
+    let backend_kind = resolve_backend_interactive(backend, existing_profile.backend.kind())?;
 
     require_git_repo_for_filesystem_backend(&current_repo, backend_kind)?;
 
@@ -123,10 +123,11 @@ pub fn init(args: InitArgs) -> Result<()> {
 
     let resolved = hyprlayer_config.thoughts_mut().resolve_dirs(&profile);
     let mapped_name = if backend_kind.uses_filesystem() {
-        let content_root = resolve_content_root(backend_kind, &resolved)?;
+        let content_root = resolve_content_root(&resolved.backend)?;
         ensure_content_root(&content_root)?;
 
-        let repos_path = content_root.join(&resolved.repos_dir);
+        let repos_dir = resolved.backend.filesystem_repos_dir().unwrap_or("repos");
+        let repos_path = content_root.join(repos_dir);
         fs::create_dir_all(&repos_path)?;
 
         select_or_create_directory(&repos_path, &current_repo, directory)?
@@ -229,43 +230,74 @@ fn init_non_interactive(
     }
 
     let existing_profile = hyprlayer_config.thoughts_mut().resolve_dirs(&profile);
-    let backend_kind = backend_flag.unwrap_or(existing_profile.backend);
+    let prior_kind = existing_profile.backend.kind();
+    let backend_kind = backend_flag.unwrap_or(prior_kind);
 
     require_git_repo_for_filesystem_backend(&current_repo, backend_kind)?;
 
-    let prior_settings = existing_profile
-        .backend_settings
-        .carry_across(existing_profile.backend, backend_kind);
-
-    let new_settings = match backend_kind {
-        BackendKind::Git => prior_settings,
-        BackendKind::Obsidian => {
-            obsidian_settings_non_interactive(vault_path_flag, vault_subpath_flag, prior_settings)?
+    // When the kind is unchanged, preserve existing variant fields so flags
+    // can be applied as overrides. When the kind switches, build a fresh
+    // variant — we never carry fields across backends.
+    let new_backend = if backend_kind == prior_kind {
+        match backend_kind {
+            BackendKind::Git => {
+                let prior = existing_profile.backend.as_git();
+                BackendConfig::Git(GitConfig {
+                    thoughts_repo: prior
+                        .map(|g| g.thoughts_repo.clone())
+                        .unwrap_or_default(),
+                    repos_dir: prior
+                        .map(|g| g.repos_dir.clone())
+                        .unwrap_or_else(|| "repos".to_string()),
+                    global_dir: prior
+                        .map(|g| g.global_dir.clone())
+                        .unwrap_or_else(|| "global".to_string()),
+                })
+            }
+            BackendKind::Obsidian => obsidian_variant_non_interactive(
+                vault_path_flag,
+                vault_subpath_flag,
+                existing_profile.backend.as_obsidian(),
+            )?,
+            BackendKind::Notion => {
+                notion_variant_non_interactive(notion_flags, existing_profile.backend.as_notion())?
+            }
+            BackendKind::Anytype => anytype_variant_non_interactive(
+                anytype_flags,
+                existing_profile.backend.as_anytype(),
+            )?,
         }
-        BackendKind::Notion => notion_settings_non_interactive(notion_flags, prior_settings)?,
-        BackendKind::Anytype => anytype_settings_non_interactive(anytype_flags, prior_settings)?,
+    } else {
+        match backend_kind {
+            BackendKind::Git => BackendConfig::Git(GitConfig {
+                thoughts_repo: get_default_thoughts_repo()?.display().to_string(),
+                repos_dir: "repos".to_string(),
+                global_dir: "global".to_string(),
+            }),
+            BackendKind::Obsidian => {
+                obsidian_variant_non_interactive(vault_path_flag, vault_subpath_flag, None)?
+            }
+            BackendKind::Notion => notion_variant_non_interactive(notion_flags, None)?,
+            BackendKind::Anytype => anytype_variant_non_interactive(anytype_flags, None)?,
+        }
     };
 
     // A bare `--yes` with no `--backend` defaulting to Git has nothing to
     // write; every other branch either set fields or explicitly re-selected
     // Git, and needs to persist.
     if backend_kind != BackendKind::Git || backend_flag.is_some() {
-        apply_backend_and_settings(
-            hyprlayer_config.thoughts_mut(),
-            &profile,
-            backend_kind,
-            new_settings,
-        );
+        apply_backend(hyprlayer_config.thoughts_mut(), &profile, new_backend);
     }
 
     let resolved = hyprlayer_config.thoughts_mut().resolve_dirs(&profile);
     let mapped_name = sanitize_directory_name(&directory);
 
     if backend_kind.uses_filesystem() {
-        let content_root = resolve_content_root(backend_kind, &resolved)?;
+        let content_root = resolve_content_root(&resolved.backend)?;
         ensure_content_root(&content_root)?;
 
-        let repos_path = content_root.join(&resolved.repos_dir);
+        let repos_dir = resolved.backend.filesystem_repos_dir().unwrap_or("repos");
+        let repos_path = content_root.join(repos_dir);
         fs::create_dir_all(&repos_path)?;
 
         let target_dir = repos_path.join(&mapped_name);
@@ -334,9 +366,10 @@ fn resolve_backend_interactive(
     Ok(kinds[selection])
 }
 
-/// Prompt the user for thoughts directory configuration, preserving any
-/// already-populated fields. Branches on backend kind so Obsidian users
-/// are asked for a vault path instead of a thoughts repo.
+/// Prompt the user for thoughts directory configuration, building a fresh
+/// `BackendConfig` variant for the chosen backend. When the variant is the
+/// same as the existing one, prior values seed the prompts; when switching,
+/// previous fields are dropped (a tagged enum has no slot for them).
 #[allow(clippy::too_many_arguments)]
 fn prompt_for_thoughts_fields(
     existing: ThoughtsConfig,
@@ -351,35 +384,55 @@ fn prompt_for_thoughts_fields(
 ) -> Result<ThoughtsConfig> {
     let theme = ColorfulTheme::default();
 
-    let prior_settings = existing_profile
-        .backend_settings
-        .carry_across(existing_profile.backend, backend_kind);
-
-    let (thoughts_repo, backend_settings) = match backend_kind {
+    let new_backend = match backend_kind {
         BackendKind::Git => {
+            let prior = existing_profile.backend.as_git();
             let fallback = get_default_thoughts_repo()?.display().to_string();
-            let default_repo = if existing_profile.thoughts_repo.is_empty() {
-                fallback
-            } else {
-                existing_profile.thoughts_repo.clone()
-            };
+            let default_repo = prior
+                .map(|g| g.thoughts_repo.clone())
+                .filter(|s| !s.is_empty())
+                .unwrap_or(fallback);
             let repo: String = Input::with_theme(&theme)
                 .with_prompt("Thoughts repository location")
                 .default(default_repo.clone())
                 .allow_empty(true)
                 .interact()
                 .map(|s: String| if s.is_empty() { default_repo } else { s })?;
-            (repo, prior_settings)
+
+            println!();
+            let default_repos_dir = prior
+                .map(|g| g.repos_dir.clone())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "repos".to_string());
+            let repos_dir: String = Input::with_theme(&theme)
+                .with_prompt("Directory name for repository-specific thoughts")
+                .default(default_repos_dir)
+                .interact()?;
+
+            let default_global_dir = prior
+                .map(|g| g.global_dir.clone())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "global".to_string());
+            let global_dir: String = Input::with_theme(&theme)
+                .with_prompt("Directory name for global thoughts")
+                .default(default_global_dir)
+                .interact()?;
+
+            BackendConfig::Git(GitConfig {
+                thoughts_repo: repo,
+                repos_dir,
+                global_dir,
+            })
         }
         BackendKind::Obsidian => {
-            let existing_vault = prior_settings.vault_path.clone().unwrap_or_default();
+            let prior = existing_profile.backend.as_obsidian();
+            let existing_vault = prior.map(|o| o.vault_path.as_str()).unwrap_or("");
             let vault_path = match vault_path_flag {
                 Some(v) => v,
-                None => prompt_vault_path(&theme, &existing_vault)?,
+                None => prompt_vault_path(&theme, existing_vault)?,
             };
-            let default_sub = prior_settings
-                .vault_subpath
-                .clone()
+            let default_sub = prior
+                .and_then(|o| o.vault_subpath.clone())
                 .unwrap_or_else(|| "hyprlayer".to_string());
             let vault_subpath = match vault_subpath_flag {
                 Some(v) => v,
@@ -389,60 +442,43 @@ fn prompt_for_thoughts_fields(
                     .allow_empty(true)
                     .interact()?,
             };
-            let settings = BackendSettings {
-                vault_path: Some(vault_path.clone()),
+
+            println!();
+            let default_repos_dir = prior
+                .map(|o| o.repos_dir.clone())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "repos".to_string());
+            let repos_dir: String = Input::with_theme(&theme)
+                .with_prompt("Directory name for repository-specific thoughts")
+                .default(default_repos_dir)
+                .interact()?;
+            let default_global_dir = prior
+                .map(|o| o.global_dir.clone())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "global".to_string());
+            let global_dir: String = Input::with_theme(&theme)
+                .with_prompt("Directory name for global thoughts")
+                .default(default_global_dir)
+                .interact()?;
+
+            BackendConfig::Obsidian(ObsidianConfig {
+                vault_path,
                 vault_subpath: Some(vault_subpath),
-                ..prior_settings
-            };
-            // Preserve any previous git thoughts_repo so switching git↔obsidian doesn't lose it.
-            (existing.thoughts_repo.clone(), settings)
+                repos_dir,
+                global_dir,
+            })
         }
-        BackendKind::Notion => {
-            let settings = prompt_notion_settings(&theme, &prior_settings, notion_flags)?;
-            // Preserve any existing filesystem repo path so switching backends doesn't lose it.
-            (existing.thoughts_repo.clone(), settings)
-        }
-        BackendKind::Anytype => {
-            let settings =
-                prompt_anytype_settings(&theme, &prior_settings, anytype_flags, agent_tool)?;
-            (existing.thoughts_repo.clone(), settings)
-        }
-    };
-
-    let (repos_dir, global_dir) = if backend_kind.uses_filesystem() {
-        println!();
-        let default_repos_dir = if existing_profile.repos_dir.is_empty() {
-            "repos".to_string()
-        } else {
-            existing_profile.repos_dir.clone()
-        };
-        let repos_dir: String = Input::with_theme(&theme)
-            .with_prompt("Directory name for repository-specific thoughts")
-            .default(default_repos_dir)
-            .interact()?;
-
-        let default_global_dir = if existing_profile.global_dir.is_empty() {
-            "global".to_string()
-        } else {
-            existing_profile.global_dir.clone()
-        };
-        let global_dir: String = Input::with_theme(&theme)
-            .with_prompt("Directory name for global thoughts")
-            .default(default_global_dir)
-            .interact()?;
-        (repos_dir, global_dir)
-    } else {
-        let repos_dir = if existing_profile.repos_dir.is_empty() {
-            "repos".to_string()
-        } else {
-            existing_profile.repos_dir.clone()
-        };
-        let global_dir = if existing_profile.global_dir.is_empty() {
-            "global".to_string()
-        } else {
-            existing_profile.global_dir.clone()
-        };
-        (repos_dir, global_dir)
+        BackendKind::Notion => BackendConfig::Notion(prompt_notion_config(
+            &theme,
+            existing_profile.backend.as_notion(),
+            notion_flags,
+        )?),
+        BackendKind::Anytype => BackendConfig::Anytype(prompt_anytype_config(
+            &theme,
+            existing_profile.backend.as_anytype(),
+            anytype_flags,
+            agent_tool,
+        )?),
     };
 
     let user = prompt_for_username(&theme, &existing.user)?;
@@ -451,37 +487,33 @@ fn prompt_for_thoughts_fields(
         user,
         repo_mappings: existing.repo_mappings,
         profiles: existing.profiles,
-        ..existing
-    };
-    let new_profile = ProfileConfig {
-        thoughts_repo,
-        repos_dir,
-        global_dir,
-        backend: backend_kind,
-        backend_settings,
+        backend: existing.backend,
     };
     match profile.as_ref() {
         Some(name) => {
-            out.profiles.insert(name.clone(), new_profile);
+            out.profiles.insert(
+                name.clone(),
+                ProfileConfig {
+                    backend: new_backend,
+                },
+            );
         }
         None => {
-            out.thoughts_repo = new_profile.thoughts_repo;
-            out.repos_dir = new_profile.repos_dir;
-            out.global_dir = new_profile.global_dir;
-            out.backend = new_profile.backend;
-            out.backend_settings = new_profile.backend_settings;
+            out.backend = new_backend;
         }
     }
 
     Ok(out)
 }
 
-fn prompt_notion_settings(
+fn prompt_notion_config(
     theme: &ColorfulTheme,
-    existing: &BackendSettings,
+    existing: Option<&NotionConfig>,
     flags: &NotionFlags,
-) -> Result<BackendSettings> {
-    let default_parent = existing.parent_page_id.clone().unwrap_or_default();
+) -> Result<NotionConfig> {
+    let default_parent = existing
+        .map(|n| n.parent_page_id.clone())
+        .unwrap_or_default();
     let parent_page_id = match flags.parent_page_id.clone() {
         Some(v) => v,
         None => {
@@ -497,7 +529,9 @@ fn prompt_notion_settings(
         return Err(anyhow::anyhow!("Notion parent page ID is required"));
     }
 
-    let default_db = existing.database_id.clone().unwrap_or_default();
+    let default_db = existing
+        .and_then(|n| n.database_id.clone())
+        .unwrap_or_default();
     let db_input = match flags.database_id.clone() {
         Some(v) => v,
         None => Input::<String>::with_theme(theme)
@@ -508,22 +542,19 @@ fn prompt_notion_settings(
     };
     let database_id = Some(db_input).filter(|s| !s.trim().is_empty());
 
-    // Notion uses the agent tool's connector; hyprlayer never stores a token.
-    Ok(BackendSettings {
-        parent_page_id: Some(parent_page_id),
+    Ok(NotionConfig {
+        parent_page_id,
         database_id,
-        api_token_env: None,
-        ..existing.clone()
     })
 }
 
-fn prompt_anytype_settings(
+fn prompt_anytype_config(
     theme: &ColorfulTheme,
-    existing: &BackendSettings,
+    existing: Option<&AnytypeConfig>,
     flags: &AnytypeFlags,
     agent_tool: Option<crate::agents::AgentTool>,
-) -> Result<BackendSettings> {
-    let default_space = existing.space_id.clone().unwrap_or_default();
+) -> Result<AnytypeConfig> {
+    let default_space = existing.map(|a| a.space_id.clone()).unwrap_or_default();
     let space_id = match flags.space_id.clone() {
         Some(v) => v,
         None => {
@@ -552,13 +583,12 @@ fn prompt_anytype_settings(
             "{}",
             "Anytype MCP already wired up — skipping token env-var prompt.".bright_black()
         );
-        existing.api_token_env.clone()
+        existing.and_then(|a| a.api_token_env.clone())
     } else if let Some(v) = flags.api_token_env.clone() {
         Some(v)
     } else {
         let default_env = existing
-            .api_token_env
-            .clone()
+            .and_then(|a| a.api_token_env.clone())
             .unwrap_or_else(|| crate::backends::anytype::DEFAULT_ANYTYPE_TOKEN_ENV.to_string());
         Some(
             Input::<String>::with_theme(theme)
@@ -570,7 +600,7 @@ fn prompt_anytype_settings(
         )
     };
 
-    let default_type = existing.type_id.clone().unwrap_or_default();
+    let default_type = existing.and_then(|a| a.type_id.clone()).unwrap_or_default();
     let type_input = match flags.type_id.clone() {
         Some(v) => v,
         None => Input::<String>::with_theme(theme)
@@ -581,11 +611,10 @@ fn prompt_anytype_settings(
     };
     let type_id = Some(type_input).filter(|s| !s.trim().is_empty());
 
-    Ok(BackendSettings {
-        space_id: Some(space_id),
+    Ok(AnytypeConfig {
+        space_id,
         type_id,
         api_token_env,
-        ..existing.clone()
     })
 }
 
@@ -651,30 +680,31 @@ fn check_existing_setup(current_repo: &Path, force: bool) -> Result<bool> {
     Ok(reconfigure)
 }
 
-fn resolve_content_root(backend_kind: BackendKind, resolved: &ProfileConfig) -> Result<PathBuf> {
-    match backend_kind {
-        BackendKind::Git => Ok(expand_path(&resolved.thoughts_repo)),
-        BackendKind::Obsidian => {
+fn resolve_content_root(backend: &BackendConfig) -> Result<PathBuf> {
+    match backend {
+        BackendConfig::Git(g) => Ok(expand_path(&g.thoughts_repo)),
+        BackendConfig::Obsidian(o) => {
             // Check vault existence here, before `ensure_content_root` would
             // create the missing path. Obsidian vaults are user-managed — we
             // never auto-create them.
-            let vault = expand_path(resolved.backend_settings.vault_path.as_deref().ok_or_else(
-                || anyhow::anyhow!("Obsidian backend requires vaultPath in settings"),
-            )?);
+            if o.vault_path.is_empty() {
+                return Err(anyhow::anyhow!(
+                    "Obsidian backend requires vaultPath in settings"
+                ));
+            }
+            let vault = expand_path(&o.vault_path);
             if !vault.exists() {
                 return Err(anyhow::anyhow!(
                     "Obsidian vault does not exist: {}. Create it in Obsidian first.",
                     vault.display()
                 ));
             }
-            resolved
-                .backend_settings
-                .obsidian_root()
+            o.obsidian_root()
                 .ok_or_else(|| anyhow::anyhow!("Obsidian backend requires vaultPath in settings"))
         }
         other => Err(anyhow::anyhow!(
-            "Backend '{}' is not yet supported in this version",
-            other.as_str()
+            "Backend '{}' has no content root",
+            other.kind().as_str()
         )),
     }
 }
@@ -686,96 +716,104 @@ fn ensure_content_root(content_root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Non-interactive Obsidian settings: `--vault-path` is required (no safe default),
+/// Non-interactive Obsidian variant: `--vault-path` is required (no safe default),
 /// `--vault-subpath` falls back to the prior value then `hyprlayer`.
-fn obsidian_settings_non_interactive(
+fn obsidian_variant_non_interactive(
     vault_path_flag: Option<String>,
     vault_subpath_flag: Option<String>,
-    prior: BackendSettings,
-) -> Result<BackendSettings> {
+    prior: Option<&ObsidianConfig>,
+) -> Result<BackendConfig> {
     let vault_path = vault_path_flag
-        .or_else(|| prior.vault_path.clone())
+        .or_else(|| {
+            prior
+                .map(|o| o.vault_path.clone())
+                .filter(|s| !s.is_empty())
+        })
         .ok_or_else(|| {
             anyhow::anyhow!("--vault-path is required when --backend obsidian is used with --yes")
         })?;
     let vault_subpath = vault_subpath_flag
-        .or_else(|| prior.vault_subpath.clone())
+        .or_else(|| prior.and_then(|o| o.vault_subpath.clone()))
         .unwrap_or_else(|| "hyprlayer".to_string());
-    Ok(BackendSettings {
-        vault_path: Some(vault_path),
+    let repos_dir = prior
+        .map(|o| o.repos_dir.clone())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "repos".to_string());
+    let global_dir = prior
+        .map(|o| o.global_dir.clone())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "global".to_string());
+    Ok(BackendConfig::Obsidian(ObsidianConfig {
+        vault_path,
         vault_subpath: Some(vault_subpath),
-        ..prior
-    })
+        repos_dir,
+        global_dir,
+    }))
 }
 
-/// Non-interactive Notion settings. `--parent-page-id` is required; `api_token_env`
-/// is always cleared because Notion uses the agent's connector.
-fn notion_settings_non_interactive(
+/// Non-interactive Notion variant. `--parent-page-id` is required.
+fn notion_variant_non_interactive(
     flags: NotionFlags,
-    prior: BackendSettings,
-) -> Result<BackendSettings> {
+    prior: Option<&NotionConfig>,
+) -> Result<BackendConfig> {
     let NotionFlags {
         parent_page_id,
         database_id,
     } = flags;
     let parent = parent_page_id
-        .or_else(|| prior.parent_page_id.clone())
+        .or_else(|| prior.map(|n| n.parent_page_id.clone()))
         .filter(|s| !s.trim().is_empty())
         .ok_or_else(|| {
             anyhow::anyhow!("--parent-page-id is required when --backend notion is used with --yes")
         })?;
-    Ok(BackendSettings {
-        parent_page_id: Some(parent),
-        database_id: database_id.or_else(|| prior.database_id.clone()),
-        api_token_env: None,
-        ..prior
-    })
+    let database_id = database_id.or_else(|| prior.and_then(|n| n.database_id.clone()));
+    Ok(BackendConfig::Notion(NotionConfig {
+        parent_page_id: parent,
+        database_id,
+    }))
 }
 
-/// Non-interactive Anytype settings. `--space-id` is required; `--api-token-env`
+/// Non-interactive Anytype variant. `--space-id` is required; `--api-token-env`
 /// defaults to `ANYTYPE_API_KEY` when unset.
-fn anytype_settings_non_interactive(
+fn anytype_variant_non_interactive(
     flags: AnytypeFlags,
-    prior: BackendSettings,
-) -> Result<BackendSettings> {
+    prior: Option<&AnytypeConfig>,
+) -> Result<BackendConfig> {
     let AnytypeFlags {
         space_id,
         type_id,
         api_token_env,
     } = flags;
     let space = space_id
-        .or_else(|| prior.space_id.clone())
+        .or_else(|| prior.map(|a| a.space_id.clone()))
         .filter(|s| !s.trim().is_empty())
         .ok_or_else(|| {
             anyhow::anyhow!("--space-id is required when --backend anytype is used with --yes")
         })?;
     let token_env = api_token_env
-        .or_else(|| prior.api_token_env.clone())
+        .or_else(|| prior.and_then(|a| a.api_token_env.clone()))
         .or_else(|| Some(crate::backends::anytype::DEFAULT_ANYTYPE_TOKEN_ENV.to_string()));
-    Ok(BackendSettings {
-        space_id: Some(space),
-        type_id: type_id.or_else(|| prior.type_id.clone()),
+    let type_id = type_id.or_else(|| prior.and_then(|a| a.type_id.clone()));
+    Ok(BackendConfig::Anytype(AnytypeConfig {
+        space_id: space,
+        type_id,
         api_token_env: token_env,
-        ..prior
-    })
+    }))
 }
 
-fn apply_backend_and_settings(
-    thoughts: &mut ThoughtsConfig,
-    profile: &Option<String>,
-    backend_kind: BackendKind,
-    settings: BackendSettings,
-) {
+fn apply_backend(thoughts: &mut ThoughtsConfig, profile: &Option<String>, backend: BackendConfig) {
     match profile.as_ref() {
         Some(name) => {
             if let Some(p) = thoughts.profiles.get_mut(name) {
-                p.backend = backend_kind;
-                p.backend_settings = settings;
+                p.backend = backend;
+            } else {
+                thoughts
+                    .profiles
+                    .insert(name.clone(), ProfileConfig { backend });
             }
         }
         None => {
-            thoughts.backend = backend_kind;
-            thoughts.backend_settings = settings;
+            thoughts.backend = backend;
         }
     }
 }
