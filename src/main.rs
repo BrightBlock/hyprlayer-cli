@@ -10,8 +10,9 @@ mod git_ops;
 mod hooks;
 mod version;
 
-use cli::{AiCommands, ProfileCommands, StorageCommands, ThoughtsCommands};
+use cli::{AiCommands, CodexCommands, ProfileCommands, StorageCommands, ThoughtsCommands};
 use commands::ai::{configure as ai_configure, reinstall as ai_reinstall, status as ai_status};
+use commands::codex::stream as codex_stream;
 use commands::storage::{
     info as storage_info, set_database_id as storage_set_database_id,
     set_type_id as storage_set_type_id,
@@ -48,6 +49,9 @@ fn main() -> Result<()> {
             StorageCommands::Info(args) => storage_info::info(args)?,
             StorageCommands::SetDatabaseId(args) => storage_set_database_id::set_database_id(args)?,
             StorageCommands::SetTypeId(args) => storage_set_type_id::set_type_id(args)?,
+        },
+        cli::Cli::Codex { command } => match command {
+            CodexCommands::Stream(args) => codex_stream::stream(args)?,
         },
     }
 

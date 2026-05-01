@@ -260,3 +260,17 @@ pub struct StorageSetTypeIdArgs {
     #[command(flatten)]
     pub config: ConfigArgs,
 }
+
+#[derive(Debug, Args)]
+#[command(
+    name = "stream",
+    about = "Read codex --json output on stdin, write formatted lines to stdout"
+)]
+pub struct CodexStreamArgs {
+    /// Suppress [codex thinking] reasoning lines
+    #[arg(long)]
+    pub no_thinking: bool,
+    /// Suppress [codex ran] command execution lines
+    #[arg(long)]
+    pub no_tool_calls: bool,
+}
