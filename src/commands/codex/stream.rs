@@ -90,12 +90,15 @@ enum Event<'a> {
     },
     #[serde(rename = "turn.failed")]
     TurnFailed {
-        // Permissive: codex has shipped this as `{message: "..."}`, a bare
-        // string, or just `code`/other shapes. Take any JSON value and probe.
+        // Permissive: codex has shipped both `error` and the top-level
+        // `message` as a string, an object, a number, or absent. Accept any
+        // JSON value and probe inside `extract_failure_message`. Strict typing
+        // here would silently drop the entire failure event — and the non-zero
+        // exit it implies — when codex emits an unexpected shape.
         #[serde(default)]
         error: Option<Value>,
-        #[serde(borrow, default)]
-        message: Option<Cow<'a, str>>,
+        #[serde(default)]
+        message: Option<Value>,
     },
     #[serde(other)]
     Unknown,
@@ -121,9 +124,11 @@ struct Usage {
 
 // `turn.failed` schema has drifted across codex versions. Probe the two
 // observed shapes for `error`, then fall back to a top-level `message` field.
+// Both inputs are `Option<&Value>` (not `Option<&str>`) so a non-string field
+// just returns `None` instead of failing deserialization upstream.
 fn extract_failure_message<'a>(
     error: Option<&'a Value>,
-    message: Option<&'a str>,
+    message: Option<&'a Value>,
 ) -> Option<Cow<'a, str>> {
     if let Some(e) = error {
         if let Some(m) = e.get("message").and_then(|v| v.as_str()) {
@@ -133,7 +138,7 @@ fn extract_failure_message<'a>(
             return Some(Cow::Borrowed(s));
         }
     }
-    message.map(Cow::Borrowed)
+    message.and_then(|m| m.as_str()).map(Cow::Borrowed)
 }
 
 // Read up to and including the next `\n` from `reader` into `buf`, capped at
@@ -141,17 +146,28 @@ fn extract_failure_message<'a>(
 // of the overlong line is consumed via `skip_until` (no copies, no allocation)
 // and `buf` is shrunk so an 8 MiB pathological event does not pin that
 // capacity for the rest of the run.
+//
+// "Truncated" means we hit the byte cap before finding a newline. A line that
+// reaches EOF without a trailing newline is **not** truncated — codex's final
+// JSONL record is sometimes flushed without a newline, and dropping it would
+// silently swallow a final `turn.failed` or `turn.completed`.
 fn read_line_capped<R: BufRead>(
     reader: &mut R,
     buf: &mut Vec<u8>,
     max: u64,
 ) -> io::Result<(usize, bool)> {
     buf.clear();
-    let n = reader.by_ref().take(max).read_until(b'\n', buf)?;
+    let (n, hit_cap) = {
+        let mut take = reader.by_ref().take(max);
+        let n = take.read_until(b'\n', buf)?;
+        (n, take.limit() == 0)
+    };
     if n == 0 {
         return Ok((0, false));
     }
-    let truncated = !buf.ends_with(b"\n");
+    // Truncated only when we exhausted the cap AND no newline was found within
+    // it. A trailing newline (even at the exact cap byte) means a complete line.
+    let truncated = hit_cap && !buf.ends_with(b"\n");
     if truncated {
         reader.skip_until(b'\n')?;
         buf.clear();
@@ -283,11 +299,22 @@ where
         if trimmed.is_empty() {
             continue;
         }
-        // `from_slice` parses straight from bytes; if invalid UTF-8 sneaks in
-        // serde_json rejects the line and we continue. Skipping the prior
-        // `from_utf8_lossy` saves one full-line scan plus an allocation on the
-        // pathological replacement path.
-        let event: Event<'_> = match serde_json::from_slice(trimmed) {
+
+        // Fast path: input is valid UTF-8 (the overwhelming case for codex
+        // output). Borrow the bytes as `&str` and let serde parse zero-copy.
+        // Slow path: a stray bad byte inside an otherwise valid JSON envelope
+        // would be rejected by `from_slice`, dropping the whole event. Repair
+        // via `from_utf8_lossy` so a rogue byte in `agent_message.text`
+        // becomes U+FFFD and the human still sees the message.
+        let lossy_storage: String;
+        let json_str: &str = match std::str::from_utf8(trimmed) {
+            Ok(s) => s,
+            Err(_) => {
+                lossy_storage = String::from_utf8_lossy(trimmed).into_owned();
+                &lossy_storage
+            }
+        };
+        let event: Event<'_> = match serde_json::from_str(json_str) {
             Ok(e) => e,
             Err(_) => continue,
         };
@@ -340,7 +367,7 @@ where
                 saw_known_event = true;
                 saw_turn_boundary = true;
                 saw_failure = true;
-                let msg = extract_failure_message(error.as_ref(), message.as_deref());
+                let msg = extract_failure_message(error.as_ref(), message.as_ref());
                 let line = match msg {
                     Some(m) => format!("[codex turn.failed] {}", sanitize_text(&m)),
                     None => "[codex turn.failed]".to_string(),
@@ -852,5 +879,88 @@ mod tests {
     fn sanitize_text_is_a_noop_for_clean_input() {
         let s = "ordinary text with unicode: 你好 🎉 and tab\there";
         assert_eq!(sanitize_text(s), s);
+    }
+
+    #[test]
+    fn final_line_without_trailing_newline_still_processed() {
+        // Codex sometimes flushes its last JSONL record without a newline.
+        // The parser must treat EOF-without-newline as a complete line, not
+        // as truncation — otherwise a final turn.failed silently exits 0.
+        let input = "{\"type\":\"turn.failed\",\"error\":\"rate limited\"}";
+        let (_, err, failed) = run_outcome(input, opts(true, true));
+        assert!(
+            err.contains("[codex turn.failed] rate limited"),
+            "expected failure marker on stderr, got: {:?}",
+            err
+        );
+        assert!(
+            !err.contains("dropped at least one JSONL line"),
+            "EOF-no-newline must not look like an oversize line, got: {:?}",
+            err
+        );
+        assert!(failed, "turn.failed at EOF must still set the failed flag");
+    }
+
+    #[test]
+    fn final_agent_message_without_trailing_newline_is_emitted() {
+        let input = "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"final\"}}";
+        let (out, err) = run(input, opts(true, true));
+        assert!(out.contains("final"), "got: {:?}", out);
+        assert!(
+            !err.contains("dropped at least one JSONL line"),
+            "got: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn turn_failed_with_non_string_top_level_message_falls_back_to_error_message() {
+        // Codex schema drift: top-level `message` field with an unexpected type
+        // must not poison the deserialize. The valid `error.message` should
+        // still be extracted, the marker emitted, and the failure flag set.
+        let input = r#"{"type":"turn.failed","error":{"message":"rate limited"},"message":42}
+"#;
+        let (_, err, failed) = run_outcome(input, opts(true, true));
+        assert!(
+            err.contains("[codex turn.failed] rate limited"),
+            "expected error.message to be extracted despite wrong-typed top-level message, got: {:?}",
+            err
+        );
+        assert!(failed);
+    }
+
+    #[test]
+    fn turn_failed_with_object_error_field_no_message_still_marks_failure() {
+        // `error` shape we don't recognize (object without `message`) must not
+        // drop the failure marker — codex still failed, the user still needs
+        // a non-zero exit.
+        let input = r#"{"type":"turn.failed","error":{"code":42}}
+"#;
+        let (_, err, failed) = run_outcome(input, opts(true, true));
+        assert!(err.contains("[codex turn.failed]"), "got: {:?}", err);
+        assert!(failed);
+    }
+
+    #[test]
+    fn invalid_utf8_inside_agent_message_falls_back_to_lossy() {
+        // Bad byte inside an otherwise-valid JSON envelope. The strict
+        // `from_slice` path rejects this, so we must fall back to
+        // `from_utf8_lossy` and substitute U+FFFD instead of dropping the
+        // event. Surrounding events must still parse.
+        let mut input: Vec<u8> = Vec::new();
+        input.extend_from_slice(
+            b"{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"hi\xff\xfethere\"}}\n",
+        );
+        input.extend_from_slice(
+            b"{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}\n",
+        );
+        let (out, _) = run_bytes(&input, opts(true, true));
+        // U+FFFD ("\u{FFFD}") substitutes for each invalid byte.
+        assert!(
+            out.contains("hi\u{FFFD}\u{FFFD}there") || out.contains("hi\u{FFFD}there"),
+            "expected lossy U+FFFD substitution, got: {:?}",
+            out
+        );
+        assert!(out.contains("tokens: 2"));
     }
 }
