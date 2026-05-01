@@ -155,11 +155,26 @@ impl AgentTool {
     }
 
     /// Test-friendly variant of `is_installed` that takes an explicit destination path.
+    ///
+    /// Checks for sentinel files unique to the current bundle of
+    /// commands/skills/agents. An older install with the right top-level
+    /// directories but missing newly added files reports not-installed, so
+    /// `configure --no-force` re-runs and provisions the new bundle. Bump
+    /// these whenever we ship a top-level file existing users should pick up.
     fn is_installed_at(&self, dest: &Path) -> bool {
         match self {
-            Self::Claude => dest.join("skills").is_dir() && dest.join("agents").is_dir(),
-            Self::OpenCode => dest.join("commands").is_dir() && dest.join("agents").is_dir(),
-            Self::Copilot => dest.join("prompts").is_dir() && dest.join("agents").is_dir(),
+            Self::Claude => {
+                dest.join("skills/code_review/SKILL.md").is_file()
+                    && dest.join("agents/adversarial-reviewer.md").is_file()
+            }
+            Self::OpenCode => {
+                dest.join("commands/code_review.md").is_file()
+                    && dest.join("agents/adversarial-reviewer.md").is_file()
+            }
+            Self::Copilot => {
+                dest.join("prompts/code_review.prompt.md").is_file()
+                    && dest.join("agents/adversarial-reviewer.agent.md").is_file()
+            }
         }
     }
 
@@ -411,6 +426,14 @@ fn update_opencode_models(dest_dir: &Path, provider: &OpenCodeProvider) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Create `path` (and any missing parent dirs) as an empty stub file.
+    fn touch(path: &Path) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, "stub").unwrap();
+    }
 
     #[test]
     fn dest_display_uses_platform_separator() {
@@ -746,29 +769,77 @@ mod tests {
         let temp_root = std::env::temp_dir().join("hyprlayer_test_claude_is_installed");
         fs::remove_dir_all(&temp_root).ok();
 
-        // skills/ + agents/ → installed
-        let case_skills = temp_root.join("skills_and_agents");
-        fs::create_dir_all(case_skills.join("skills")).unwrap();
-        fs::create_dir_all(case_skills.join("agents")).unwrap();
-        assert!(AgentTool::Claude.is_installed_at(&case_skills));
+        let case_full = temp_root.join("full");
+        touch(&case_full.join("skills/code_review/SKILL.md"));
+        touch(&case_full.join("agents/adversarial-reviewer.md"));
+        assert!(AgentTool::Claude.is_installed_at(&case_full));
 
-        // legacy commands/ + agents/ → NOT installed (regression guard:
-        // old layout must report not-installed so `configure --no-force`
-        // re-runs the install and provisions skills/)
+        // Existing install with the right top-level dirs but no sentinels —
+        // configure --no-force must re-run to provision the new bundle.
+        let case_dirs_only = temp_root.join("dirs_only");
+        fs::create_dir_all(case_dirs_only.join("skills")).unwrap();
+        fs::create_dir_all(case_dirs_only.join("agents")).unwrap();
+        assert!(!AgentTool::Claude.is_installed_at(&case_dirs_only));
+
+        // Old layout (commands/ instead of skills/) must report not-installed.
         let case_legacy = temp_root.join("commands_and_agents");
         fs::create_dir_all(case_legacy.join("commands")).unwrap();
         fs::create_dir_all(case_legacy.join("agents")).unwrap();
         assert!(!AgentTool::Claude.is_installed_at(&case_legacy));
 
-        // skills/ alone → not installed
         let case_skills_only = temp_root.join("skills_only");
         fs::create_dir_all(case_skills_only.join("skills")).unwrap();
         assert!(!AgentTool::Claude.is_installed_at(&case_skills_only));
 
-        // agents/ alone → not installed
         let case_agents_only = temp_root.join("agents_only");
         fs::create_dir_all(case_agents_only.join("agents")).unwrap();
         assert!(!AgentTool::Claude.is_installed_at(&case_agents_only));
+
+        let case_no_agent = temp_root.join("no_adv_agent");
+        touch(&case_no_agent.join("skills/code_review/SKILL.md"));
+        fs::create_dir_all(case_no_agent.join("agents")).unwrap();
+        assert!(!AgentTool::Claude.is_installed_at(&case_no_agent));
+
+        fs::remove_dir_all(&temp_root).ok();
+    }
+
+    #[test]
+    fn opencode_is_installed_requires_code_review_and_adversarial_reviewer() {
+        let temp_root = std::env::temp_dir().join("hyprlayer_test_opencode_is_installed");
+        fs::remove_dir_all(&temp_root).ok();
+
+        let case_full = temp_root.join("full");
+        touch(&case_full.join("commands/code_review.md"));
+        touch(&case_full.join("agents/adversarial-reviewer.md"));
+        assert!(AgentTool::OpenCode.is_installed_at(&case_full));
+
+        let case_dirs_only = temp_root.join("dirs_only");
+        fs::create_dir_all(case_dirs_only.join("commands")).unwrap();
+        fs::create_dir_all(case_dirs_only.join("agents")).unwrap();
+        assert!(!AgentTool::OpenCode.is_installed_at(&case_dirs_only));
+
+        let case_no_agent = temp_root.join("no_adv_agent");
+        touch(&case_no_agent.join("commands/code_review.md"));
+        fs::create_dir_all(case_no_agent.join("agents")).unwrap();
+        assert!(!AgentTool::OpenCode.is_installed_at(&case_no_agent));
+
+        fs::remove_dir_all(&temp_root).ok();
+    }
+
+    #[test]
+    fn copilot_is_installed_requires_code_review_and_adversarial_reviewer() {
+        let temp_root = std::env::temp_dir().join("hyprlayer_test_copilot_is_installed");
+        fs::remove_dir_all(&temp_root).ok();
+
+        let case_full = temp_root.join("full");
+        touch(&case_full.join("prompts/code_review.prompt.md"));
+        touch(&case_full.join("agents/adversarial-reviewer.agent.md"));
+        assert!(AgentTool::Copilot.is_installed_at(&case_full));
+
+        let case_dirs_only = temp_root.join("dirs_only");
+        fs::create_dir_all(case_dirs_only.join("prompts")).unwrap();
+        fs::create_dir_all(case_dirs_only.join("agents")).unwrap();
+        assert!(!AgentTool::Copilot.is_installed_at(&case_dirs_only));
 
         fs::remove_dir_all(&temp_root).ok();
     }

@@ -97,13 +97,21 @@ The subagent's output is the body of the review — present it verbatim in Step 
 
 ## Step 3: Present output
 
-First line tells the user what model the subagent ran on:
+First line tells the user what model the subagent actually ran on:
 
 ```
-tier: opencode subagent (<model>, fresh context)
+tier: opencode subagent (<configured-model>, fresh context)
 ```
 
-Where `<model>` is the model ID from `~/.config/opencode/agents/adversarial-reviewer.md` (the install-time default), or the `--model <id>` value if it was passed. Then the review body verbatim. No banners, no separator characters, no decoration.
+`<configured-model>` is **always** the model ID from `~/.config/opencode/agents/adversarial-reviewer.md` (the install-time default) — that is the model OpenCode actually invokes for the subagent. Do not substitute the `--model` value here, even when one was passed: per-spawn model overrides are best-effort only, so showing the requested model would misrepresent what ran.
+
+When `--model <requested>` was passed, append the requested ID in parentheses so the divergence is visible to the user:
+
+```
+tier: opencode subagent (<configured-model>, fresh context; --model requested <requested-model>, may not have been honored)
+```
+
+Then the review body verbatim. No banners, no separator characters, no decoration.
 
 If you genuinely disagree with a specific finding, append at most one:
 
