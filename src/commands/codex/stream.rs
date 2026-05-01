@@ -45,6 +45,25 @@ macro_rules! tryw {
     };
 }
 
+// Codex JSONL `turn.failed` event has no fixed schema across versions. Try the
+// common shapes in order; permissive access keeps us forward-compatible.
+fn extract_failure_message(event: &Value) -> Option<String> {
+    if let Some(s) = event
+        .get("error")
+        .and_then(|v| v.get("message"))
+        .and_then(|v| v.as_str())
+    {
+        return Some(s.to_string());
+    }
+    if let Some(s) = event.get("error").and_then(|v| v.as_str()) {
+        return Some(s.to_string());
+    }
+    if let Some(s) = event.get("message").and_then(|v| v.as_str()) {
+        return Some(s.to_string());
+    }
+    None
+}
+
 pub fn parse_stream<R, O, E>(mut reader: R, mut out: O, mut err: E, opts: StreamOpts) -> Result<()>
 where
     R: BufRead,
@@ -52,7 +71,7 @@ where
     E: Write,
 {
     let mut saw_any_event = false;
-    let mut turn_completed_count: u32 = 0;
+    let mut saw_turn_boundary = false;
     let mut buf: Vec<u8> = Vec::new();
 
     loop {
@@ -60,7 +79,7 @@ where
         let n = match reader.read_until(b'\n', &mut buf) {
             Ok(0) => break,
             Ok(n) => n,
-            Err(_) => break,
+            Err(e) => return Err(e.into()),
         };
         // `from_utf8_lossy` replaces invalid bytes with U+FFFD instead of dropping
         // the entire line — losing one character is better than losing one event.
@@ -109,8 +128,20 @@ where
                     _ => {}
                 }
             }
+            "turn.failed" => {
+                saw_turn_boundary = true;
+                let line = match extract_failure_message(&event) {
+                    Some(m) => format!("[codex turn.failed] {}", m),
+                    None => "[codex turn.failed]".to_string(),
+                };
+                match writeln!(err, "{}", line) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == ErrorKind::BrokenPipe => {}
+                    Err(e) => return Err(e.into()),
+                }
+            }
             "turn.completed" => {
-                turn_completed_count += 1;
+                saw_turn_boundary = true;
                 if let Some(usage) = event.get("usage") {
                     let input = usage
                         .get("input_tokens")
@@ -133,7 +164,7 @@ where
 
     // Only warn when we processed events but never saw a turn boundary —
     // a fully empty stream stays silent so empty pipelines don't get noisy.
-    if saw_any_event && turn_completed_count == 0 {
+    if saw_any_event && !saw_turn_boundary {
         match writeln!(
             err,
             "[warning] no turn.completed event — possible mid-stream disconnect"
@@ -359,5 +390,85 @@ mod tests {
             "broken pipe on stdout should be a clean exit, got {:?}",
             result
         );
+    }
+
+    /// Reader that yields `prefix` bytes once, then fails with the given error
+    /// on the next read. Lets us exercise the mid-stream-read-failure path.
+    struct FailingReader {
+        prefix: Vec<u8>,
+        error: Option<io::Error>,
+    }
+
+    impl io::Read for FailingReader {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if !self.prefix.is_empty() {
+                let n = self.prefix.len().min(buf.len());
+                buf[..n].copy_from_slice(&self.prefix[..n]);
+                self.prefix.drain(..n);
+                return Ok(n);
+            }
+            match self.error.take() {
+                Some(e) => Err(e),
+                None => Ok(0),
+            }
+        }
+    }
+
+    #[test]
+    fn stdin_read_error_propagates() {
+        // No newline in prefix → read_until consumes the prefix, then hits the error
+        // before finding a delimiter. The error must surface as Err, not a silent Ok.
+        let reader = io::BufReader::new(FailingReader {
+            prefix: b"{\"type\":\"item.completed\"".to_vec(),
+            error: Some(io::Error::new(ErrorKind::Other, "disk gone")),
+        });
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let result = parse_stream(reader, &mut out, &mut err, opts(true, true));
+        assert!(
+            result.is_err(),
+            "stdin read failure must propagate, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn turn_failed_emits_error_and_suppresses_disconnect_warning() {
+        let input = r#"{"type":"item.completed","item":{"type":"agent_message","text":"partial"}}
+{"type":"turn.failed","error":{"message":"rate limited"}}
+"#;
+        let (out, err) = run(input, opts(true, true));
+        assert!(out.contains("partial"));
+        assert!(
+            err.contains("[codex turn.failed] rate limited"),
+            "expected failure message on stderr, got: {:?}",
+            err
+        );
+        assert!(
+            !err.contains("no turn.completed"),
+            "turn.failed should count as a turn boundary, got: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn turn_failed_with_string_error_field() {
+        let input = r#"{"type":"turn.failed","error":"context_length_exceeded"}
+"#;
+        let (_, err) = run(input, opts(true, true));
+        assert!(
+            err.contains("[codex turn.failed] context_length_exceeded"),
+            "got: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn turn_failed_with_no_known_message_field_still_prints_marker() {
+        let input = r#"{"type":"turn.failed","code":42}
+"#;
+        let (_, err) = run(input, opts(true, true));
+        assert!(err.contains("[codex turn.failed]"), "got: {:?}", err);
+        assert!(!err.contains("no turn.completed"), "got: {:?}", err);
     }
 }
