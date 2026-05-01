@@ -168,12 +168,15 @@ pub fn maybe_check_for_updates() {
     let _ = hyprlayer_config.save(&config_path);
 }
 
-/// Print update notification with install-method-specific hint
+/// Print update notification with install-method-specific hint.
+///
+/// Writes to stderr so it never pollutes stdout-piped output (e.g.
+/// `codex exec ... --json | hyprlayer codex stream`).
 fn print_update_notification(info: &UpdateInfo) {
     use colored::Colorize;
 
     let hint = info.install_method.upgrade_hint();
-    println!(
+    eprintln!(
         "\n{} {} → {} ({})\n",
         "Update available:".yellow(),
         info.current,

@@ -25,6 +25,11 @@ pub enum Cli {
         #[command(subcommand)]
         command: StorageCommands,
     },
+    /// Process OpenAI Codex CLI JSONL output
+    Codex {
+        #[command(subcommand)]
+        command: CodexCommands,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -61,4 +66,10 @@ pub enum StorageCommands {
     Info(StorageInfoArgs),
     SetDatabaseId(StorageSetDatabaseIdArgs),
     SetTypeId(StorageSetTypeIdArgs),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum CodexCommands {
+    /// Read codex --json output on stdin, write formatted lines to stdout
+    Stream(CodexStreamArgs),
 }
