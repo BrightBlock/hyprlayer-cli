@@ -1,5 +1,5 @@
 ---
-name: code-review
+name: code_review
 description: Adversarial code review of the current branch. Uses OpenAI Codex CLI when available for a true cross-model second opinion; falls back to a Claude adversarial subagent when codex is absent. Read-only; user-only — never auto-invoke.
 allowed-tools: Bash, Read, Agent
 disable-model-invocation: true
@@ -16,8 +16,8 @@ Tell the user which tier ran in the output header.
 
 ## Arguments
 
-- `/code-review` — auto-detect tier, review the diff against the base branch
-- `/code-review <focus>` — narrow the review (e.g., `security`, `concurrency`, `error handling`)
+- `/code_review` — auto-detect tier, review the diff against the base branch
+- `/code_review <focus>` — narrow the review (e.g., `security`, `concurrency`, `error handling`)
 - `--codex` — require codex; fail loudly if missing instead of falling through
 - `--claude` — force the subagent path even when codex is available
 - `--xhigh` — codex only: use `model_reasoning_effort=xhigh` (slow, ~23x more tokens)
@@ -102,7 +102,7 @@ Default (no focus argument):
 
 > Review the changes on this branch against `<base>`. Run `git diff origin/<base>...HEAD` to see the diff. Your job is to find ways this code will fail in production. Think like an attacker and a chaos engineer. Look for edge cases, race conditions, security holes, resource leaks, failure modes, and silent data corruption. Be adversarial. Be thorough. No compliments — only the problems.
 
-With focus argument (e.g., `/code-review security`):
+With focus argument (e.g., `/code_review security`):
 
 > Review the changes on this branch against `<base>`. Run `git diff origin/<base>...HEAD` to see the diff. Focus specifically on `<focus>`. Be adversarial. No compliments — only the problems.
 
