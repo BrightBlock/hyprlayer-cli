@@ -323,7 +323,7 @@ mod tests {
         let type_field = schema.iter().find(|f| f["name"] == "type").unwrap();
         assert_eq!(
             type_field["options"],
-            serde_json::json!(["plan", "research", "handoff", "note"])
+            serde_json::json!(["plan", "research", "handoff", "note", "pr"])
         );
     }
 }

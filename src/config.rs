@@ -165,7 +165,8 @@ impl BackendConfig {
     }
 
     pub fn require_git(&self) -> Result<&GitConfig> {
-        self.as_git().ok_or_else(|| dispatch_mismatch(BackendKind::Git, self.kind()))
+        self.as_git()
+            .ok_or_else(|| dispatch_mismatch(BackendKind::Git, self.kind()))
     }
 
     pub fn require_obsidian(&self) -> Result<&ObsidianConfig> {

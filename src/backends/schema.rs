@@ -44,7 +44,7 @@ pub const THOUGHT_SCHEMA: &[SchemaField] = &[
     },
     SchemaField {
         name: "type",
-        kind: FieldKind::Select(&["plan", "research", "handoff", "note"]),
+        kind: FieldKind::Select(&["plan", "research", "handoff", "note", "pr"]),
         required: true,
     },
     SchemaField {
@@ -166,7 +166,7 @@ mod tests {
             .expect("type field exists");
         assert_eq!(
             type_field.kind.options(),
-            Some(&["plan", "research", "handoff", "note"][..])
+            Some(&["plan", "research", "handoff", "note", "pr"][..])
         );
     }
 
@@ -212,7 +212,7 @@ mod tests {
         assert_eq!(json["kind"], "select");
         assert_eq!(
             json["options"],
-            serde_json::json!(["plan", "research", "handoff", "note"])
+            serde_json::json!(["plan", "research", "handoff", "note", "pr"])
         );
         assert_eq!(json["required"], true);
     }

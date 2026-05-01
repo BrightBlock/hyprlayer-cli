@@ -7,13 +7,7 @@ use crate::config::BackendConfig;
 /// false, values print without ANSI styling (matches `profile list`'s
 /// existing output).
 pub fn print_backend_block(backend: &BackendConfig, indent: &str, colorize: bool) {
-    let style = |s: &str| -> ColoredString {
-        if colorize {
-            s.cyan()
-        } else {
-            s.normal()
-        }
-    };
+    let style = |s: &str| -> ColoredString { if colorize { s.cyan() } else { s.normal() } };
 
     match backend {
         BackendConfig::Git(g) => {

@@ -1,30 +1,29 @@
 ---
 name: describe_pr
 description: Generate comprehensive PR descriptions following the repository's pr_description.md template. Use when the user asks to describe an existing PR (including running its automated verification commands and updating the PR via gh pr edit).
-allowed-tools: Bash, Read
+allowed-tools: Bash, Read, Write, mcp__claude_ai_Notion__*, mcp__anytype__*
 ---
 
 # Generate PR Description
 
 You are tasked with generating a comprehensive pull request description following the repository's standard template.
 
+## PR description dispatch
+
+Read `~/.claude/skills/_thoughts/pr-description.md` and follow it for the per-backend template, record, and scratch-file locations and the workflow that ties them together. Read `~/.claude/skills/_thoughts/required-metadata.md` for the schema-required fields. For this command: artifact `type` is `pr`; the title is `PR #{number}: {pr_title}` once the PR exists.
+
+The numbered steps below fold the dispatched read/write into the broader interactive flow (template + PR identification + diff analysis + verification + edit + cleanup).
+
 ## Steps to follow:
 
-1. **Read the PR description template:**
-   - First, check if `thoughts/shared/pr_description.md` exists
-   - If it doesn't exist, inform the user that their `hyprlayer thoughts` setup is incomplete and they need to create a PR description template at `thoughts/shared/pr_description.md`
-   - Read the template carefully to understand all sections and requirements
-
+1. **Read the PR description template** at the location named for the active backend (per the dispatch). Read it carefully to understand all sections and requirements.
 
 2. **Identify the PR to describe:**
    - Check if the current branch has an associated PR: `gh pr view --json url,number,title,state 2>/dev/null`
    - If no PR exists for the current branch, or if on main/master, list open PRs: `gh pr list --limit 10 --json number,title,headRefName,author`
    - Ask the user which PR they want to describe
 
-3. **Check for existing description:**
-   - Check if `thoughts/shared/prs/{number}_description.md` already exists
-   - If it exists, read it and inform the user you'll be updating it
-   - Consider what has changed since the last description was written
+3. **Check for an existing record** for this PR number, per the dispatch's "locate any prior record" step. If a prior version is found, inform the user you'll update it (not create a new one) and consider what has changed since.
 
 4. **Gather comprehensive PR information:**
    - Get the full PR diff: `gh pr diff {number}`
@@ -58,21 +57,19 @@ You are tasked with generating a comprehensive pull request description followin
      - Write a concise changelog entry
    - Ensure all checklist items are addressed (checked or explained)
 
-8. **Save and sync the description:**
-   - Write the completed description to `thoughts/shared/prs/{number}_description.md`
-   - Run `hyprlayer thoughts sync` to sync the thoughts directory
-   - Show the user the generated description
+8. **Persist the description** per the dispatch's "persist the description" step (scratch file always; record per backend; sync on `git`; create/update database row or object on `notion`/`anytype`). Show the user the generated description.
 
 9. **Update the PR:**
-   - Update the PR description directly: `gh pr edit {number} --body-file thoughts/shared/prs/{number}_description.md`
-   - Confirm the update was successful
-   - If any verification steps remain unchecked, remind the user to complete them before merging
+   - `gh pr edit {number} --body-file <scratch-file>`
+   - Confirm the update was successful.
+   - Promote and clean up per the dispatch (bump `status` from `draft` to `active`, delete the `/tmp` scratch file on `notion`/`anytype`).
+   - If any verification steps remain unchecked, remind the user to complete them before merging.
 
 ## Important notes:
-- This command works across different repositories - always read the local template
-- Be thorough but concise - descriptions should be scannable
-- Focus on the "why" as much as the "what"
-- Include any breaking changes or migration notes prominently
-- If the PR touches multiple components, organize the description accordingly
-- Always attempt to run verification commands when possible
-- Clearly communicate which verification steps need manual testing
+- This command works across different repositories — always read the local template.
+- Be thorough but concise — descriptions should be scannable.
+- Focus on the "why" as much as the "what".
+- Include any breaking changes or migration notes prominently.
+- If the PR touches multiple components, organize the description accordingly.
+- Always attempt to run verification commands when possible.
+- Clearly communicate which verification steps need manual testing.
