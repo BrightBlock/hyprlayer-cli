@@ -105,7 +105,7 @@ Run `hyprlayer storage info --json` from inside a project to see the resolved ba
 | [`/create_handoff`](https://brightblock.ai/hyprlayer/commands/create-handoff/) | Write a handoff document for another session |
 | [`/resume_handoff`](https://brightblock.ai/hyprlayer/commands/resume-handoff/) | Pick up work from a handoff document |
 | [`/local_review`](https://brightblock.ai/hyprlayer/commands/local-review/) | Set up a worktree to review a branch |
-| [`/code-review`](https://brightblock.ai/hyprlayer/commands/code-review/) | Adversarial review of the current branch's diff (codex CLI when available, Claude subagent otherwise) |
+| [`/code_review`](https://brightblock.ai/hyprlayer/commands/code-review/) | Adversarial review of the current branch's diff (codex CLI when available, Claude subagent otherwise) |
 | [`/founder_mode`](https://brightblock.ai/hyprlayer/commands/founder-mode/) | Retroactively create a JIRA ticket and PR |
 | [`/cost_estimate`](https://brightblock.ai/hyprlayer/commands/cost-estimate/) | Estimate development costs |
 

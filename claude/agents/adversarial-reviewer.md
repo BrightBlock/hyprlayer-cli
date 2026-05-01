@@ -1,6 +1,6 @@
 ---
 name: adversarial-reviewer
-description: Adversarial code reviewer. Spawn this agent to find ways a diff will fail in production — edge cases, race conditions, security holes, resource leaks, silent corruption. Read-only. Used by /code-review when codex CLI is unavailable, and as a standalone "challenge this diff" review.
+description: Adversarial code reviewer. Spawn this agent to find ways a diff will fail in production — edge cases, race conditions, security holes, resource leaks, silent corruption. Read-only. Used by /code_review when codex CLI is unavailable, and as a standalone "challenge this diff" review.
 tools: Read, Grep, Glob, Bash
 model: opus
 ---
