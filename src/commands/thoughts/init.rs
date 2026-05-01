@@ -243,9 +243,7 @@ fn init_non_interactive(
             BackendKind::Git => {
                 let prior = existing_profile.backend.as_git();
                 BackendConfig::Git(GitConfig {
-                    thoughts_repo: prior
-                        .map(|g| g.thoughts_repo.clone())
-                        .unwrap_or_default(),
+                    thoughts_repo: prior.map(|g| g.thoughts_repo.clone()).unwrap_or_default(),
                     repos_dir: prior
                         .map(|g| g.repos_dir.clone())
                         .unwrap_or_else(|| "repos".to_string()),
