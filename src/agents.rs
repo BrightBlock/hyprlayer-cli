@@ -49,7 +49,7 @@ impl OpenCodeProvider {
         match self {
             Self::GithubCopilot => "github-copilot/claude-sonnet-4.5",
             Self::Anthropic => "anthropic/claude-sonnet-4-5",
-            Self::Abacus => "abacus/claude-sonnet-4-5-20250929",
+            Self::Abacus => "abacus/claude-sonnet-4-6",
         }
     }
 
@@ -59,7 +59,20 @@ impl OpenCodeProvider {
         match self {
             Self::GithubCopilot => "github-copilot/claude-opus-4.5",
             Self::Anthropic => "anthropic/claude-opus-4-5",
-            Self::Abacus => "abacus/claude-opus-4-5-20251101",
+            Self::Abacus => "abacus/claude-opus-4-6",
+        }
+    }
+
+    /// Get the default model used for adversarial code reviews.
+    /// Abacus routes to its highest-reasoning codex variant for a true
+    /// cross-model second opinion; GitHub Copilot uses gpt-5-codex (the
+    /// codex variant exposed through Copilot Chat); Anthropic stays on
+    /// claude-opus-4-5 because the Anthropic API is Claude-only.
+    pub fn default_adversarial_model(&self) -> &str {
+        match self {
+            Self::GithubCopilot => "github-copilot/gpt-5-codex",
+            Self::Anthropic => "anthropic/claude-opus-4-5",
+            Self::Abacus => "abacus/gpt-5.3-codex-xhigh",
         }
     }
 
@@ -351,26 +364,34 @@ fn curl_download_file(url: &str, dest: &Path) -> Result<()> {
 /// Template placeholders used in OpenCode agent/command files
 const SONNET_MODEL_PLACEHOLDER: &str = "{{SONNET_MODEL}}";
 const OPUS_MODEL_PLACEHOLDER: &str = "{{OPUS_MODEL}}";
+const ADVERSARIAL_MODEL_PLACEHOLDER: &str = "{{ADVERSARIAL_MODEL}}";
 
 /// Replace model placeholders in a file with provider-specific values.
 /// Returns true if any replacements were made.
 fn replace_model_placeholders(path: &Path, provider: &OpenCodeProvider) -> Result<bool> {
     let content = fs::read_to_string(path)?;
 
-    if !content.contains(SONNET_MODEL_PLACEHOLDER) && !content.contains(OPUS_MODEL_PLACEHOLDER) {
+    if !content.contains(SONNET_MODEL_PLACEHOLDER)
+        && !content.contains(OPUS_MODEL_PLACEHOLDER)
+        && !content.contains(ADVERSARIAL_MODEL_PLACEHOLDER)
+    {
         return Ok(false);
     }
 
     let updated = content
         .replace(SONNET_MODEL_PLACEHOLDER, provider.default_sonnet_model())
-        .replace(OPUS_MODEL_PLACEHOLDER, provider.default_opus_model());
+        .replace(OPUS_MODEL_PLACEHOLDER, provider.default_opus_model())
+        .replace(
+            ADVERSARIAL_MODEL_PLACEHOLDER,
+            provider.default_adversarial_model(),
+        );
 
     fs::write(path, updated)?;
     Ok(true)
 }
 
 /// Update all model placeholders in OpenCode agent/command files.
-/// Files use {{SONNET_MODEL}} and {{OPUS_MODEL}} placeholders.
+/// Files use {{SONNET_MODEL}}, {{OPUS_MODEL}}, and {{ADVERSARIAL_MODEL}} placeholders.
 fn update_opencode_models(dest_dir: &Path, provider: &OpenCodeProvider) -> Result<usize> {
     let dirs = ["agents", "commands"];
 
@@ -487,7 +508,7 @@ mod tests {
         );
         assert_eq!(
             OpenCodeProvider::Abacus.default_sonnet_model(),
-            "abacus/claude-sonnet-4-5-20250929"
+            "abacus/claude-sonnet-4-6"
         );
     }
 
@@ -503,7 +524,23 @@ mod tests {
         );
         assert_eq!(
             OpenCodeProvider::Abacus.default_opus_model(),
-            "abacus/claude-opus-4-5-20251101"
+            "abacus/claude-opus-4-6"
+        );
+    }
+
+    #[test]
+    fn opencode_provider_adversarial_models() {
+        assert_eq!(
+            OpenCodeProvider::GithubCopilot.default_adversarial_model(),
+            "github-copilot/gpt-5-codex"
+        );
+        assert_eq!(
+            OpenCodeProvider::Anthropic.default_adversarial_model(),
+            "anthropic/claude-opus-4-5"
+        );
+        assert_eq!(
+            OpenCodeProvider::Abacus.default_adversarial_model(),
+            "abacus/gpt-5.3-codex-xhigh"
         );
     }
 
@@ -550,8 +587,27 @@ mod tests {
         assert!(updated);
 
         let result = fs::read_to_string(&file_path).unwrap();
-        assert!(result.contains("model: abacus/claude-opus-4-5-20251101"));
+        assert!(result.contains("model: abacus/claude-opus-4-6"));
         assert!(!result.contains("{{OPUS_MODEL}}"));
+
+        fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn replace_model_placeholders_replaces_adversarial() {
+        let temp_dir = std::env::temp_dir().join("hyprlayer_test_adversarial_placeholder");
+        fs::create_dir_all(&temp_dir).unwrap();
+        let file_path = temp_dir.join("adversarial-reviewer.md");
+
+        let content = "---\nmodel: {{ADVERSARIAL_MODEL}}\n---\n# Adversarial";
+        fs::write(&file_path, content).unwrap();
+
+        let updated = replace_model_placeholders(&file_path, &OpenCodeProvider::Abacus).unwrap();
+        assert!(updated);
+
+        let result = fs::read_to_string(&file_path).unwrap();
+        assert!(result.contains("model: abacus/gpt-5.3-codex-xhigh"));
+        assert!(!result.contains("{{ADVERSARIAL_MODEL}}"));
 
         fs::remove_dir_all(&temp_dir).ok();
     }
@@ -613,6 +669,76 @@ mod tests {
         assert!(research.contains("model: github-copilot/claude-opus-4.5"));
 
         fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn update_opencode_models_replaces_adversarial_alongside_others() {
+        let temp_dir = std::env::temp_dir().join("hyprlayer_test_adversarial_with_others");
+        let agents_dir = temp_dir.join("agents");
+        fs::create_dir_all(&agents_dir).unwrap();
+
+        fs::write(
+            agents_dir.join("adversarial-reviewer.md"),
+            "---\nmodel: {{ADVERSARIAL_MODEL}}\n---\n# Adversarial",
+        )
+        .unwrap();
+        fs::write(
+            agents_dir.join("analyzer.md"),
+            "---\nmodel: {{SONNET_MODEL}}\n---\n# Analyzer",
+        )
+        .unwrap();
+
+        let count = update_opencode_models(&temp_dir, &OpenCodeProvider::Abacus).unwrap();
+        assert_eq!(count, 2);
+
+        let adversarial = fs::read_to_string(agents_dir.join("adversarial-reviewer.md")).unwrap();
+        assert!(adversarial.contains("model: abacus/gpt-5.3-codex-xhigh"));
+        assert!(!adversarial.contains("{{ADVERSARIAL_MODEL}}"));
+
+        let analyzer = fs::read_to_string(agents_dir.join("analyzer.md")).unwrap();
+        assert!(analyzer.contains("model: abacus/claude-sonnet-4-6"));
+
+        fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    /// Round-trip test: copy the real shipped opencode/agents/adversarial-reviewer.md
+    /// into a tempdir and verify substitution leaves no `{{...}}` placeholders behind
+    /// for any provider. Catches regressions where someone removes the placeholder
+    /// from the template or adds a new placeholder without updating the substitution
+    /// machinery.
+    #[test]
+    fn opencode_adversarial_reviewer_template_substitutes_for_all_providers() {
+        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let template = manifest_dir.join("opencode/agents/adversarial-reviewer.md");
+        let template_body = fs::read_to_string(&template).expect("opencode template missing");
+
+        for provider in OpenCodeProvider::ALL {
+            let temp_dir = std::env::temp_dir().join(format!(
+                "hyprlayer_test_real_template_{}",
+                provider.provider_prefix()
+            ));
+            let agents_dir = temp_dir.join("agents");
+            fs::create_dir_all(&agents_dir).unwrap();
+            fs::write(agents_dir.join("adversarial-reviewer.md"), &template_body).unwrap();
+
+            update_opencode_models(&temp_dir, provider).unwrap();
+
+            let resolved = fs::read_to_string(agents_dir.join("adversarial-reviewer.md")).unwrap();
+            assert!(
+                !resolved.contains("{{"),
+                "{:?} substitution left a `{{{{...}}}}` placeholder in the template:\n{}",
+                provider,
+                resolved
+            );
+            assert!(
+                resolved.contains(&format!("model: {}", provider.default_adversarial_model())),
+                "{:?} did not produce the expected model line. Got:\n{}",
+                provider,
+                resolved
+            );
+
+            fs::remove_dir_all(&temp_dir).ok();
+        }
     }
 
     #[test]
