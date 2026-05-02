@@ -1,7 +1,7 @@
 ---
 name: research_codebase
 description: Document codebase as-is with thoughts directory for historical context. Use when the user asks to research, document, or map an existing codebase area. Read-only; produces a thoughts artifact.
-model: opus
+model: sonnet
 allowed-tools: Bash, Read, Grep, Glob, Agent, mcp__claude_ai_Notion__*, mcp__anytype__*
 ---
 
@@ -13,14 +13,9 @@ You are tasked with conducting comprehensive research across the codebase to ans
 
 Read `~/.claude/skills/_thoughts/storage-backend.md` and follow it for where to save the artifact. Read `~/.claude/skills/_thoughts/required-metadata.md` for the schema-required fields and the backend-specific title format. For this command: artifact type is `research`; the title is derived from the research question.
 
-## CRITICAL: YOUR ONLY JOB IS TO DOCUMENT AND EXPLAIN THE CODEBASE AS IT EXISTS TODAY
-- DO NOT suggest improvements or changes unless the user explicitly asks for them
-- DO NOT perform root cause analysis unless the user explicitly asks for them
-- DO NOT propose future enhancements unless the user explicitly asks for them
-- DO NOT critique the implementation or identify problems
-- DO NOT recommend refactoring, optimization, or architectural changes
-- ONLY describe what exists, where it exists, how it works, and how components interact
-- You are creating a technical map/documentation of the existing system
+## Documentarian rules
+
+Read `~/.claude/skills/_thoughts/documentarian-rules.md` and apply it to yourself AND every sub-agent you spawn. This skill documents the codebase as-is — no recommendations, no critiques.
 
 ## Initial Setup:
 
@@ -47,35 +42,9 @@ Then wait for the user's research query.
    - Consider which directories, files, or architectural patterns are relevant
 
 3. **Spawn parallel sub-agent tasks for comprehensive research:**
-   - Create multiple Task agents to research different aspects concurrently
-   - We now have specialized agents that know how to do specific research tasks:
-
-   **For codebase research:**
-   - Use the **codebase-locator** agent to find WHERE files and components live
-   - Use the **codebase-analyzer** agent to understand HOW specific code works (without critiquing it)
-   - Use the **codebase-pattern-finder** agent to find examples of existing patterns (without evaluating them)
-
-   **IMPORTANT**: All agents are documentarians, not critics. They will describe what exists without suggesting improvements or identifying issues.
-
-   **For thoughts directory:**
-   - Use the **thoughts-locator** agent to discover what documents exist about the topic
-   - Use the **thoughts-analyzer** agent to extract key insights from specific documents (only the most relevant ones)
-
-   **For web research (only if user explicitly asks):**
-   - Use the **web-search-researcher** agent for external documentation and resources
-   - IF you use web-research agents, instruct them to return LINKS with their findings, and please INCLUDE those links in your final report
-
-   **For JIRA tickets (if relevant):**
-   - Use the **jira-ticket-reader** agent to get full details of a specific ticket
-   - Use the **jira-searcher** agent to find related tickets or historical context
-
-   The key is to use these agents intelligently:
-   - Start with locator agents to find what exists
-   - Then use analyzer agents on the most promising findings to document how they work
-   - Run multiple agents in parallel when they're searching for different things
-   - Each agent knows its job - just tell it what you're looking for
-   - Don't write detailed prompts about HOW to search - the agents already know
-   - Remind agents they are documenting, not evaluating or improving
+   - Read `~/.claude/skills/_thoughts/subagent-guide.md` for the catalog and spawning rules.
+   - For this skill, the relevant sections are: codebase research, thoughts directory, web research (only if the user explicitly asks), and JIRA (if relevant).
+   - Documentarian rules (already loaded above) apply to every sub-agent you spawn.
 
 4. **Wait for all sub-agents to complete and synthesize findings:**
    - IMPORTANT: Wait for ALL sub-agent tasks to complete before proceeding
@@ -89,76 +58,18 @@ Then wait for the user's research query.
    - Answer the user's specific questions with concrete evidence
 
 5. **Gather metadata for the research document:**
-   - Run the `hack/spec_metadata.sh` script to generate all relevant metadata
+   - Collect: current date/time (ISO with timezone), git commit hash, branch name, repository name, researcher name (from `hyprlayer thoughts config --json` or `git config user.name`).
    - Determine the artifact title per the backend-specific rule in `~/.claude/skills/_thoughts/required-metadata.md`: kebab-case dated slug (e.g. `2025-01-08-authentication-flow`) for `git`/`obsidian`; normal human-readable heading (e.g. `Authentication flow`) for `notion`/`anytype`.
    - Destination is resolved by the storage backend dispatch at the top of this command:
      - For `git`/`obsidian`: `thoughts/shared/research/<title>.md`
      - For `notion`/`anytype`: a database row / object with `type: research`
 
 6. **Generate research document:**
-   - Use the metadata gathered in step 4
-   - Structure the document with YAML frontmatter followed by content:
-     ```markdown
-     ---
-     date: [Current date and time with timezone in ISO format]
-     researcher: [Researcher name from thoughts status]
-     git_commit: [Current commit hash]
-     branch: [Current branch name]
-     repository: [Repository name]
-     topic: "[User's Question/Topic]"
-     tags: [research, codebase, relevant-component-names]
-     status: complete
-     last_updated: [Current date in YYYY-MM-DD format]
-     last_updated_by: [Researcher name]
-     ---
-
-     # Research: [User's Question/Topic]
-
-     **Git Commit**: [Current commit hash from step 4]
-     **Branch**: [Current branch name from step 4]
-
-     ## Research Question
-     [Original user query]
-
-     ## Summary
-     [High-level documentation of what was found, answering the user's question by describing what exists]
-
-     ## Detailed Findings
-
-     ### [Component/Area 1]
-     - Description of what exists ([file.ext:line](link))
-     - How it connects to other components
-     - Current implementation details (without evaluation)
-
-     ### [Component/Area 2]
-     ...
-
-     ## Code References
-     - `path/to/file.py:123` - Description of what's there
-     - `another/file.ts:45-67` - Description of the code block
-
-     ## Architecture Documentation
-     [Current patterns, conventions, and design implementations found in the codebase]
-
-     ## Historical Context (from thoughts/)
-     [Relevant insights from thoughts/ directory with references]
-     - `thoughts/shared/something.md` - Historical decision about X
-     - `thoughts/local/notes.md` - Past exploration of Y
-     Note: Paths exclude "searchable/" even if found there
-
-     ## Related Research
-     [Links to other research documents in thoughts/shared/research/]
-
-     ## Open Questions
-     [Any areas that need further investigation]
-     ```
+   - Read `~/.claude/skills/_thoughts/templates/research.md` for the body structure.
+   - Populate every placeholder using the metadata from step 5. Include the `Historical Context (from thoughts/)` section with references like `thoughts/shared/something.md`; paths exclude `searchable/` even if found there.
 
 7. **Add GitHub permalinks (if applicable):**
-   - Check if on main branch or if commit is pushed: `git branch --show-current` and `git status`
-   - If on main/master or pushed, generate GitHub permalinks:
-     - Get repo info: `gh repo view --json owner,name`
-     - Create permalinks: `https://github.com/{owner}/{repo}/blob/{commit}/{file}#L{line}`
-   - Replace local file references with permalinks in the document
+   - Read `~/.claude/skills/_thoughts/permalinks.md` and follow it.
 
 8. **Sync (git only) and present findings:**
    - For `backend: git`, run `hyprlayer thoughts sync`. Skip this step for `obsidian`/`notion`/`anytype`.

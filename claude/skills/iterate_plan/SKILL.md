@@ -72,21 +72,7 @@ If the user's feedback requires understanding new code patterns or validating as
 1. **Create a research todo list** using TodoWrite
 
 2. **Spawn parallel sub-tasks for research**:
-   Use the right agent for each type of research:
-
-   **For code investigation:**
-   - **codebase-locator** - To find relevant files
-   - **codebase-analyzer** - To understand implementation details
-   - **codebase-pattern-finder** - To find similar patterns
-
-   **For historical context:**
-   - **thoughts-locator** - To find related research or decisions
-   - **thoughts-analyzer** - To extract insights from documents
-
-   **Be EXTREMELY specific about directories**:
-    - If the change involves "CLI", specify `src/` directory
-   - If it involves "daemon", specify `hld/` directory
-   - Include full path context in prompts
+   Read `~/.claude/skills/_thoughts/subagent-guide.md` for the catalog and spawning rules. Use the codebase-research and thoughts directory sections.
 
 3. **Read any new files identified by research**:
    - Read them FULLY into the main context
