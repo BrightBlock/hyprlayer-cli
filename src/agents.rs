@@ -101,7 +101,7 @@ impl AgentTool {
     pub const ALL: &[AgentTool] = &[AgentTool::Claude, AgentTool::Copilot, AgentTool::OpenCode];
 
     /// The directory name in the repo that contains this tool's agent files
-    fn repo_dir(&self) -> &str {
+    pub(crate) fn repo_dir(&self) -> &str {
         match self {
             Self::Claude => "claude",
             Self::Copilot => "copilot",
@@ -152,6 +152,30 @@ impl AgentTool {
             return false;
         };
         self.is_installed_at(&dest)
+    }
+
+    /// Looser variant: does any prior install exist at `dest_dir`, even if
+    /// it predates the current sentinel-file set? Used by the auto-reinstall
+    /// gate so that exactly the stale installs that need refreshing get
+    /// refreshed. `is_installed` would return false for them and the auto
+    /// path would never run.
+    pub fn has_existing_install(&self) -> bool {
+        let Ok(dest) = self.dest_dir() else {
+            return false;
+        };
+        self.has_existing_install_at(&dest)
+    }
+
+    fn has_existing_install_at(&self, dest: &Path) -> bool {
+        // Per-tool structural directories that have been part of every
+        // shipped bundle. If both exist, *something* was installed here
+        // by a previous `hyprlayer ai configure`.
+        let (a, b) = match self {
+            Self::Claude => ("skills", "agents"),
+            Self::OpenCode => ("commands", "agents"),
+            Self::Copilot => ("prompts", "agents"),
+        };
+        dest.join(a).is_dir() && dest.join(b).is_dir()
     }
 
     /// Test-friendly variant of `is_installed` that takes an explicit destination path.
@@ -247,38 +271,104 @@ impl AgentTool {
     }
 
     /// Download agent files from GitHub and install to the destination.
-    /// For OpenCode, optionally update model fields with provider-specific model.
-    pub fn install(&self, opencode_provider: Option<&OpenCodeProvider>) -> Result<()> {
+    ///
+    /// Returns `Some(sha)` when we successfully captured the per-tool
+    /// `master` commit SHA *before* the download (the next 24h auto-check
+    /// uses this as the freshness baseline). Returns `None` when the
+    /// commits API was unreachable but the downloads succeeded — the
+    /// install is still good, but we have no SHA to cache, so the next
+    /// auto-check will treat the bundle as stale and refresh again. We
+    /// don't fail the whole install on commits-API rate-limits because
+    /// `hyprlayer ai configure` / `ai reinstall` must continue to work
+    /// even when only the commits endpoint is throttled.
+    pub fn install(
+        &self,
+        opencode_provider: Option<&OpenCodeProvider>,
+        quiet: bool,
+    ) -> Result<Option<String>> {
         let dest = self.dest_dir()?;
         fs::create_dir_all(&dest)?;
 
-        println!("Downloading {} agent files...", self);
-        let mut count = 0;
-        download_directory(self.repo_dir(), &dest, &mut count)?;
-        println!("  {:<60}", format!("Downloaded {} files", count));
+        // Recording a post-download SHA could mask `master`-advances that
+        // happen mid-install — next-day's check would then compare against
+        // an at-or-newer cache and skip the necessary re-sync.
+        let sha = fetch_repo_dir_sha(self.repo_dir()).ok();
+        let git_ref = sha.as_deref().unwrap_or(BRANCH);
 
-        // Update model fields if OpenCode and provider specified
+        if !quiet {
+            println!("Downloading {} agent files...", self);
+        }
+        let mut count = 0;
+        download_directory(self.repo_dir(), git_ref, &dest, &mut count, quiet)?;
+        if !quiet {
+            println!("  {:<60}", format!("Downloaded {} files", count));
+        }
+
         if matches!(self, AgentTool::OpenCode)
             && let Some(provider) = opencode_provider
         {
-            println!("Configuring models for {}...", provider);
+            if !quiet {
+                println!("Configuring models for {}...", provider);
+            }
             let updated = update_opencode_models(&dest, provider)?;
-            println!("  {:<60}", format!("Updated {} files", updated));
+            if !quiet {
+                println!("  {:<60}", format!("Updated {} files", updated));
+            }
         }
 
-        Ok(())
+        Ok(sha)
     }
+}
+
+/// Fetch the latest `master` commit SHA that touched `repo_path`.
+pub(crate) fn fetch_repo_dir_sha(repo_path: &str) -> Result<String> {
+    let url = format!(
+        "https://api.github.com/repos/{REPO}/commits?path={repo_path}&sha={BRANCH}&per_page=1"
+    );
+    let json = curl_get_json(&url, Some(5))?;
+    parse_repo_dir_sha(&json, repo_path)
+}
+
+fn parse_repo_dir_sha(json: &str, repo_path: &str) -> Result<String> {
+    // GitHub returns an object with `message` on errors (e.g. 403
+    // rate-limited); detect that before assuming the array shape.
+    if let Ok(err) = serde_json::from_str::<GitHubError>(json)
+        && let Some(message) = err.message
+    {
+        return Err(anyhow::anyhow!(
+            "GitHub commits API error for '{}': {}",
+            repo_path,
+            message
+        ));
+    }
+
+    let entries: Vec<serde_json::Value> =
+        serde_json::from_str(json).context("Failed to parse GitHub commits API response")?;
+    entries
+        .first()
+        .and_then(|e| e.get("sha"))
+        .and_then(|s| s.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| anyhow::anyhow!("GitHub returned no commits for '{}'", repo_path))
 }
 
 /// Download a directory from the repo using the GitHub Contents API.
 /// Recursively fetches subdirectories and downloads each file individually.
 ///
-/// API: GET /repos/{owner}/{repo}/contents/{path}?ref={branch}
-/// Returns JSON array of entries with `type` ("file"|"dir"), `path`, and `download_url`.
-fn download_directory(repo_path: &str, dest: &Path, count: &mut usize) -> Result<()> {
-    let api_url = format!("https://api.github.com/repos/{REPO}/contents/{repo_path}?ref={BRANCH}");
+/// `git_ref` is the resolved commit SHA (or branch name) to pin every
+/// listing + raw fetch to. Pinning across the recursion prevents a
+/// mid-install `master` advance from producing a torn install where
+/// some files come from commit A and others from commit B.
+fn download_directory(
+    repo_path: &str,
+    git_ref: &str,
+    dest: &Path,
+    count: &mut usize,
+    quiet: bool,
+) -> Result<()> {
+    let api_url = format!("https://api.github.com/repos/{REPO}/contents/{repo_path}?ref={git_ref}");
 
-    let json = curl_get_json(&api_url, None)?;
+    let json = curl_get_json(&api_url, Some(15))?;
 
     // The API returns a JSON object with a "message" field on errors (e.g. 404)
     if let Ok(err) = serde_json::from_str::<GitHubError>(&json)
@@ -298,17 +388,24 @@ fn download_directory(repo_path: &str, dest: &Path, count: &mut usize) -> Result
         let dest_path = dest.join(&entry.name);
         match entry.entry_type.as_str() {
             "file" => {
+                // The contents API's `download_url` is already pinned to
+                // the `?ref=<git_ref>` we requested, so reusing it keeps
+                // the whole download tied to a single SHA.
                 let url = entry
                     .download_url
                     .ok_or_else(|| anyhow::anyhow!("No download URL for {}", entry.path))?;
-                print!("  {:<60}\r", entry.path);
-                std::io::stdout().flush().ok();
+                if !quiet {
+                    print!("  {:<60}\r", entry.path);
+                    std::io::stdout().flush().ok();
+                }
                 curl_download_file(&url, &dest_path)?;
                 *count += 1;
             }
             "dir" => {
-                fs::create_dir_all(&dest_path)?;
-                download_directory(&entry.path, &dest_path, count)?;
+                // No explicit `create_dir_all` here — `curl_download_file`
+                // creates each file's parent on demand, which covers this
+                // subdir as soon as we download anything into it.
+                download_directory(&entry.path, git_ref, &dest_path, count, quiet)?;
             }
             _ => {} // skip symlinks, submodules, etc.
         }
@@ -360,17 +457,34 @@ pub(crate) fn curl_get_json(url: &str, timeout_secs: Option<u32>) -> Result<Stri
 }
 
 /// Download a single file to disk.
+///
+/// `--fail-with-body` makes curl exit non-zero on HTTP 4xx/5xx so a 404
+/// HTML page or rate-limit JSON envelope can never be persisted as a
+/// fake "agent file." `--max-time` caps the per-file fetch so a stalled
+/// connection on the startup auto-reinstall path can't hang the user's
+/// command indefinitely.
 fn curl_download_file(url: &str, dest: &Path) -> Result<()> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)?;
     }
 
+    let dest_str = dest.display().to_string();
     let status = Command::new("curl")
-        .args(["-sL", "-o", &dest.display().to_string(), url])
+        .args([
+            "-sSL",
+            "--fail-with-body",
+            "--max-time",
+            "30",
+            "-o",
+            &dest_str,
+            url,
+        ])
         .status()
         .context("curl not found")?;
 
     if !status.success() {
+        // Don't leave a partial / error-page body on disk.
+        let _ = fs::remove_file(dest);
         return Err(anyhow::anyhow!("Failed to download {}", dest.display()));
     }
     Ok(())
@@ -433,6 +547,74 @@ mod tests {
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(path, "stub").unwrap();
+    }
+
+    #[test]
+    fn parse_repo_dir_sha_happy_path() {
+        let json = r#"[{"sha":"abc123def456","commit":{"message":"x"}}]"#;
+        let sha = parse_repo_dir_sha(json, "claude").unwrap();
+        assert_eq!(sha, "abc123def456");
+    }
+
+    #[test]
+    fn parse_repo_dir_sha_picks_first_entry() {
+        let json = r#"[
+            {"sha":"first","commit":{"message":"a"}},
+            {"sha":"second","commit":{"message":"b"}}
+        ]"#;
+        let sha = parse_repo_dir_sha(json, "claude").unwrap();
+        assert_eq!(sha, "first");
+    }
+
+    #[test]
+    fn parse_repo_dir_sha_empty_array_errors() {
+        let err = parse_repo_dir_sha("[]", "claude").unwrap_err();
+        assert!(
+            err.to_string().contains("no commits"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_repo_dir_sha_missing_sha_field_errors() {
+        let json = r#"[{"commit":{"message":"x"}}]"#;
+        let err = parse_repo_dir_sha(json, "claude").unwrap_err();
+        assert!(
+            err.to_string().contains("no commits"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_repo_dir_sha_non_string_sha_errors() {
+        let json = r#"[{"sha":42}]"#;
+        let err = parse_repo_dir_sha(json, "claude").unwrap_err();
+        assert!(
+            err.to_string().contains("no commits"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_repo_dir_sha_malformed_json_errors() {
+        let err = parse_repo_dir_sha("not json", "claude").unwrap_err();
+        assert!(
+            err.to_string().contains("Failed to parse"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_repo_dir_sha_propagates_github_error_message() {
+        // GitHub returns an object with a `message` field on errors (e.g.
+        // 403 rate-limited). The parser must surface the message rather
+        // than emit a generic "failed to parse" error.
+        let json = r#"{"message":"API rate limit exceeded","documentation_url":"..."}"#;
+        let err = parse_repo_dir_sha(json, "claude").unwrap_err();
+        assert!(
+            err.to_string().contains("API rate limit exceeded"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -840,6 +1022,55 @@ mod tests {
         fs::create_dir_all(case_dirs_only.join("prompts")).unwrap();
         fs::create_dir_all(case_dirs_only.join("agents")).unwrap();
         assert!(!AgentTool::Copilot.is_installed_at(&case_dirs_only));
+
+        fs::remove_dir_all(&temp_root).ok();
+    }
+
+    /// `has_existing_install` must accept any layout that *was* a valid
+    /// install at some point — sentinel files may have moved/renamed
+    /// between bundles, but the structural directories haven't. A pre-
+    /// `code_review` install is exactly the case the auto-reinstall path
+    /// needs to refresh.
+    #[test]
+    fn has_existing_install_accepts_dirs_without_current_sentinels() {
+        let temp_root = std::env::temp_dir().join("hyprlayer_test_has_existing_install");
+        fs::remove_dir_all(&temp_root).ok();
+
+        for (tool, dir_a, dir_b) in [
+            (AgentTool::Claude, "skills", "agents"),
+            (AgentTool::OpenCode, "commands", "agents"),
+            (AgentTool::Copilot, "prompts", "agents"),
+        ] {
+            // Bare structural dirs (no sentinels) — `is_installed_at`
+            // would reject this; `has_existing_install_at` must accept it.
+            let dest = temp_root.join(format!("{tool:?}_dirs_only"));
+            fs::create_dir_all(dest.join(dir_a)).unwrap();
+            fs::create_dir_all(dest.join(dir_b)).unwrap();
+            assert!(
+                tool.has_existing_install_at(&dest),
+                "{tool:?} should treat bare structural dirs as a prior install"
+            );
+            assert!(
+                !tool.is_installed_at(&dest),
+                "{tool:?} strict check should reject the bare-dirs case"
+            );
+
+            // Missing one of the two structural dirs — not a real install.
+            let partial = temp_root.join(format!("{tool:?}_partial"));
+            fs::create_dir_all(partial.join(dir_a)).unwrap();
+            assert!(
+                !tool.has_existing_install_at(&partial),
+                "{tool:?} should not treat a half-populated dir as installed"
+            );
+
+            // Empty dest dir — never installed.
+            let empty = temp_root.join(format!("{tool:?}_empty"));
+            fs::create_dir_all(&empty).unwrap();
+            assert!(
+                !tool.has_existing_install_at(&empty),
+                "{tool:?} should not treat an empty dir as installed"
+            );
+        }
 
         fs::remove_dir_all(&temp_root).ok();
     }

@@ -404,6 +404,10 @@ pub struct HyprlayerConfig {
     pub version: Option<u32>,
     #[serde(default)]
     pub last_version_check: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_agent_check: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agents_installed_sha: Option<String>,
     #[serde(default)]
     pub disable_update_check: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -417,6 +421,8 @@ impl Default for HyprlayerConfig {
         Self {
             version: Some(3),
             last_version_check: None,
+            last_agent_check: None,
+            agents_installed_sha: None,
             disable_update_check: false,
             thoughts: None,
             ai: None,
@@ -524,6 +530,10 @@ struct V2HyprlayerConfig {
     #[serde(default)]
     last_version_check: Option<i64>,
     #[serde(default)]
+    last_agent_check: Option<i64>,
+    #[serde(default)]
+    agents_installed_sha: Option<String>,
+    #[serde(default)]
     disable_update_check: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     thoughts: Option<V2ThoughtsConfig>,
@@ -565,6 +575,14 @@ impl HyprlayerConfig {
     }
 
     /// Save config to a file path.
+    ///
+    /// Atomic write: serialize to a sibling `<name>.tmp.<pid>` first, then
+    /// `rename` over the destination. Two concurrent `hyprlayer`
+    /// invocations writing the same config in the same window can
+    /// otherwise interleave bytes and produce invalid JSON; one of them
+    /// would then fail to load on the next startup. POSIX `rename` is
+    /// atomic; Windows `MoveFileEx` (which `fs::rename` calls into) is
+    /// effectively atomic for same-volume moves.
     pub fn save(&self, config_path: &Path) -> Result<()> {
         if let Some(parent) = config_path.parent() {
             fs::create_dir_all(parent).with_context(|| {
@@ -572,8 +590,36 @@ impl HyprlayerConfig {
             })?;
         }
         let json = serde_json::to_string_pretty(&self)?;
-        fs::write(config_path, json)
-            .with_context(|| format!("Failed to write config file: {}", config_path.display()))?;
+
+        let pid = std::process::id();
+        let mut tmp_name = config_path
+            .file_name()
+            .map(|n| n.to_os_string())
+            .unwrap_or_else(|| "config.json".into());
+        tmp_name.push(format!(".tmp.{pid}"));
+        let tmp_path = match config_path.parent() {
+            Some(parent) => parent.join(&tmp_name),
+            None => PathBuf::from(&tmp_name),
+        };
+
+        if let Err(e) = fs::write(&tmp_path, json) {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(anyhow::Error::new(e).context(format!(
+                "Failed to write config tempfile: {}",
+                tmp_path.display()
+            )));
+        }
+        if let Err(e) = fs::rename(&tmp_path, config_path) {
+            // A failed rename leaves the tempfile behind; clear it so
+            // repeated startup checks don't accumulate stale `<name>.tmp.<pid>`
+            // siblings in the config directory.
+            let _ = fs::remove_file(&tmp_path);
+            return Err(anyhow::Error::new(e).context(format!(
+                "Failed to atomically rename {} -> {}",
+                tmp_path.display(),
+                config_path.display()
+            )));
+        }
         Ok(())
     }
 
@@ -622,6 +668,8 @@ impl HyprlayerConfig {
         Ok(V2HyprlayerConfig {
             version: Some(2),
             last_version_check: old.last_version_check,
+            last_agent_check: None,
+            agents_installed_sha: None,
             disable_update_check: old.disable_update_check,
             thoughts: Some(thoughts),
             ai: Some(ai),
@@ -669,6 +717,8 @@ impl HyprlayerConfig {
         Ok(HyprlayerConfig {
             version: Some(3),
             last_version_check: v2.last_version_check,
+            last_agent_check: v2.last_agent_check,
+            agents_installed_sha: v2.agents_installed_sha,
             disable_update_check: v2.disable_update_check,
             thoughts,
             ai: v2.ai,
@@ -781,6 +831,8 @@ mod tests {
         let config = HyprlayerConfig {
             version: Some(3),
             last_version_check: Some(1700000000),
+            last_agent_check: Some(1700000000),
+            agents_installed_sha: Some("abc123def456".to_string()),
             disable_update_check: true,
             thoughts: Some(git_thoughts("~/thoughts", "repos", "global")),
             ai: Some(AiConfig {
@@ -794,6 +846,8 @@ mod tests {
 
         assert_eq!(loaded.version, Some(3));
         assert_eq!(loaded.last_version_check, Some(1700000000));
+        assert_eq!(loaded.last_agent_check, Some(1700000000));
+        assert_eq!(loaded.agents_installed_sha.as_deref(), Some("abc123def456"));
         assert!(loaded.disable_update_check);
 
         let thoughts = loaded.thoughts.unwrap();
@@ -922,6 +976,39 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
         assert_eq!(on_disk["version"], 3);
         assert_eq!(on_disk["thoughts"]["backend"]["kind"], "git");
+
+        fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    /// A v3 config on disk that pre-dates the agent auto-reinstall fields
+    /// must load with both new fields as `None` (and not trigger a re-save,
+    /// because nothing about its on-disk shape changed).
+    #[test]
+    fn v3_config_without_agent_fields_loads_with_none() {
+        let temp_dir = std::env::temp_dir().join("hyprlayer_test_v3_without_agent_fields");
+        fs::create_dir_all(&temp_dir).unwrap();
+        let config_path = temp_dir.join("config.json");
+
+        let v3_json = r#"{
+            "version": 3,
+            "lastVersionCheck": 1700000000,
+            "disableUpdateCheck": false,
+            "thoughts": {
+                "user": "alice",
+                "backend": {
+                    "kind": "git",
+                    "thoughtsRepo": "~/t",
+                    "reposDir": "repos",
+                    "globalDir": "global"
+                }
+            }
+        }"#;
+        fs::write(&config_path, v3_json).unwrap();
+
+        let cfg = HyprlayerConfig::load(&config_path).unwrap();
+        assert_eq!(cfg.version, Some(3));
+        assert!(cfg.last_agent_check.is_none());
+        assert!(cfg.agents_installed_sha.is_none());
 
         fs::remove_dir_all(&temp_dir).ok();
     }
