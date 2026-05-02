@@ -771,7 +771,7 @@ mod tests {
 
         let case_full = temp_root.join("full");
         touch(&case_full.join("skills/code_review/SKILL.md"));
-        touch(&case_full.join("agents/adversarial-reviewer.md"));
+        touch(&case_full.join("agents/codebase-locator.md"));
         assert!(AgentTool::Claude.is_installed_at(&case_full));
 
         // Existing install with the right top-level dirs but no sentinels —
@@ -795,7 +795,7 @@ mod tests {
         fs::create_dir_all(case_agents_only.join("agents")).unwrap();
         assert!(!AgentTool::Claude.is_installed_at(&case_agents_only));
 
-        let case_no_agent = temp_root.join("no_adv_agent");
+        let case_no_agent = temp_root.join("no_locator_agent");
         touch(&case_no_agent.join("skills/code_review/SKILL.md"));
         fs::create_dir_all(case_no_agent.join("agents")).unwrap();
         assert!(!AgentTool::Claude.is_installed_at(&case_no_agent));
@@ -804,13 +804,13 @@ mod tests {
     }
 
     #[test]
-    fn opencode_is_installed_requires_code_review_and_adversarial_reviewer() {
+    fn opencode_is_installed_requires_code_review_and_codebase_locator() {
         let temp_root = std::env::temp_dir().join("hyprlayer_test_opencode_is_installed");
         fs::remove_dir_all(&temp_root).ok();
 
         let case_full = temp_root.join("full");
         touch(&case_full.join("commands/code_review.md"));
-        touch(&case_full.join("agents/adversarial-reviewer.md"));
+        touch(&case_full.join("agents/codebase-locator.md"));
         assert!(AgentTool::OpenCode.is_installed_at(&case_full));
 
         let case_dirs_only = temp_root.join("dirs_only");
@@ -818,7 +818,7 @@ mod tests {
         fs::create_dir_all(case_dirs_only.join("agents")).unwrap();
         assert!(!AgentTool::OpenCode.is_installed_at(&case_dirs_only));
 
-        let case_no_agent = temp_root.join("no_adv_agent");
+        let case_no_agent = temp_root.join("no_locator_agent");
         touch(&case_no_agent.join("commands/code_review.md"));
         fs::create_dir_all(case_no_agent.join("agents")).unwrap();
         assert!(!AgentTool::OpenCode.is_installed_at(&case_no_agent));
@@ -827,13 +827,13 @@ mod tests {
     }
 
     #[test]
-    fn copilot_is_installed_requires_code_review_and_adversarial_reviewer() {
+    fn copilot_is_installed_requires_code_review_and_codebase_locator() {
         let temp_root = std::env::temp_dir().join("hyprlayer_test_copilot_is_installed");
         fs::remove_dir_all(&temp_root).ok();
 
         let case_full = temp_root.join("full");
         touch(&case_full.join("prompts/code_review.prompt.md"));
-        touch(&case_full.join("agents/adversarial-reviewer.agent.md"));
+        touch(&case_full.join("agents/codebase-locator.agent.md"));
         assert!(AgentTool::Copilot.is_installed_at(&case_full));
 
         let case_dirs_only = temp_root.join("dirs_only");
