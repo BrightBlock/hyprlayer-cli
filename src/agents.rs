@@ -165,15 +165,15 @@ impl AgentTool {
         match self {
             Self::Claude => {
                 dest.join("skills/code_review/SKILL.md").is_file()
-                    && dest.join("agents/adversarial-reviewer.md").is_file()
+                    && dest.join("agents/codebase-locator.md").is_file()
             }
             Self::OpenCode => {
                 dest.join("commands/code_review.md").is_file()
-                    && dest.join("agents/adversarial-reviewer.md").is_file()
+                    && dest.join("agents/codebase-locator.md").is_file()
             }
             Self::Copilot => {
                 dest.join("prompts/code_review.prompt.md").is_file()
-                    && dest.join("agents/adversarial-reviewer.agent.md").is_file()
+                    && dest.join("agents/codebase-locator.agent.md").is_file()
             }
         }
     }
