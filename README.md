@@ -83,7 +83,8 @@ Run `hyprlayer storage info --json` from inside a project to see the resolved ba
 3. **Implement** (`/implement_plan`) -- Execute the plan phase-by-phase with verification
 4. **Validate** (`/validate_plan`) -- Verify the implementation against the plan
 5. **Commit** (`/commit`) -- Create atomic commits for changes
-6. **Ship** (`/describe_pr`) -- Generate a PR description
+6. **Review** (`/code_review`) -- Adversarial diff review (codex CLI when available, Claude subagent otherwise)
+7. **Ship** (`/describe_pr`) -- Generate a PR description
 
 ## Supported AI Tools
 
