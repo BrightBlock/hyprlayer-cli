@@ -23,10 +23,15 @@ use commands::thoughts::profile::{
 use commands::thoughts::{config_cmd, init, status, sync, uninit};
 
 fn main() -> Result<()> {
-    // Check for updates before running command
-    version::maybe_check_for_updates();
+    let cli = cli::Cli::parse();
 
-    match cli::Cli::parse() {
+    // Parse first, then run startup checks against the config the
+    // current command actually uses. Honors `--config-file` and the
+    // per-config `disableUpdateCheck` flag for that file.
+    let config_path = cli.config_args().and_then(|a| a.path().ok());
+    version::run_startup_checks(config_path.as_deref());
+
+    match cli {
         cli::Cli::Thoughts { command } => match command {
             ThoughtsCommands::Init(args) => init::init(args)?,
             ThoughtsCommands::Uninit(args) => uninit::uninit(args)?,
