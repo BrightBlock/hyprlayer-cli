@@ -19,6 +19,17 @@ param(
     [string]$Model = ''
 )
 
+# Force UTF-8 (no BOM) on the native-command pipeline. PowerShell 5.1 — which
+# `powershell -NoProfile` invokes on Windows — defaults `[Console]::OutputEncoding`
+# to OEM (CP437 on en-US) and `$OutputEncoding` to US-ASCII. That round-trip
+# mangles every multi-byte UTF-8 sequence in codex's JSONL into `?` bytes before
+# `hyprlayer codex stream` ever reads it (e.g. `I'll` → `I???ll`). Use the
+# no-arg constructor explicitly: `[System.Text.Encoding]::UTF8` on .NET Framework
+# returns a *with-BOM* encoder, which would corrupt the first JSON line.
+$utf8NoBom = [System.Text.UTF8Encoding]::new()
+[Console]::OutputEncoding = $utf8NoBom
+$OutputEncoding = $utf8NoBom
+
 $repoRoot = if ($env:_REPO_ROOT) { $env:_REPO_ROOT } else { (& git rev-parse --show-toplevel 2>$null) }
 if (-not $repoRoot) {
     [Console]::Error.WriteLine("not in a git repo")
