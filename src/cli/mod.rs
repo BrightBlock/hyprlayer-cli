@@ -32,6 +32,41 @@ pub enum Cli {
     },
 }
 
+impl Cli {
+    /// The `ConfigArgs` of whichever leaf subcommand was selected, or
+    /// `None` for subcommands that don't read config (e.g. `codex stream`,
+    /// a stdin/stdout filter). Used by startup checks to honor
+    /// `--config-file` and per-config `disableUpdateCheck` settings.
+    pub fn config_args(&self) -> Option<&ConfigArgs> {
+        match self {
+            Cli::Thoughts { command } => Some(match command {
+                ThoughtsCommands::Init(a) => &a.config,
+                ThoughtsCommands::Uninit(a) => &a.config,
+                ThoughtsCommands::Sync(a) => &a.config,
+                ThoughtsCommands::Status(a) => &a.config,
+                ThoughtsCommands::Config(a) => &a.config,
+                ThoughtsCommands::Profile { command } => match command {
+                    ProfileCommands::Create(a) => &a.config,
+                    ProfileCommands::List(a) => &a.config,
+                    ProfileCommands::Show(a) => &a.config,
+                    ProfileCommands::Delete(a) => &a.config,
+                },
+            }),
+            Cli::Ai { command } => Some(match command {
+                AiCommands::Configure(a) => &a.config,
+                AiCommands::Status(a) => &a.config,
+                AiCommands::Reinstall(a) => &a.config,
+            }),
+            Cli::Storage { command } => Some(match command {
+                StorageCommands::Info(a) => &a.config,
+                StorageCommands::SetDatabaseId(a) => &a.config,
+                StorageCommands::SetTypeId(a) => &a.config,
+            }),
+            Cli::Codex { .. } => None,
+        }
+    }
+}
+
 #[derive(Subcommand, Debug)]
 pub enum AiCommands {
     Configure(AiConfigureArgs),

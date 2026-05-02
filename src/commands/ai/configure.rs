@@ -3,6 +3,7 @@ use dialoguer::{Select, theme::ColorfulTheme};
 
 use crate::agents::{AgentTool, OpenCodeProvider};
 use crate::cli::AiConfigureArgs;
+use crate::commands::ai::record_install;
 use crate::config::HyprlayerConfig;
 
 pub fn configure(args: AiConfigureArgs) -> Result<()> {
@@ -18,11 +19,14 @@ pub fn configure(args: AiConfigureArgs) -> Result<()> {
 
     if let (Some(agent), false) = (existing_agent, force) {
         if !agent.is_installed() {
+            let agent = *agent;
             let opencode_provider = hyprlayer_config
                 .ai
                 .as_ref()
-                .and_then(|ai| ai.opencode_provider.as_ref());
-            agent.install(opencode_provider)?;
+                .and_then(|ai| ai.opencode_provider.as_ref())
+                .cloned();
+            let sha = agent.install(opencode_provider.as_ref(), false)?;
+            record_install(&mut hyprlayer_config, &config_path, sha)?;
             return Ok(());
         }
         return Err(anyhow::anyhow!(
@@ -57,8 +61,10 @@ pub fn configure(args: AiConfigureArgs) -> Result<()> {
     let opencode_provider_ref = hyprlayer_config
         .ai
         .as_ref()
-        .and_then(|ai| ai.opencode_provider.as_ref());
-    agent_tool.install(opencode_provider_ref)?;
+        .and_then(|ai| ai.opencode_provider.as_ref())
+        .cloned();
+    let sha = agent_tool.install(opencode_provider_ref.as_ref(), false)?;
+    record_install(&mut hyprlayer_config, &config_path, sha)?;
 
     Ok(())
 }
