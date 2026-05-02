@@ -24,53 +24,14 @@ Use the following information to understand how to create your document:
         - ENG-ZZZZ is the ticket number (omit if no ticket)
         - description is a brief kebab-case description
     - For `notion`/`anytype`, use the human-readable title format from `required-metadata.md` and let the storage backend assign IDs.
-    - Run the `scripts/spec_metadata.sh` script to generate all relevant metadata
     - Examples:
         - With ticket: `2025-01-08_13-55-22_ENG-2166_create-context-compaction.md`
         - Without ticket: `2025-01-08_13-55-22_create-context-compaction.md`
+    - Collect metadata directly: current date/time (ISO with timezone), git commit hash (`git rev-parse HEAD`), branch (`git branch --show-current`), repository name, researcher name (from `hyprlayer thoughts config --json` or `git config user.name`).
 
 ### 2. Handoff writing.
-using the above conventions, write your document. use the defined filepath, and the following YAML frontmatter pattern. Use the metadata gathered in step 1, Structure the document with YAML frontmatter followed by content:
+Read `~/.claude/skills/_thoughts/templates/handoff.md` for the body template. Populate every placeholder using the metadata from step 1, then save the result to the destination resolved by the storage backend dispatch.
 
-Use the following template structure:
-```markdown
----
-date: [Current date and time with timezone in ISO format]
-researcher: [Researcher name from thoughts status]
-git_commit: [Current commit hash]
-branch: [Current branch name]
-repository: [Repository name]
-topic: "[Feature/Task Name] Implementation Strategy"
-tags: [implementation, strategy, relevant-component-names]
-status: complete
-last_updated: [Current date in YYYY-MM-DD format]
-last_updated_by: [Researcher name]
-type: implementation_strategy
----
-
-# Handoff: ENG-XXXX {very concise description}
-
-## Task(s)
-{description of the task(s) that you were working on, along with the status of each (completed, work in progress, planned/discussed). If you are working on an implementation plan, make sure to call out which phase you are on. Make sure to reference the plan document and/or research document(s) you are working from that were provided to you at the beginning of the session, if applicable.}
-
-## Critical References
-{List any critical specification documents, architectural decisions, or design docs that must be followed. Include only 2-3 most important file paths. Leave blank if none.}
-
-## Recent changes
-{describe recent changes made to the codebase that you made in line:file syntax}
-
-## Learnings
-{describe important things that you learned - e.g. patterns, root causes of bugs, or other important pieces of information someone that is picking up your work after you should know. consider listing explicit file paths.}
-
-## Artifacts
-{ an exhaustive list of artifacts you produced or updated as filepaths and/or file:line references - e.g. paths to feature documents, implementation plans, etc that should be read in order to resume your work.}
-
-## Action Items & Next Steps
-{ a list of action items and next steps for the next agent to accomplish based on your tasks and their statuses}
-
-## Other Notes
-{ other notes, references, or useful information - e.g. where relevant sections of the codebase are, where relevant documents are, or other important things you leanrned that you want to pass on but that don't fall into the above categories}
-```
 ---
 
 ### 3. Approve and Sync

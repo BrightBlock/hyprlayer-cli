@@ -53,18 +53,7 @@ Then wait for the user's input.
    - **NEVER** read files partially - if a file is mentioned, read it completely
 
 2. **Spawn initial research tasks to gather context**:
-   Before asking the user any questions, use specialized agents to research in parallel:
-
-   - Use the **codebase-locator** agent to find all files related to the ticket/task
-   - Use the **codebase-analyzer** agent to understand how the current implementation works
-   - If relevant, use the **thoughts-locator** agent to find any existing thoughts documents about this feature
-   - If a JIRA ticket is mentioned, use the **jira-ticket-reader** agent to get full details
-
-   These agents will:
-   - Find relevant source files, configs, and tests
-    - Identify the specific directories to focus on (e.g., if CLI is mentioned, they'll focus on src/)
-   - Trace data flow and key functions
-   - Return detailed explanations with file:line references
+   Before asking the user any questions, use specialized agents to research in parallel. Read `~/.claude/skills/_thoughts/subagent-guide.md` for the catalog and spawning rules. For initial context, lean on the codebase-research agents and (if a JIRA ticket is mentioned) the JIRA agents.
 
 3. **Read all files identified by research tasks**:
    - After research tasks complete, read ALL files they identified as relevant
@@ -107,27 +96,7 @@ After getting initial clarifications:
 2. **Create a research todo list** using TodoWrite to track exploration tasks
 
 3. **Spawn parallel sub-tasks for comprehensive research**:
-   - Create multiple Task agents to research different aspects concurrently
-   - Use the right agent for each type of research:
-
-   **For deeper investigation:**
-   - **codebase-locator** - To find more specific files (e.g., "find all files that handle [specific component]")
-   - **codebase-analyzer** - To understand implementation details (e.g., "analyze how [system] works")
-   - **codebase-pattern-finder** - To find similar features we can model after
-
-   **For historical context:**
-   - **thoughts-locator** - To find any research, plans, or decisions about this area
-   - **thoughts-analyzer** - To extract key insights from the most relevant documents
-
-   **For related tickets:**
-   - **jira-searcher** - To find similar issues or past implementations
-
-   Each agent knows how to:
-   - Find the right files and code patterns
-   - Identify conventions and patterns to follow
-   - Look for integration points and dependencies
-   - Return specific file:line references
-   - Find tests and examples
+   Read `~/.claude/skills/_thoughts/subagent-guide.md` for the catalog and spawning rules. For deeper investigation, lean on codebase-research, thoughts directory (for historical context), and JIRA (for related tickets) agents.
 
 3. **Wait for ALL sub-tasks to complete** before proceeding
 
@@ -178,104 +147,7 @@ After structure approval:
 1. **Save the plan** following the storage backend dispatch from the top of this command. The title format follows the backend-specific rule in `~/.claude/skills/_thoughts/required-metadata.md`:
    - For `git`/`obsidian`: kebab-case dated slug (e.g. `2025-01-08-improve-error-handling`); write to `thoughts/shared/plans/<title>.md` with YAML frontmatter containing every required schema field.
    - For `notion`/`anytype`: normal human-readable heading without a date prefix (e.g. `Improve error handling` or `Parent-child tracking (ENG-1478)`); create the database row / object with every required property populated; the narrative content below becomes the body.
-2. **Use this template structure**:
-
-````markdown
-# [Feature/Task Name] Implementation Plan
-
-## Overview
-
-[Brief description of what we're implementing and why]
-
-## Current State Analysis
-
-[What exists now, what's missing, key constraints discovered]
-
-## Desired End State
-
-[A Specification of the desired end state after this plan is complete, and how to verify it]
-
-### Key Discoveries:
-- [Important finding with file:line reference]
-- [Pattern to follow]
-- [Constraint to work within]
-
-## What We're NOT Doing
-
-[Explicitly list out-of-scope items to prevent scope creep]
-
-## Implementation Approach
-
-[High-level strategy and reasoning]
-
-## Phase 1: [Descriptive Name]
-
-### Overview
-[What this phase accomplishes]
-
-### Changes Required:
-
-#### 1. [Component/File Group]
-**File**: `path/to/file.ext`
-**Changes**: [Summary of changes]
-
-```[language]
-// Specific code to add/modify
-```
-
-### Success Criteria:
-
-#### Automated Verification:
-- [ ] Migration applies cleanly: `make migrate`
-- [ ] Unit tests pass: `make test-component`
-- [ ] Type checking passes: `npm run typecheck`
-- [ ] Linting passes: `make lint`
-- [ ] Integration tests pass: `make test-integration`
-
-#### Manual Verification:
-- [ ] Feature works as expected when tested via UI
-- [ ] Performance is acceptable under load
-- [ ] Edge case handling verified manually
-- [ ] No regressions in related features
-
-**Implementation Note**: After completing this phase and all automated verification passes, pause here for manual confirmation from the human that the manual testing was successful before proceeding to the next phase.
-
----
-
-## Phase 2: [Descriptive Name]
-
-[Similar structure with both automated and manual success criteria...]
-
----
-
-## Testing Strategy
-
-### Unit Tests:
-- [What to test]
-- [Key edge cases]
-
-### Integration Tests:
-- [End-to-end scenarios]
-
-### Manual Testing Steps:
-1. [Specific step to verify feature]
-2. [Another verification step]
-3. [Edge case to test manually]
-
-## Performance Considerations
-
-[Any performance implications or optimizations needed]
-
-## Migration Notes
-
-[If applicable, how to handle existing data/systems]
-
-## References
-
-- Original ticket: `thoughts/allison/tickets/eng_XXXX.md`
-- Related research: `thoughts/shared/research/[relevant].md`
-- Similar implementation: `[file:line]`
-````
+2. **Use the template at `~/.claude/skills/_thoughts/templates/plan.md`** — read it, populate every placeholder, and save the result to the destination from step 1.
 
 ### Step 5: Sync and Review
 

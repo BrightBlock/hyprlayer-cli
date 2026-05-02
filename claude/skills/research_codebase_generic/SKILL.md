@@ -38,14 +38,8 @@ Then wait for the user's research query.
    - Consider which directories, files, or architectural patterns are relevant
 
 3. **Spawn parallel sub-agent tasks for comprehensive research:**
-   - Create multiple Task agents to research different aspects concurrently
-
-   The key is to use these agents intelligently:
-   - Start with locator agents to find what exists
-   - Then use analyzer agents on the most promising findings
-   - Run multiple agents in parallel when they're searching for different things
-   - Each agent knows its job - just tell it what you're looking for
-   - Don't write detailed prompts about HOW to search - the agents already know
+   - Read `~/.claude/skills/_thoughts/subagent-guide.md` for the catalog and spawning rules.
+   - For this skill (generic variant), use whichever sections apply to the project at hand.
 
 4. **Wait for all sub-agents to complete and synthesize findings:**
    - IMPORTANT: Wait for ALL sub-agent tasks to complete before proceeding
@@ -59,76 +53,18 @@ Then wait for the user's research query.
    - Answer the user's specific questions with concrete evidence
 
 5. **Gather metadata for the research document:**
-   - generate all relevant metadata
-   - Determine the artifact title per the backend-specific rule in `~/.claude/skills/_thoughts/required-metadata.md`: kebab-case dated slug for `git`/`obsidian`; normal human-readable heading for `notion`/`anytype`.
+   - Collect: current date/time (ISO with timezone), git commit hash, branch name, repository name, researcher name (from `hyprlayer thoughts config --json` or `git config user.name`).
+   - Determine the artifact title per the backend-specific rule in `~/.claude/skills/_thoughts/required-metadata.md`.
    - Destination is resolved by the storage backend dispatch:
      - For `git`/`obsidian`: `thoughts/shared/research/<title>.md`
      - For `notion`/`anytype`: a database row / object with `type: research`
 
 6. **Generate research document:**
-   - Use the metadata gathered in step 4
-   - Structure the document with YAML frontmatter followed by content:
-     ```markdown
-     ---
-     date: [Current date and time with timezone in ISO format]
-     researcher: [Researcher name]
-     git_commit: [Current commit hash]
-     branch: [Current branch name]
-     repository: [Repository name]
-     topic: "[User's Question/Topic]"
-     tags: [research, codebase, relevant-component-names]
-     status: complete
-     last_updated: [Current date in YYYY-MM-DD format]
-     last_updated_by: [Researcher name]
-     ---
-
-     # Research: [User's Question/Topic]
-
-     **Git Commit**: [Current commit hash from step 4]
-     **Branch**: [Current branch name from step 4]
-
-     ## Research Question
-     [Original user query]
-
-     ## Summary
-     [High-level findings answering the user's question]
-
-     ## Detailed Findings
-
-     ### [Component/Area 1]
-     - Finding with reference ([file.ext:line](link))
-     - Connection to other components
-     - Implementation details
-
-     ### [Component/Area 2]
-     ...
-
-     ## Code References
-     - `path/to/file.py:123` - Description of what's there
-     - `another/file.ts:45-67` - Description of the code block
-
-     ## Architecture Insights
-     [Patterns, conventions, and design decisions discovered]
-
-     ## Historical Context (from thoughts/)
-     [Relevant insights from thoughts/ directory with references]
-     - `thoughts/shared/something.md` - Historical decision about X
-     - `thoughts/local/notes.md` - Past exploration of Y
-     Note: Paths exclude "searchable/" even if found there
-
-     ## Related Research
-     [Links to other research documents in thoughts/shared/research/]
-
-     ## Open Questions
-     [Any areas that need further investigation]
-     ```
+   - Read `~/.claude/skills/_thoughts/templates/research.md` for the body structure.
+   - Populate every placeholder using the metadata from step 5. Include the `Historical Context (from thoughts/)` section only if the project at hand uses a thoughts directory; otherwise omit it.
 
 7. **Add GitHub permalinks (if applicable):**
-   - Check if on main branch or if commit is pushed: `git branch --show-current` and `git status`
-   - If on main/master or pushed, generate GitHub permalinks:
-     - Get repo info: `gh repo view --json owner,name`
-     - Create permalinks: `https://github.com/{owner}/{repo}/blob/{commit}/{file}#L{line}`
-   - Replace local file references with permalinks in the document
+   - Read `~/.claude/skills/_thoughts/permalinks.md` and follow it.
 
 8. **Sync (git only) and present findings:**
    - For `backend: git`, run `hyprlayer thoughts sync`. Skip for `obsidian`/`notion`/`anytype`.
