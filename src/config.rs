@@ -207,10 +207,35 @@ impl BackendConfig {
             BackendConfig::Notion(_) | BackendConfig::Anytype(_) => None,
         }
     }
+
+    /// The on-disk path of a git-checkout thoughts repo. Used by telemetry
+    /// org-config auto-pull to discover a GitHub remote. Git backend only —
+    /// Obsidian / Notion / Anytype users use `hyprlayer telemetry config
+    /// --api-key` for manual override.
+    pub fn thoughts_repo_path(&self) -> Option<PathBuf> {
+        match self {
+            BackendConfig::Git(g) if !g.thoughts_repo.is_empty() => {
+                Some(expand_path(&g.thoughts_repo))
+            }
+            _ => None,
+        }
+    }
 }
 
 fn dispatch_mismatch(expected: BackendKind, actual: BackendKind) -> anyhow::Error {
     anyhow::anyhow!("{expected} backend dispatched on {actual} config")
+}
+
+/// Write `bytes` to `path` via `secure_fs::open_secure` — config tempfiles
+/// hold `api_key`, `device_salt`, and `installation_id`, so they need
+/// 0600 + `O_NOFOLLOW` protection before the atomic rename.
+fn write_secure(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut file = crate::secure_fs::open_secure(path, |o| {
+        o.write(true).create(true).truncate(true);
+    })?;
+    file.write_all(bytes)?;
+    file.sync_all()
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -279,6 +304,85 @@ pub struct AiConfig {
     pub opencode_sonnet_model: Option<String>,
     #[serde(default)]
     pub opencode_opus_model: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TelemetryMode {
+    #[default]
+    Off,
+    Anonymous,
+    Identified,
+}
+
+impl std::fmt::Display for TelemetryMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            TelemetryMode::Off => "off",
+            TelemetryMode::Anonymous => "anonymous",
+            TelemetryMode::Identified => "identified",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum KeySource {
+    #[default]
+    Default,
+    Github,
+    Manual,
+}
+
+impl std::fmt::Display for KeySource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            KeySource::Default => "default",
+            KeySource::Github => "github",
+            KeySource::Manual => "manual",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TelemetryConfig {
+    #[serde(default)]
+    pub mode: TelemetryMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_salt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub api_key_source: KeySource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub org_id: Option<String>,
+    #[serde(default)]
+    pub last_flush: u64,
+    #[serde(default)]
+    pub last_config_refresh: u64,
+}
+
+impl TelemetryConfig {
+    /// Telemetry can record events when the user has opted in and an
+    /// installation_id has been provisioned.
+    pub fn is_recording(&self) -> bool {
+        self.mode != TelemetryMode::Off && self.installation_id.is_some()
+    }
+
+    /// Provision installation_id and device_salt on first opt-in. Idempotent
+    /// — subsequent calls preserve existing values, so `telemetry off`
+    /// followed by `on` keeps the same identity.
+    pub fn ensure_ids<F: FnOnce() -> String>(&mut self, gen_salt: F) {
+        if self.installation_id.is_none() {
+            self.installation_id = Some(uuid::Uuid::new_v4().to_string());
+        }
+        if self.device_salt.is_none() {
+            self.device_salt = Some(gen_salt());
+        }
+    }
 }
 
 /// Effective configuration for a specific repository
@@ -414,18 +518,21 @@ pub struct HyprlayerConfig {
     pub thoughts: Option<ThoughtsConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ai: Option<AiConfig>,
+    #[serde(default)]
+    pub telemetry: TelemetryConfig,
 }
 
 impl Default for HyprlayerConfig {
     fn default() -> Self {
         Self {
-            version: Some(3),
+            version: Some(4),
             last_version_check: None,
             last_agent_check: None,
             agents_installed_sha: None,
             disable_update_check: false,
             thoughts: None,
             ai: None,
+            telemetry: TelemetryConfig::default(),
         }
     }
 }
@@ -559,16 +666,25 @@ impl HyprlayerConfig {
         let cfg = match version {
             0 | 1 => {
                 let v2 = Self::migrate_v1(&content)?;
-                Self::migrate_v2(&serde_json::to_string(&v2)?)?
+                let v3 = Self::migrate_v2(&serde_json::to_string(&v2)?)?;
+                Self::migrate_v3(v3)
             }
-            2 => Self::migrate_v2(&content)?,
+            2 => {
+                let v3 = Self::migrate_v2(&content)?;
+                Self::migrate_v3(v3)
+            }
             3 => {
-                serde_json::from_str(&content).with_context(|| "Failed to parse v3 config file")?
+                let v3: HyprlayerConfig = serde_json::from_str(&content)
+                    .with_context(|| "Failed to parse v3 config file")?;
+                Self::migrate_v3(v3)
+            }
+            4 => {
+                serde_json::from_str(&content).with_context(|| "Failed to parse v4 config file")?
             }
             v => return Err(anyhow::anyhow!("Unknown config version: {v}")),
         };
 
-        if version != 3 {
+        if version != 4 {
             cfg.save(config_path)?;
         }
         Ok(cfg)
@@ -602,7 +718,7 @@ impl HyprlayerConfig {
             None => PathBuf::from(&tmp_name),
         };
 
-        if let Err(e) = fs::write(&tmp_path, json) {
+        if let Err(e) = write_secure(&tmp_path, json.as_bytes()) {
             let _ = fs::remove_file(&tmp_path);
             return Err(anyhow::Error::new(e).context(format!(
                 "Failed to write config tempfile: {}",
@@ -722,7 +838,15 @@ impl HyprlayerConfig {
             disable_update_check: v2.disable_update_check,
             thoughts,
             ai: v2.ai,
+            telemetry: TelemetryConfig::default(),
         })
+    }
+
+    /// v3 → v4: purely additive. The on-disk shape gains a `telemetry`
+    /// section initialized to `default-off`. All other fields preserved.
+    fn migrate_v3(mut cfg: HyprlayerConfig) -> HyprlayerConfig {
+        cfg.version = Some(4);
+        cfg
     }
 }
 
@@ -829,7 +953,7 @@ mod tests {
         let config_path = temp_dir.join("config.json");
 
         let config = HyprlayerConfig {
-            version: Some(3),
+            version: Some(4),
             last_version_check: Some(1700000000),
             last_agent_check: Some(1700000000),
             agents_installed_sha: Some("abc123def456".to_string()),
@@ -839,12 +963,13 @@ mod tests {
                 agent_tool: Some(AgentTool::Claude),
                 ..Default::default()
             }),
+            telemetry: TelemetryConfig::default(),
         };
 
         config.save(&config_path).unwrap();
         let loaded = HyprlayerConfig::load(&config_path).unwrap();
 
-        assert_eq!(loaded.version, Some(3));
+        assert_eq!(loaded.version, Some(4));
         assert_eq!(loaded.last_version_check, Some(1700000000));
         assert_eq!(loaded.last_agent_check, Some(1700000000));
         assert_eq!(loaded.agents_installed_sha.as_deref(), Some("abc123def456"));
@@ -885,9 +1010,10 @@ mod tests {
         }"#;
         let v2 = HyprlayerConfig::migrate_v1(json).unwrap();
         let serialized = serde_json::to_string(&v2).unwrap();
-        let config = HyprlayerConfig::migrate_v2(&serialized).unwrap();
+        let v3 = HyprlayerConfig::migrate_v2(&serialized).unwrap();
+        let config = HyprlayerConfig::migrate_v3(v3);
 
-        assert_eq!(config.version, Some(3));
+        assert_eq!(config.version, Some(4));
         assert_eq!(config.last_version_check, Some(1700000000));
         assert!(!config.disable_update_check);
 
@@ -924,8 +1050,9 @@ mod tests {
     fn migrate_v1_no_thoughts_key() {
         let json = r#"{}"#;
         let v2 = HyprlayerConfig::migrate_v1(json).unwrap();
-        let config = HyprlayerConfig::migrate_v2(&serde_json::to_string(&v2).unwrap()).unwrap();
-        assert_eq!(config.version, Some(3));
+        let v3 = HyprlayerConfig::migrate_v2(&serde_json::to_string(&v2).unwrap()).unwrap();
+        let config = HyprlayerConfig::migrate_v3(v3);
+        assert_eq!(config.version, Some(4));
         assert!(config.thoughts.is_none());
         assert!(config.ai.is_none());
     }
@@ -934,8 +1061,9 @@ mod tests {
     fn migrate_v1_minimal_thoughts() {
         let json = r#"{"thoughts": {"thoughtsRepo": "~/t", "reposDir": "r", "globalDir": "g", "user": "u"}}"#;
         let v2 = HyprlayerConfig::migrate_v1(json).unwrap();
-        let config = HyprlayerConfig::migrate_v2(&serde_json::to_string(&v2).unwrap()).unwrap();
-        assert_eq!(config.version, Some(3));
+        let v3 = HyprlayerConfig::migrate_v2(&serde_json::to_string(&v2).unwrap()).unwrap();
+        let config = HyprlayerConfig::migrate_v3(v3);
+        assert_eq!(config.version, Some(4));
         assert!(config.last_version_check.is_none());
         assert!(!config.disable_update_check);
 
@@ -950,7 +1078,7 @@ mod tests {
 
     #[test]
     fn migrate_v1_then_v2_chains_correctly() {
-        // v1 config: no version key, AI fields under thoughts. Should land at v3.
+        // v1 config: no version key, AI fields under thoughts. Should land at v4.
         let temp_dir = std::env::temp_dir().join("hyprlayer_test_v1_chain");
         let config_path = temp_dir.join("config.json");
         fs::create_dir_all(&temp_dir).unwrap();
@@ -967,22 +1095,22 @@ mod tests {
         fs::write(&config_path, v1_json).unwrap();
 
         let cfg = HyprlayerConfig::load(&config_path).unwrap();
-        assert_eq!(cfg.version, Some(3));
+        assert_eq!(cfg.version, Some(4));
         let thoughts = cfg.thoughts.unwrap();
         let git = thoughts.backend.as_git().unwrap();
         assert_eq!(git.thoughts_repo, "~/thoughts");
 
         let on_disk: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
-        assert_eq!(on_disk["version"], 3);
+        assert_eq!(on_disk["version"], 4);
         assert_eq!(on_disk["thoughts"]["backend"]["kind"], "git");
 
         fs::remove_dir_all(&temp_dir).ok();
     }
 
     /// A v3 config on disk that pre-dates the agent auto-reinstall fields
-    /// must load with both new fields as `None` (and not trigger a re-save,
-    /// because nothing about its on-disk shape changed).
+    /// must load with both new fields as `None`. The load also rewrites the
+    /// file as v4 since that's the current schema version.
     #[test]
     fn v3_config_without_agent_fields_loads_with_none() {
         let temp_dir = std::env::temp_dir().join("hyprlayer_test_v3_without_agent_fields");
@@ -1006,7 +1134,7 @@ mod tests {
         fs::write(&config_path, v3_json).unwrap();
 
         let cfg = HyprlayerConfig::load(&config_path).unwrap();
-        assert_eq!(cfg.version, Some(3));
+        assert_eq!(cfg.version, Some(4));
         assert!(cfg.last_agent_check.is_none());
         assert!(cfg.agents_installed_sha.is_none());
 
@@ -1014,12 +1142,12 @@ mod tests {
     }
 
     #[test]
-    fn v3_config_does_not_trigger_migration() {
-        let temp_dir = std::env::temp_dir().join("hyprlayer_test_v3_no_migrate");
+    fn v4_config_does_not_trigger_migration() {
+        let temp_dir = std::env::temp_dir().join("hyprlayer_test_v4_no_migrate");
         let config_path = temp_dir.join("config.json");
 
         let config = HyprlayerConfig {
-            version: Some(3),
+            version: Some(4),
             thoughts: Some(git_thoughts("~/thoughts", "repos", "global")),
             ..Default::default()
         };
@@ -1029,10 +1157,9 @@ mod tests {
         let loaded = HyprlayerConfig::load(&config_path).unwrap();
         let bytes_after = fs::read(&config_path).unwrap();
 
-        // Idempotency: loading a v3 file does not rewrite it.
         assert_eq!(bytes_before, bytes_after);
 
-        assert_eq!(loaded.version, Some(3));
+        assert_eq!(loaded.version, Some(4));
         let thoughts = loaded.thoughts.unwrap();
         assert_eq!(
             thoughts.backend.as_git().unwrap().thoughts_repo,
@@ -1040,6 +1167,114 @@ mod tests {
         );
 
         fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    /// v3 → v4: purely additive. A v3 file on disk loads, gains the
+    /// telemetry section initialized to default-off, and rewrites as v4.
+    /// All other fields preserved.
+    #[test]
+    fn migrate_v3_to_v4_preserves_existing_fields() {
+        let temp_dir = std::env::temp_dir().join("hyprlayer_test_v3_to_v4");
+        fs::create_dir_all(&temp_dir).unwrap();
+        let config_path = temp_dir.join("config.json");
+
+        let v3_json = r#"{
+            "version": 3,
+            "lastVersionCheck": 1700000000,
+            "lastAgentCheck": 1700000001,
+            "agentsInstalledSha": "abc123",
+            "disableUpdateCheck": false,
+            "thoughts": {
+                "user": "alice",
+                "backend": {
+                    "kind": "git",
+                    "thoughtsRepo": "~/t",
+                    "reposDir": "repos",
+                    "globalDir": "global"
+                }
+            },
+            "ai": {
+                "agentTool": "claude"
+            }
+        }"#;
+        fs::write(&config_path, v3_json).unwrap();
+
+        let cfg = HyprlayerConfig::load(&config_path).unwrap();
+        assert_eq!(cfg.version, Some(4));
+        assert_eq!(cfg.last_version_check, Some(1700000000));
+        assert_eq!(cfg.last_agent_check, Some(1700000001));
+        assert_eq!(cfg.agents_installed_sha.as_deref(), Some("abc123"));
+        assert_eq!(cfg.thoughts.as_ref().unwrap().user, "alice");
+        assert!(matches!(
+            cfg.ai.as_ref().unwrap().agent_tool,
+            Some(AgentTool::Claude)
+        ));
+        assert_eq!(cfg.telemetry.mode, TelemetryMode::Off);
+        assert!(cfg.telemetry.installation_id.is_none());
+        assert!(cfg.telemetry.api_key.is_none());
+        assert_eq!(cfg.telemetry.api_key_source, KeySource::Default);
+
+        let on_disk: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+        assert_eq!(on_disk["version"], 4);
+        assert_eq!(on_disk["telemetry"]["mode"], "off");
+
+        fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn telemetry_config_round_trip() {
+        let cfg = TelemetryConfig {
+            mode: TelemetryMode::Anonymous,
+            installation_id: Some("11111111-2222-3333-4444-555555555555".to_string()),
+            device_salt: Some("deadbeef".to_string()),
+            api_key: Some("phc_test".to_string()),
+            api_key_source: KeySource::Github,
+            org_id: Some("acme".to_string()),
+            last_flush: 1700000000,
+            last_config_refresh: 1700000001,
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        let back: TelemetryConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.mode, TelemetryMode::Anonymous);
+        assert_eq!(
+            back.installation_id.as_deref(),
+            Some("11111111-2222-3333-4444-555555555555")
+        );
+        assert_eq!(back.api_key_source, KeySource::Github);
+        assert_eq!(back.last_flush, 1700000000);
+    }
+
+    #[test]
+    fn telemetry_mode_serializes_lowercase() {
+        assert_eq!(
+            serde_json::to_string(&TelemetryMode::Off).unwrap(),
+            "\"off\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TelemetryMode::Anonymous).unwrap(),
+            "\"anonymous\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TelemetryMode::Identified).unwrap(),
+            "\"identified\""
+        );
+    }
+
+    #[test]
+    fn key_source_serializes_lowercase() {
+        assert_eq!(
+            serde_json::to_string(&KeySource::Default).unwrap(),
+            "\"default\""
+        );
+        assert_eq!(
+            serde_json::to_string(&KeySource::Github).unwrap(),
+            "\"github\""
+        );
+        assert_eq!(
+            serde_json::to_string(&KeySource::Manual).unwrap(),
+            "\"manual\""
+        );
     }
 
     #[test]
@@ -1238,11 +1473,11 @@ mod tests {
         assert!(matches!(any.backend, BackendConfig::Anytype(_)));
     }
 
-    /// Phase 4 fixture test: a v2 Notion config on disk loads, migrates, and
-    /// the rewritten file uses the v3 shape (`version: 3`, `backend: { kind:
-    /// "notion", ... }`) with no leftover top-level filesystem fields.
+    /// A v2 Notion config on disk migrates and is rewritten in the tagged-backend
+    /// shape (`version: 4`, `backend: { kind: "notion", ... }`) with no
+    /// leftover top-level filesystem fields.
     #[test]
-    fn migrate_v2_notion_writes_v3_shape_to_disk() {
+    fn migrate_v2_notion_writes_v4_shape_to_disk() {
         let temp_dir = std::env::temp_dir().join("hyprlayer_test_v2_notion_disk");
         let config_path = temp_dir.join("config.json");
         fs::create_dir_all(&temp_dir).unwrap();
@@ -1264,7 +1499,7 @@ mod tests {
         fs::write(&config_path, v2_json).unwrap();
 
         let cfg = HyprlayerConfig::load(&config_path).unwrap();
-        assert_eq!(cfg.version, Some(3));
+        assert_eq!(cfg.version, Some(4));
         assert!(matches!(
             cfg.thoughts.as_ref().unwrap().backend,
             BackendConfig::Notion(_)
@@ -1272,7 +1507,7 @@ mod tests {
 
         let on_disk: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
-        assert_eq!(on_disk["version"], 3);
+        assert_eq!(on_disk["version"], 4);
         assert_eq!(on_disk["thoughts"]["backend"]["kind"], "notion");
         assert_eq!(on_disk["thoughts"]["backend"]["parentPageId"], "p1");
         assert_eq!(on_disk["thoughts"]["backend"]["databaseId"], "d1");
@@ -1281,7 +1516,7 @@ mod tests {
         assert!(on_disk["thoughts"].get("reposDir").is_none());
         assert!(on_disk["thoughts"].get("globalDir").is_none());
 
-        // Idempotency: a second load of the now-v3 file does not rewrite it.
+        // Idempotency: a second load of the now-v4 file does not rewrite it.
         let bytes_after_first = fs::read(&config_path).unwrap();
         HyprlayerConfig::load(&config_path).unwrap();
         let bytes_after_second = fs::read(&config_path).unwrap();
@@ -1290,9 +1525,9 @@ mod tests {
         fs::remove_dir_all(&temp_dir).ok();
     }
 
-    /// Phase 4 fixture test: v2 Obsidian writes a v3 ObsidianConfig.
+    /// A v2 Obsidian config migrates and is rewritten in the tagged-backend shape.
     #[test]
-    fn migrate_v2_obsidian_writes_v3_shape_to_disk() {
+    fn migrate_v2_obsidian_writes_v4_shape_to_disk() {
         let temp_dir = std::env::temp_dir().join("hyprlayer_test_v2_obsidian_disk");
         let config_path = temp_dir.join("config.json");
         fs::create_dir_all(&temp_dir).unwrap();
@@ -1317,7 +1552,7 @@ mod tests {
 
         let on_disk: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
-        assert_eq!(on_disk["version"], 3);
+        assert_eq!(on_disk["version"], 4);
         assert_eq!(on_disk["thoughts"]["backend"]["kind"], "obsidian");
         assert_eq!(on_disk["thoughts"]["backend"]["vaultPath"], "/vault");
         assert_eq!(on_disk["thoughts"]["backend"]["vaultSubpath"], "hyprlayer");
@@ -1328,9 +1563,9 @@ mod tests {
         fs::remove_dir_all(&temp_dir).ok();
     }
 
-    /// Phase 4 fixture test: v2 Anytype writes a v3 AnytypeConfig.
+    /// A v2 Anytype config migrates and is rewritten in the tagged-backend shape.
     #[test]
-    fn migrate_v2_anytype_writes_v3_shape_to_disk() {
+    fn migrate_v2_anytype_writes_v4_shape_to_disk() {
         let temp_dir = std::env::temp_dir().join("hyprlayer_test_v2_anytype_disk");
         let config_path = temp_dir.join("config.json");
         fs::create_dir_all(&temp_dir).unwrap();
@@ -1356,7 +1591,7 @@ mod tests {
 
         let on_disk: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
-        assert_eq!(on_disk["version"], 3);
+        assert_eq!(on_disk["version"], 4);
         assert_eq!(on_disk["thoughts"]["backend"]["kind"], "anytype");
         assert_eq!(on_disk["thoughts"]["backend"]["spaceId"], "s1");
         assert_eq!(on_disk["thoughts"]["backend"]["typeId"], "t1");

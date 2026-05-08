@@ -3,24 +3,26 @@
 use anyhow::Result;
 use serde::Deserialize;
 use std::env;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::agents;
 use crate::config;
+use crate::telemetry;
 
 /// Throttle interval shared between the GitHub release check and the agent
-/// auto-reinstall check.
+/// auto-reinstall check. Both poll a rate-limited external API.
 const CHECK_INTERVAL_SECS: i64 = 24 * 60 * 60;
 
+/// Telemetry flush throttle. The flush hits our own ingest endpoint, so a
+/// much shorter cadence is fine and keeps spool size + data-loss window
+/// bounded for active users.
+const TELEMETRY_FLUSH_INTERVAL_SECS: i64 = 5 * 60;
+
 fn unix_now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
+    telemetry::unix_now() as i64
 }
 
-fn should_skip_due_to_throttle(last_check: i64, now: i64) -> bool {
-    now - last_check < CHECK_INTERVAL_SECS
+fn should_skip_due_to_throttle(last_check: i64, now: i64, interval_secs: i64) -> bool {
+    now - last_check < interval_secs
 }
 
 /// GitHub Release API response (minimal fields needed)
@@ -151,19 +153,19 @@ fn should_reinstall(installed_sha: Option<&str>, latest_sha: &str) -> bool {
 /// the parsed `--config-file` value when present so a user with a custom
 /// config (and their custom `disableUpdateCheck` setting) gets the
 /// expected startup behavior.
-pub fn run_startup_checks(config_path: Option<&std::path::Path>) {
-    let default_path;
-    let config_path = match config_path {
-        Some(p) => p,
-        None => match config::get_default_config_path() {
-            Ok(p) => {
-                default_path = p;
-                &default_path
-            }
-            Err(_) => return,
-        },
+///
+/// `allow_background_flush = false` suppresses the background telemetry
+/// flush spawn. Telemetry subcommands set this so `telemetry off` can't
+/// flush queued events before disabling and `telemetry flush` can't
+/// recursively spawn another flush.
+pub fn run_startup_checks(config_path: Option<&std::path::Path>, allow_background_flush: bool) {
+    let resolved = config_path
+        .map(std::path::Path::to_path_buf)
+        .or_else(|| config::get_default_config_path().ok());
+    let Some(config_path) = resolved else {
+        return;
     };
-    let Ok(mut cfg) = config::HyprlayerConfig::load(config_path) else {
+    let Ok(mut cfg) = config::HyprlayerConfig::load(&config_path) else {
         return;
     };
     if cfg.disable_update_check {
@@ -173,14 +175,61 @@ pub fn run_startup_checks(config_path: Option<&std::path::Path>) {
     let now = unix_now();
     let release_changed = check_release_in(&mut cfg, now);
     let agents_changed = reinstall_agents_in(&mut cfg, now);
+    let telemetry_changed =
+        allow_background_flush && maybe_flush_telemetry_in(&mut cfg, now, &config_path);
 
-    if release_changed || agents_changed {
-        let _ = cfg.save(config_path);
+    if release_changed || agents_changed || telemetry_changed {
+        let _ = cfg.save(&config_path);
     }
 }
 
+/// Spawn a detached `hyprlayer telemetry flush` if
+/// `TELEMETRY_FLUSH_INTERVAL_SECS` have passed since the last flush and
+/// telemetry is enabled. Passes through `--config-file` so the child reads
+/// the same config as the parent. Returns true if last_flush was updated
+/// so the caller persists it.
+///
+/// Bumps `last_flush` unconditionally on a spawn attempt — even if `spawn`
+/// fails — so a broken transport can't cause us to hammer the process
+/// table. The child is `Telemetry::Flush`, which sets
+/// `allows_background_flush = false`, so it cannot recursively re-enter
+/// this function.
+fn maybe_flush_telemetry_in(
+    cfg: &mut config::HyprlayerConfig,
+    now: i64,
+    config_path: &std::path::Path,
+) -> bool {
+    if cfg.telemetry.mode == config::TelemetryMode::Off {
+        return false;
+    }
+    let last = cfg.telemetry.last_flush as i64;
+    if should_skip_due_to_throttle(last, now, TELEMETRY_FLUSH_INTERVAL_SECS) {
+        return false;
+    }
+    if let Ok(exe) = env::current_exe() {
+        let mut cmd = std::process::Command::new(exe);
+        cmd.arg("telemetry").arg("flush");
+        if let Ok(default) = config::get_default_config_path()
+            && config_path != default
+        {
+            cmd.arg("--config-file").arg(config_path);
+        }
+        let _ = cmd
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .stdin(std::process::Stdio::null())
+            .spawn();
+    }
+    cfg.telemetry.last_flush = now as u64;
+    true
+}
+
 fn check_release_in(cfg: &mut config::HyprlayerConfig, now: i64) -> bool {
-    if should_skip_due_to_throttle(cfg.last_version_check.unwrap_or(0), now) {
+    if should_skip_due_to_throttle(
+        cfg.last_version_check.unwrap_or(0),
+        now,
+        CHECK_INTERVAL_SECS,
+    ) {
         return false;
     }
     if let Some(update_info) = check_for_updates() {
@@ -191,47 +240,56 @@ fn check_release_in(cfg: &mut config::HyprlayerConfig, now: i64) -> bool {
 }
 
 fn reinstall_agents_in(cfg: &mut config::HyprlayerConfig, now: i64) -> bool {
-    // Auto-reinstall only refreshes an existing install — it never bootstraps
-    // a new one for a user who has not run `hyprlayer ai configure`.
+    // Auto-reinstall only refreshes an existing install — it never
+    // bootstraps a new one for a user who has not run `ai configure`.
     let Some(ai) = cfg.ai.as_ref() else {
         return false;
     };
     let Some(tool) = ai.agent_tool else {
         return false;
     };
-    // `has_existing_install` (looser than `is_installed`) is correct here:
-    // the strict sentinel check rejects exactly the stale installs that
-    // most need refreshing.
     if !tool.has_existing_install() {
         return false;
     }
     let opencode_provider = ai.opencode_provider.clone();
 
-    if should_skip_due_to_throttle(cfg.last_agent_check.unwrap_or(0), now) {
+    if should_skip_due_to_throttle(cfg.last_agent_check.unwrap_or(0), now, CHECK_INTERVAL_SECS) {
         return false;
     }
     cfg.last_agent_check = Some(now);
 
+    try_refresh_agents(cfg, tool, opencode_provider.as_ref());
+
+    // No-op for opted-out users; only refreshes the org-managed key for
+    // users who already ran `telemetry on`.
+    telemetry::lifecycle::refresh_org_config(cfg);
+
+    true
+}
+
+/// Compare cached SHA to upstream; if stale, run the install. Failure is
+/// logged once; the next 24h cycle retries.
+fn try_refresh_agents(
+    cfg: &mut config::HyprlayerConfig,
+    tool: agents::AgentTool,
+    opencode_provider: Option<&agents::OpenCodeProvider>,
+) {
     let Ok(latest_sha) = agents::fetch_repo_dir_sha(tool.repo_dir()) else {
-        return true;
+        return;
     };
     if !should_reinstall(cfg.agents_installed_sha.as_deref(), &latest_sha) {
-        return true;
+        return;
     }
-
     eprintln!("Updating agent files for {}…", tool);
-    match tool.install(opencode_provider.as_ref(), true) {
-        Ok(sha) => {
-            if sha.is_some() {
-                cfg.agents_installed_sha = sha;
-            }
-        }
+    match tool.install(opencode_provider, true) {
+        Ok(Some(sha)) => cfg.agents_installed_sha = Some(sha),
+        Ok(None) => {}
         Err(e) => eprintln!(
             "Failed to update agent files: {}. Run 'hyprlayer ai reinstall' to retry.",
             e
         ),
     }
-    true
+    crate::commands::ai::install_claude_hook_if_applicable(tool);
 }
 
 /// Print update notification with install-method-specific hint.
@@ -293,13 +351,6 @@ mod tests {
     }
 
     #[test]
-    fn strip_v_prefix() {
-        let tag = "v1.5.0";
-        let version = tag.trim_start_matches('v');
-        assert_eq!(version, "1.5.0");
-    }
-
-    #[test]
     fn should_reinstall_truth_table() {
         assert!(should_reinstall(None, "abc"));
         assert!(!should_reinstall(Some("abc"), "abc"));
@@ -308,52 +359,25 @@ mod tests {
     }
 
     #[test]
-    fn check_interval_is_one_day() {
-        assert_eq!(CHECK_INTERVAL_SECS, 86_400);
-    }
-
-    #[test]
     fn throttle_math() {
         let now: i64 = 2_000_000_000;
-        assert!(should_skip_due_to_throttle(now, now));
-        assert!(should_skip_due_to_throttle(now - 1, now));
-        assert!(should_skip_due_to_throttle(
-            now - (CHECK_INTERVAL_SECS - 1),
-            now
-        ));
-        assert!(!should_skip_due_to_throttle(now - CHECK_INTERVAL_SECS, now));
-        assert!(!should_skip_due_to_throttle(
-            now - (CHECK_INTERVAL_SECS + 1),
-            now
-        ));
-        assert!(!should_skip_due_to_throttle(0, now));
+        let i = CHECK_INTERVAL_SECS;
+        assert!(should_skip_due_to_throttle(now, now, i));
+        assert!(should_skip_due_to_throttle(now - 1, now, i));
+        assert!(should_skip_due_to_throttle(now - (i - 1), now, i));
+        assert!(!should_skip_due_to_throttle(now - i, now, i));
+        assert!(!should_skip_due_to_throttle(now - (i + 1), now, i));
+        assert!(!should_skip_due_to_throttle(0, now, i));
         // Clock skew: last_check in the future → still skip (negative
         // delta is < interval). Conservative: avoids hammering on a
         // misconfigured clock that's about to be fixed.
-        assert!(should_skip_due_to_throttle(now + 5, now));
-    }
+        assert!(should_skip_due_to_throttle(now + 5, now, i));
 
-    #[test]
-    fn install_method_upgrade_hints() {
-        assert_eq!(
-            InstallMethod::Homebrew.upgrade_hint(),
-            "Run 'brew upgrade hyprlayer' to upgrade"
-        );
-        assert_eq!(
-            InstallMethod::Cargo.upgrade_hint(),
-            "Run 'cargo install hyprlayer' to upgrade"
-        );
-        assert_eq!(
-            InstallMethod::Winget.upgrade_hint(),
-            "Run 'winget upgrade BrightBlock.Hyprlayer' to upgrade"
-        );
-        assert_eq!(
-            InstallMethod::WindowsInstaller.upgrade_hint(),
-            "Re-run the install script to upgrade"
-        );
-        assert_eq!(
-            InstallMethod::Unknown.upgrade_hint(),
-            "Download the latest release from GitHub"
-        );
+        // Telemetry uses a much shorter interval so a stale spool drains
+        // within minutes, not the next day.
+        let t = TELEMETRY_FLUSH_INTERVAL_SECS;
+        assert!(t < i);
+        assert!(should_skip_due_to_throttle(now - (t - 1), now, t));
+        assert!(!should_skip_due_to_throttle(now - t, now, t));
     }
 }

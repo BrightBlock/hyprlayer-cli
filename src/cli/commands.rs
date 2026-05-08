@@ -46,6 +46,12 @@ impl ConfigArgs {
         HyprlayerConfig::load(&path).map(Some)
     }
 
+    /// Load existing config or fall back to a fresh default. For handlers
+    /// that mutate state and don't require `thoughts init` to have run.
+    pub fn load_or_default(&self) -> Result<HyprlayerConfig> {
+        Ok(self.load_if_exists()?.unwrap_or_default())
+    }
+
     /// Load raw JSON config, error if not found
     pub fn load_raw(&self) -> Result<(PathBuf, serde_json::Value)> {
         let path = self.path()?;
@@ -273,4 +279,185 @@ pub struct CodexStreamArgs {
     /// Suppress [codex ran] command execution lines
     #[arg(long)]
     pub no_tool_calls: bool,
+}
+
+#[derive(Debug, Clone, clap::ValueEnum)]
+#[value(rename_all = "lowercase")]
+pub enum TelemetryModeArg {
+    Anonymous,
+    Identified,
+}
+
+impl From<TelemetryModeArg> for crate::config::TelemetryMode {
+    fn from(arg: TelemetryModeArg) -> Self {
+        match arg {
+            TelemetryModeArg::Anonymous => Self::Anonymous,
+            TelemetryModeArg::Identified => Self::Identified,
+        }
+    }
+}
+
+#[derive(Debug, Args)]
+#[command(name = "init", about = "Enable telemetry on this installation")]
+pub struct TelemetryInitArgs {
+    #[arg(long, value_enum, default_value_t = TelemetryModeArg::Anonymous)]
+    pub mode: TelemetryModeArg,
+    #[arg(long, help = "Override the PostHog API key")]
+    pub api_key: Option<String>,
+    #[arg(long, help = "Tag events with an organization identifier")]
+    pub org_id: Option<String>,
+    #[command(flatten)]
+    pub config: ConfigArgs,
+}
+
+#[derive(Debug, Args)]
+#[command(
+    name = "status",
+    about = "Show current telemetry mode, endpoint, and spool depth"
+)]
+pub struct TelemetryStatusArgs {
+    #[arg(long, help = "Output as JSON")]
+    pub json: bool,
+    #[command(flatten)]
+    pub config: ConfigArgs,
+}
+
+#[derive(Debug, Args)]
+#[command(
+    name = "on",
+    about = "Re-enable telemetry in anonymous mode (idempotent)"
+)]
+pub struct TelemetryOnArgs {
+    #[command(flatten)]
+    pub config: ConfigArgs,
+}
+
+#[derive(Debug, Args)]
+#[command(name = "off", about = "Disable telemetry; preserves installation_id")]
+pub struct TelemetryOffArgs {
+    #[command(flatten)]
+    pub config: ConfigArgs,
+}
+
+#[derive(Debug, Args)]
+#[command(
+    name = "skill-start",
+    about = "Print a session token for a skill run; pair with `skill-end`"
+)]
+pub struct TelemetrySkillStartArgs {
+    #[arg(long, help = "Skill name (informational; the token is skill-agnostic)")]
+    pub skill: Option<String>,
+    #[command(flatten)]
+    pub config: ConfigArgs,
+}
+
+#[derive(Debug, Args)]
+#[command(
+    name = "skill-end",
+    about = "Spool one skill_run event with duration computed from --session"
+)]
+pub struct TelemetrySkillEndArgs {
+    #[arg(long, help = "Skill name")]
+    pub skill: String,
+    #[arg(long, help = "Session token printed by `telemetry skill-start`")]
+    pub session: String,
+    #[arg(
+        long,
+        help = "Outcome: success, failure, or aborted (default: success)"
+    )]
+    pub outcome: Option<String>,
+    #[arg(long, help = "Stable error class (no message text)")]
+    pub error_class: Option<String>,
+    #[command(flatten)]
+    pub config: ConfigArgs,
+}
+
+#[derive(Debug, Args)]
+#[command(
+    name = "record-from-hook",
+    about = "Read a Claude Code Stop-hook payload from stdin, summarize the active skill turn from the transcript, and spool one skill_run event with token totals."
+)]
+pub struct TelemetryRecordFromHookArgs {
+    #[command(flatten)]
+    pub config: ConfigArgs,
+}
+
+#[derive(Debug, Args)]
+#[command(
+    name = "hook",
+    about = "Manage the Claude Code Stop-hook integration in ~/.claude/settings.json"
+)]
+pub struct TelemetryHookArgs {
+    #[command(subcommand)]
+    pub action: TelemetryHookAction,
+}
+
+#[derive(Debug, clap::Subcommand)]
+pub enum TelemetryHookAction {
+    /// Install (or refresh) the hyprlayer Stop hook in ~/.claude/settings.json
+    Install(TelemetryHookInstallArgs),
+    /// Remove the hyprlayer Stop hook from ~/.claude/settings.json (other hooks preserved)
+    Uninstall(TelemetryHookUninstallArgs),
+    /// Print whether the hyprlayer Stop hook is installed and the resolved settings.json path
+    Status(TelemetryHookStatusArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct TelemetryHookInstallArgs {
+    #[command(flatten)]
+    pub config: ConfigArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct TelemetryHookUninstallArgs {
+    #[command(flatten)]
+    pub config: ConfigArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct TelemetryHookStatusArgs {
+    #[arg(long, help = "Output as JSON")]
+    pub json: bool,
+    #[command(flatten)]
+    pub config: ConfigArgs,
+}
+
+#[derive(Debug, Args)]
+#[command(
+    name = "flush",
+    about = "Drain the spool and POST events to PostHog (foreground)"
+)]
+pub struct TelemetryFlushArgs {
+    #[command(flatten)]
+    pub config: ConfigArgs,
+}
+
+#[derive(Debug, Args)]
+#[command(name = "purge", about = "Delete the local event spool")]
+pub struct TelemetryPurgeArgs {
+    #[command(flatten)]
+    pub config: ConfigArgs,
+}
+
+#[derive(Debug, Args)]
+#[command(
+    name = "config",
+    about = "Set, reset, refresh, or show the telemetry API key override"
+)]
+pub struct TelemetryConfigArgs {
+    #[arg(long, help = "Set a manual PostHog API key (sticky)")]
+    pub api_key: Option<String>,
+    #[arg(long, help = "Set a manual org_id (sticky)")]
+    pub org_id: Option<String>,
+    #[arg(long, help = "Clear manual override; falls back to default/github")]
+    pub reset: bool,
+    #[arg(
+        long,
+        help = "Force re-pull of HYPRLAYER_TELEMETRY_KEY / HYPRLAYER_ORG_ID from the thoughts repo's GitHub variables"
+    )]
+    pub refresh: bool,
+    #[arg(long, help = "Print the effective resolved config")]
+    pub show: bool,
+    #[command(flatten)]
+    pub config: ConfigArgs,
 }

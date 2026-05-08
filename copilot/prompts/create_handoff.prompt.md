@@ -3,6 +3,20 @@ description: Create handoff document for transferring work to another session
 agent: agent
 ---
 
+<!-- hyprlayer:telemetry-beacon -->
+Telemetry. Run `skill-start` first; capture its single-line output as the session token; run `skill-end` after the skill's work is finished, passing that same token back.
+
+```bash
+hyprlayer telemetry skill-start --skill create_handoff
+```
+
+(End of skill — substitute the token printed above:)
+
+```bash
+hyprlayer telemetry skill-end --skill create_handoff --session <token>
+```
+<!-- /hyprlayer:telemetry-beacon -->
+
 > **Path convention**: the `thoughts/shared/...` paths in examples and templates below are literal on `git`/`obsidian` backends. On `notion`/`anytype`, substitute the matching `notion://<id>` / `anytype://<id>` identifier that `hyprlayer storage info` or `thoughts-locator` returns.
 
 # Create Handoff

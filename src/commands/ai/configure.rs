@@ -3,14 +3,14 @@ use dialoguer::{Select, theme::ColorfulTheme};
 
 use crate::agents::{AgentTool, OpenCodeProvider};
 use crate::cli::AiConfigureArgs;
-use crate::commands::ai::record_install;
-use crate::config::HyprlayerConfig;
+use crate::commands::ai::{install_claude_hook_if_applicable, record_install};
+use crate::telemetry::lifecycle;
 
 pub fn configure(args: AiConfigureArgs) -> Result<()> {
     let AiConfigureArgs { force, config } = args;
     let config_path = config.path()?;
 
-    let mut hyprlayer_config = load_or_create_minimal_config(&config_path)?;
+    let mut hyprlayer_config = config.load_or_default()?;
 
     let existing_agent = hyprlayer_config
         .ai
@@ -27,6 +27,8 @@ pub fn configure(args: AiConfigureArgs) -> Result<()> {
                 .cloned();
             let sha = agent.install(opencode_provider.as_ref(), false)?;
             record_install(&mut hyprlayer_config, &config_path, sha)?;
+            lifecycle::apply_side_effects(&mut hyprlayer_config, &config_path)?;
+            install_claude_hook_if_applicable(agent);
             return Ok(());
         }
         return Err(anyhow::anyhow!(
@@ -66,6 +68,8 @@ pub fn configure(args: AiConfigureArgs) -> Result<()> {
     let sha = agent_tool.install(opencode_provider_ref.as_ref(), false)?;
     record_install(&mut hyprlayer_config, &config_path, sha)?;
 
+    lifecycle::apply_side_effects(&mut hyprlayer_config, &config_path)?;
+    install_claude_hook_if_applicable(agent_tool);
     Ok(())
 }
 
@@ -92,11 +96,4 @@ fn prompt_for_opencode_provider(theme: &ColorfulTheme) -> Result<OpenCodeProvide
         .interact()?;
 
     Ok(OpenCodeProvider::ALL[selection].clone())
-}
-
-fn load_or_create_minimal_config(config_path: &std::path::Path) -> Result<HyprlayerConfig> {
-    if config_path.exists() {
-        return HyprlayerConfig::load(config_path);
-    }
-    Ok(HyprlayerConfig::default())
 }

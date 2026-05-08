@@ -5,7 +5,10 @@ pub mod status;
 use anyhow::Result;
 use std::path::Path;
 
+use crate::agents::AgentTool;
+use crate::commands::telemetry::hook as telemetry_hook;
 use crate::config::HyprlayerConfig;
+use crate::telemetry;
 
 /// Persist the SHA after a successful `AgentTool::install` and clear
 /// `last_agent_check` so the next startup-time check re-evaluates
@@ -19,17 +22,114 @@ pub(crate) fn record_install(
     config_path: &Path,
     sha: Option<String>,
 ) -> Result<()> {
+    let sha_for_event = sha.clone().or_else(|| config.agents_installed_sha.clone());
     if sha.is_some() {
         config.agents_installed_sha = sha;
     }
     config.last_agent_check = None;
-    config.save(config_path)
+    config.save(config_path)?;
+
+    spool_install_event(config, sha_for_event.as_deref());
+    Ok(())
+}
+
+/// Build the install event payload if telemetry is enabled and an
+/// `agent_tool` is configured. Pure — no I/O side effects, so it's
+/// directly unit-testable. The spool append happens at the call site.
+fn build_install_event_if_recording(
+    config: &HyprlayerConfig,
+    sha: Option<&str>,
+) -> Option<telemetry::event::Event> {
+    if !config.telemetry.is_recording() {
+        return None;
+    }
+    let tool = config.ai.as_ref().and_then(|ai| ai.agent_tool.as_ref())?;
+    Some(telemetry::event::Event::install(
+        telemetry::event::Harness::from(tool),
+        sha.unwrap_or(""),
+        config,
+    ))
+}
+
+/// Best-effort `install` event. Silent on every failure path. Skipped
+/// when telemetry is disabled or no agent_tool is configured (we only
+/// emit events for actual installs, not partial saves).
+fn spool_install_event(config: &HyprlayerConfig, sha: Option<&str>) {
+    if let Some(event) = build_install_event_if_recording(config, sha) {
+        let _ = telemetry::spool::append(&event);
+    }
+}
+
+/// On a Claude install, write the Stop-hook entry to
+/// `~/.claude/settings.json`; on a switch to any other harness, scrub
+/// any prior hook entry so it doesn't keep firing for an opted-out
+/// harness. Failure is non-fatal (one-line stderr warning).
+pub(crate) fn install_claude_hook_if_applicable(agent: AgentTool) {
+    let Ok(path) = telemetry_hook::settings_path() else {
+        return;
+    };
+    let result = if agent == AgentTool::Claude {
+        telemetry_hook::install_at(&path)
+    } else {
+        telemetry_hook::uninstall_at(&path)
+    };
+    if let Err(e) = result {
+        eprintln!(
+            "warning: could not update Claude Code Stop hook at {}: {}",
+            path.display(),
+            e
+        );
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::AgentTool;
+    use crate::config::{AiConfig, TelemetryConfig, TelemetryMode};
+    use crate::telemetry::event::EventType;
     use std::fs;
+
+    fn cfg_recording_with_claude() -> HyprlayerConfig {
+        HyprlayerConfig {
+            ai: Some(AiConfig {
+                agent_tool: Some(AgentTool::Claude),
+                ..Default::default()
+            }),
+            telemetry: TelemetryConfig {
+                mode: TelemetryMode::Anonymous,
+                installation_id: Some("install-uuid".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn install_event_built_when_recording_and_agent_tool_set() {
+        let cfg = cfg_recording_with_claude();
+        let event = build_install_event_if_recording(&cfg, Some("abc123"))
+            .expect("install event should be built when recording");
+        assert_eq!(event.event_type, EventType::Install);
+        assert_eq!(
+            event.extra.get("sha").and_then(|v| v.as_str()),
+            Some("abc123")
+        );
+    }
+
+    #[test]
+    fn install_event_skipped_when_telemetry_off() {
+        let mut cfg = cfg_recording_with_claude();
+        cfg.telemetry.mode = TelemetryMode::Off;
+        assert!(build_install_event_if_recording(&cfg, Some("abc")).is_none());
+    }
+
+    #[test]
+    fn install_event_skipped_when_no_agent_tool() {
+        let mut cfg = cfg_recording_with_claude();
+        cfg.ai = None;
+        assert!(build_install_event_if_recording(&cfg, Some("abc")).is_none());
+    }
 
     #[test]
     fn record_install_persists_sha_and_clears_throttle() {

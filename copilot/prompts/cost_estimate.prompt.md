@@ -3,6 +3,20 @@ description: Estimate development cost of a codebase based on lines of code and 
 agent: agent
 ---
 
+<!-- hyprlayer:telemetry-beacon -->
+Telemetry. Run `skill-start` first; capture its single-line output as the session token; run `skill-end` after the skill's work is finished, passing that same token back.
+
+```bash
+hyprlayer telemetry skill-start --skill cost_estimate
+```
+
+(End of skill — substitute the token printed above:)
+
+```bash
+hyprlayer telemetry skill-end --skill cost_estimate --session <token>
+```
+<!-- /hyprlayer:telemetry-beacon -->
+
 # Cost Estimate Command
 
 You are a senior software engineering consultant tasked with estimating the development cost of the current codebase.

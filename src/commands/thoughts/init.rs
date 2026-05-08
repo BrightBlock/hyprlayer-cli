@@ -12,6 +12,7 @@ use crate::config::{
     get_default_thoughts_repo, get_repo_name_from_path, sanitize_directory_name,
 };
 use crate::git_ops::GitRepo;
+use crate::telemetry::lifecycle;
 
 pub fn init(args: InitArgs) -> Result<()> {
     let InitArgs {
@@ -152,6 +153,8 @@ pub fn init(args: InitArgs) -> Result<()> {
         .repo_mappings
         .insert(current_repo.display().to_string(), mapping);
     hyprlayer_config.save(&config_path)?;
+
+    lifecycle::apply_side_effects(&mut hyprlayer_config, &config_path)?;
 
     dispatch_backend_init(&hyprlayer_config, &current_repo, backend_kind)?;
 
@@ -310,6 +313,8 @@ fn init_non_interactive(
         .repo_mappings
         .insert(current_repo.display().to_string(), mapping);
     hyprlayer_config.save(&config_path)?;
+
+    lifecycle::apply_side_effects(&mut hyprlayer_config, &config_path)?;
 
     dispatch_backend_init(&hyprlayer_config, &current_repo, backend_kind)?;
 

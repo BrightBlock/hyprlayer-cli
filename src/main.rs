@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
+use std::time::Instant;
 
 pub mod agents;
 mod backends;
@@ -8,15 +9,22 @@ mod commands;
 mod config;
 mod git_ops;
 mod hooks;
+mod http;
+mod secure_fs;
+mod telemetry;
 mod version;
 
-use cli::{AiCommands, CodexCommands, ProfileCommands, StorageCommands, ThoughtsCommands};
+use cli::{
+    AiCommands, CodexCommands, ProfileCommands, StorageCommands, TelemetryCommands,
+    TelemetryHookAction, ThoughtsCommands,
+};
 use commands::ai::{configure as ai_configure, reinstall as ai_reinstall, status as ai_status};
 use commands::codex::stream as codex_stream;
 use commands::storage::{
     info as storage_info, set_database_id as storage_set_database_id,
     set_type_id as storage_set_type_id,
 };
+use commands::telemetry as telemetry_cmd;
 use commands::thoughts::profile::{
     create as profile_create, delete as profile_delete, list as profile_list, show as profile_show,
 };
@@ -27,10 +35,30 @@ fn main() -> Result<()> {
 
     // Parse first, then run startup checks against the config the
     // current command actually uses. Honors `--config-file` and the
-    // per-config `disableUpdateCheck` flag for that file.
+    // per-config `disableUpdateCheck` flag for that file. Skipped
+    // entirely for the spool-writing telemetry subcommands (skill-start
+    // / skill-end / record-from-hook / flush) so a skill preamble or
+    // Stop hook doesn't trip the version notification or agent
+    // reinstall path on every invocation — see
+    // `Cli::skip_startup_checks`.
     let config_path = cli.config_args().and_then(|a| a.path().ok());
-    version::run_startup_checks(config_path.as_deref());
+    if !cli.skip_startup_checks() {
+        version::run_startup_checks(config_path.as_deref(), cli.allows_background_flush());
+    }
 
+    let cmd_name = cli.subcommand_name();
+    let skip_telemetry = cli.skip_dispatch_telemetry();
+    let started = Instant::now();
+    let result = dispatch(cli);
+
+    if !skip_telemetry {
+        record_dispatch_event(cmd_name, started, &result, config_path.as_deref());
+    }
+
+    result
+}
+
+fn dispatch(cli: cli::Cli) -> Result<()> {
     match cli {
         cli::Cli::Thoughts { command } => match command {
             ThoughtsCommands::Init(args) => init::init(args)?,
@@ -58,7 +86,65 @@ fn main() -> Result<()> {
         cli::Cli::Codex { command } => match command {
             CodexCommands::Stream(args) => codex_stream::stream(args)?,
         },
+        cli::Cli::Telemetry { command } => match command {
+            TelemetryCommands::Init(args) => telemetry_cmd::init::init(args)?,
+            TelemetryCommands::Status(args) => telemetry_cmd::status::status(args)?,
+            TelemetryCommands::On(args) => telemetry_cmd::on::on(args)?,
+            TelemetryCommands::Off(args) => telemetry_cmd::off::off(args)?,
+            TelemetryCommands::SkillStart(args) => telemetry_cmd::skill_start::skill_start(args)?,
+            TelemetryCommands::SkillEnd(args) => telemetry_cmd::skill_end::skill_end(args)?,
+            TelemetryCommands::RecordFromHook(args) => {
+                telemetry_cmd::record_from_hook::record_from_hook(args)?
+            }
+            TelemetryCommands::Hook(args) => match args.action {
+                TelemetryHookAction::Install(a) => telemetry_cmd::hook::install_cmd(a)?,
+                TelemetryHookAction::Uninstall(a) => telemetry_cmd::hook::uninstall_cmd(a)?,
+                TelemetryHookAction::Status(a) => telemetry_cmd::hook::status_cmd(a)?,
+            },
+            TelemetryCommands::Flush(args) => telemetry_cmd::flush::flush_cmd(args)?,
+            TelemetryCommands::Purge(args) => telemetry_cmd::purge::purge(args)?,
+            TelemetryCommands::Config(args) => telemetry_cmd::config_cmd::config(args)?,
+        },
+    }
+    Ok(())
+}
+
+/// Append one `cli_command` event for the dispatched subcommand. Silent
+/// on every failure path: telemetry must never break the foreground
+/// command. Loads its own config fresh — the same `--config-file` the
+/// dispatch read from — so the event's `harness` / `installation_id` /
+/// `org_id` reflect the user's current state.
+fn record_dispatch_event(
+    cmd_name: &str,
+    started: Instant,
+    result: &Result<()>,
+    config_path: Option<&std::path::Path>,
+) {
+    let resolved = match config_path {
+        Some(p) => p.to_path_buf(),
+        None => match config::get_default_config_path() {
+            Ok(p) => p,
+            Err(_) => return,
+        },
+    };
+    let Ok(cfg) = config::HyprlayerConfig::load(&resolved) else {
+        return;
+    };
+    if !cfg.telemetry.is_recording() {
+        return;
     }
 
-    Ok(())
+    let outcome = match result {
+        Ok(_) => telemetry::event::Outcome::Success,
+        Err(_) => telemetry::event::Outcome::Failure,
+    };
+    let error_class = result
+        .as_ref()
+        .err()
+        .map(|e| telemetry::error_class::classify_error(e.as_ref()));
+
+    let duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+    let event =
+        telemetry::event::Event::cli_command(cmd_name, duration_ms, outcome, error_class, &cfg);
+    let _ = telemetry::spool::append(&event);
 }

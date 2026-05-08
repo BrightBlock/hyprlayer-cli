@@ -3,6 +3,20 @@ description: Set up worktree for reviewing colleague's branch
 agent: agent
 ---
 
+<!-- hyprlayer:telemetry-beacon -->
+Telemetry. Run `skill-start` first; capture its single-line output as the session token; run `skill-end` after the skill's work is finished, passing that same token back.
+
+```bash
+hyprlayer telemetry skill-start --skill local_review
+```
+
+(End of skill — substitute the token printed above:)
+
+```bash
+hyprlayer telemetry skill-end --skill local_review --session <token>
+```
+<!-- /hyprlayer:telemetry-beacon -->
+
 # Local Review
 
 You are tasked with setting up a local review environment for a branch. This involves creating a worktree, setting up dependencies, and preparing the environment for review.

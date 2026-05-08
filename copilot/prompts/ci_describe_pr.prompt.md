@@ -3,6 +3,20 @@ description: Generate comprehensive PR descriptions following repository templat
 agent: agent
 ---
 
+<!-- hyprlayer:telemetry-beacon -->
+Telemetry. Run `skill-start` first; capture its single-line output as the session token; run `skill-end` after the skill's work is finished, passing that same token back.
+
+```bash
+hyprlayer telemetry skill-start --skill ci_describe_pr
+```
+
+(End of skill — substitute the token printed above:)
+
+```bash
+hyprlayer telemetry skill-end --skill ci_describe_pr --session <token>
+```
+<!-- /hyprlayer:telemetry-beacon -->
+
 # Generate PR Description
 
 You are tasked with generating a comprehensive pull request description following the repository's standard template.
