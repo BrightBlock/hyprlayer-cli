@@ -174,12 +174,17 @@ pub fn run_startup_checks(config_path: Option<&std::path::Path>, allow_backgroun
 
     let now = unix_now();
     let release_changed = check_release_in(&mut cfg, now);
-    let agents_changed = reinstall_agents_in(&mut cfg, now);
+    let (agents_changed, mode_elevated) = reinstall_agents_in(&mut cfg, now);
     let telemetry_changed =
         allow_background_flush && maybe_flush_telemetry_in(&mut cfg, now, &config_path);
 
     if release_changed || agents_changed || telemetry_changed {
-        let _ = cfg.save(&config_path);
+        // Spool the `$identify` only after the save succeeds — a failed
+        // save must not leave behind an identify event that contradicts
+        // the on-disk telemetry mode.
+        if cfg.save(&config_path).is_ok() && mode_elevated {
+            let _ = telemetry::identify::record_identify(&cfg);
+        }
     }
 }
 
@@ -239,32 +244,39 @@ fn check_release_in(cfg: &mut config::HyprlayerConfig, now: i64) -> bool {
     true
 }
 
-fn reinstall_agents_in(cfg: &mut config::HyprlayerConfig, now: i64) -> bool {
+/// Returns `(mutated, mode_elevated)`. The caller is responsible for
+/// persisting `mutated == true` and only spooling `$identify` after a
+/// successful save when `mode_elevated == true`.
+fn reinstall_agents_in(cfg: &mut config::HyprlayerConfig, now: i64) -> (bool, bool) {
     // Auto-reinstall only refreshes an existing install — it never
     // bootstraps a new one for a user who has not run `ai configure`.
     let Some(ai) = cfg.ai.as_ref() else {
-        return false;
+        return (false, false);
     };
     let Some(tool) = ai.agent_tool else {
-        return false;
+        return (false, false);
     };
     if !tool.has_existing_install() {
-        return false;
+        return (false, false);
     }
     let opencode_provider = ai.opencode_provider.clone();
 
     if should_skip_due_to_throttle(cfg.last_agent_check.unwrap_or(0), now, CHECK_INTERVAL_SECS) {
-        return false;
+        return (false, false);
     }
     cfg.last_agent_check = Some(now);
 
     try_refresh_agents(cfg, tool, opencode_provider.as_ref());
 
     // No-op for opted-out users; only refreshes the org-managed key for
-    // users who already ran `telemetry on`.
+    // users who already ran `telemetry on`. The auto-elevate then flips
+    // anonymous → identified once an org key has been picked up, so
+    // existing corporate users move off the community key on the next
+    // 24h cycle without a manual `telemetry init --mode identified`.
     telemetry::lifecycle::refresh_org_config(cfg);
+    let mode_elevated = telemetry::lifecycle::auto_elevate_if_org_keyed(cfg);
 
-    true
+    (true, mode_elevated)
 }
 
 /// Compare cached SHA to upstream; if stale, run the install. Failure is

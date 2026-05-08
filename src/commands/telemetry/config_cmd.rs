@@ -2,8 +2,8 @@ use anyhow::Result;
 
 use crate::cli::TelemetryConfigArgs;
 use crate::config::{HyprlayerConfig, KeySource, TelemetryMode};
-use crate::telemetry::lifecycle::{ResolveError, resolve_owner_repo};
-use crate::telemetry::{org_config, unix_now};
+use crate::telemetry::lifecycle::{ResolveError, auto_elevate_if_org_keyed, resolve_owner_repo};
+use crate::telemetry::{identify, org_config, unix_now};
 
 pub fn config(args: TelemetryConfigArgs) -> Result<()> {
     let TelemetryConfigArgs {
@@ -96,6 +96,13 @@ fn run_refresh(cfg: &mut HyprlayerConfig, config_path: &std::path::Path) -> Resu
         cfg.telemetry.org_id = Some(org);
     }
     cfg.telemetry.last_config_refresh = unix_now();
+    let mode_elevated = auto_elevate_if_org_keyed(cfg);
+    // Save before spool: if save fails, we must not leave behind an
+    // `$identify` event linking installation_id to user_id while the
+    // on-disk config still says anonymous.
     cfg.save(config_path)?;
+    if mode_elevated {
+        let _ = identify::record_identify(cfg);
+    }
     Ok(())
 }

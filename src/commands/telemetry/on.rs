@@ -9,8 +9,7 @@ pub fn on(args: TelemetryOnArgs) -> Result<()> {
     let config_path = args.config.path()?;
     let mut cfg = args.config.load_or_default()?;
 
-    lifecycle::enroll(&mut cfg);
-    cfg.save(&config_path)?;
+    lifecycle::enroll(&mut cfg, &config_path)?;
 
     // Re-install the Stop hook for Claude users (covers the
     // off → on round trip where `off` uninstalled it).
