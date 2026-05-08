@@ -109,7 +109,7 @@ impl AgentTool {
         }
     }
 
-    fn dest_dir(&self) -> Result<PathBuf> {
+    pub(crate) fn dest_dir(&self) -> Result<PathBuf> {
         match self {
             Self::Claude => {
                 let home = dirs::home_dir()
@@ -489,7 +489,7 @@ fn raw_github_url(repo_path: &str, git_ref: &str) -> String {
 /// fake "agent file." `--max-time` caps the per-file fetch so a stalled
 /// connection on the startup auto-reinstall path can't hang the user's
 /// command indefinitely.
-pub(crate) fn curl_download_file(url: &str, dest: &Path) -> Result<()> {
+fn curl_download_file(url: &str, dest: &Path) -> Result<()> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)?;
     }

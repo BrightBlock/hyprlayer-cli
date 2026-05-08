@@ -115,17 +115,18 @@ pub(crate) fn install_opencode_plugin_if_applicable(agent: AgentTool, config: &H
         return;
     };
     let result = if should_install_opencode_plugin(agent, config) {
-        // Migration: pre-1.5.4 opencode bundles shipped inline beacon
-        // blocks in commands/*.md. Now that the plugin owns skill_run
-        // emission, leaving those blocks on disk would double-fire on
-        // platforms with a healthy PATH (Linux, terminal-launched
-        // opencode). Strip whenever the plugin is being (re-)activated
-        // — idempotent on already-stripped bundles; the strip helper
-        // returns None and skips the write.
-        opencode_plugin::strip_legacy_beacons_in_commands_dir();
         if opencode_plugin::is_installed_at(&path) {
             Ok(())
         } else {
+            // Targeted-install path (e.g. `telemetry on` after `off`).
+            // Strip pre-1.5.4 inline beacons in-place before the
+            // plugin takes over emission, otherwise double-fire on
+            // platforms with healthy PATH. Bulk-install paths
+            // (configure / reinstall / 24h auto-refresh) hit the
+            // short-circuit above because download_directory has
+            // already pulled the plugin alongside the stripped
+            // commands — the strip would be redundant work there.
+            opencode_plugin::strip_legacy_beacons_in_commands_dir();
             opencode_plugin::install_at(&path)
         }
     } else {

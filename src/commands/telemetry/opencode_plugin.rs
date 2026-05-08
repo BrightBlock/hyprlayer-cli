@@ -10,7 +10,7 @@
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 
-use crate::agents::download_repo_file;
+use crate::agents::{AgentTool, download_repo_file};
 
 const REPO_PATH: &str = "opencode/plugins/hyprlayer-telemetry.ts";
 const PLUGIN_FILENAME: &str = "hyprlayer-telemetry.ts";
@@ -18,12 +18,8 @@ const BEACON_START: &str = "<!-- hyprlayer:telemetry-beacon -->";
 const BEACON_END: &str = "<!-- /hyprlayer:telemetry-beacon -->";
 
 pub fn install_path() -> Result<PathBuf> {
-    let home = dirs::home_dir().ok_or_else(|| {
-        anyhow::anyhow!("could not resolve $HOME for ~/.config/opencode/plugins/")
-    })?;
-    Ok(home
-        .join(".config")
-        .join("opencode")
+    Ok(AgentTool::OpenCode
+        .dest_dir()?
         .join("plugins")
         .join(PLUGIN_FILENAME))
 }
@@ -31,10 +27,7 @@ pub fn install_path() -> Result<PathBuf> {
 /// `~/.config/opencode/commands/` — the directory the legacy-beacon
 /// migration scrubs in-place during plugin install.
 fn commands_dir() -> Result<PathBuf> {
-    let home = dirs::home_dir().ok_or_else(|| {
-        anyhow::anyhow!("could not resolve $HOME for ~/.config/opencode/commands/")
-    })?;
-    Ok(home.join(".config").join("opencode").join("commands"))
+    Ok(AgentTool::OpenCode.dest_dir()?.join("commands"))
 }
 
 pub fn install_at(path: &Path) -> Result<()> {
@@ -225,8 +218,6 @@ mod tests {
         // A truncated/corrupted file with only a start marker — leave
         // the rest verbatim; the next bundle pull reconciles.
         let input = "---\n---\n<!-- hyprlayer:telemetry-beacon -->\nno end marker\n# Title\n";
-        // We do find a start but can't find an end, so we break out
-        // of the loop. `changed` stays false → None.
         assert_eq!(strip_beacon_blocks(input), None);
     }
 
