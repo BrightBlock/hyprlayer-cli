@@ -60,15 +60,25 @@ fn spool_install_event(config: &HyprlayerConfig, sha: Option<&str>) {
     }
 }
 
-/// On a Claude install, write the Stop-hook entry to
-/// `~/.claude/settings.json`; on a switch to any other harness, scrub
-/// any prior hook entry so it doesn't keep firing for an opted-out
-/// harness. Failure is non-fatal (one-line stderr warning).
-pub(crate) fn install_claude_hook_if_applicable(agent: AgentTool) {
+/// Decide whether the Stop hook should be present in
+/// `~/.claude/settings.json`. The hook only earns its keep when the
+/// user is on Claude *and* opted into telemetry — otherwise every Stop
+/// event spawns `hyprlayer telemetry record-from-hook` just to read
+/// stdin and bail on `is_recording()`.
+fn should_install_hook(agent: AgentTool, config: &HyprlayerConfig) -> bool {
+    agent == AgentTool::Claude && config.telemetry.is_recording()
+}
+
+/// On a Claude install with telemetry enabled, write the Stop-hook
+/// entry to `~/.claude/settings.json`; otherwise scrub any prior hook
+/// entry so it doesn't keep firing (covers switching to a non-Claude
+/// harness, or staying on Claude with telemetry off). Failure is
+/// non-fatal (one-line stderr warning).
+pub(crate) fn install_claude_hook_if_applicable(agent: AgentTool, config: &HyprlayerConfig) {
     let Ok(path) = telemetry_hook::settings_path() else {
         return;
     };
-    let result = if agent == AgentTool::Claude {
+    let result = if should_install_hook(agent, config) {
         telemetry_hook::install_at(&path)
     } else {
         telemetry_hook::uninstall_at(&path)
@@ -103,6 +113,33 @@ mod tests {
             },
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn should_install_hook_only_when_claude_and_recording() {
+        let cfg = cfg_recording_with_claude();
+        assert!(should_install_hook(AgentTool::Claude, &cfg));
+    }
+
+    #[test]
+    fn should_not_install_hook_when_telemetry_off() {
+        let mut cfg = cfg_recording_with_claude();
+        cfg.telemetry.mode = TelemetryMode::Off;
+        assert!(!should_install_hook(AgentTool::Claude, &cfg));
+    }
+
+    #[test]
+    fn should_not_install_hook_for_non_claude_agent() {
+        let cfg = cfg_recording_with_claude();
+        assert!(!should_install_hook(AgentTool::OpenCode, &cfg));
+        assert!(!should_install_hook(AgentTool::Copilot, &cfg));
+    }
+
+    #[test]
+    fn should_not_install_hook_without_installation_id() {
+        let mut cfg = cfg_recording_with_claude();
+        cfg.telemetry.installation_id = None;
+        assert!(!should_install_hook(AgentTool::Claude, &cfg));
     }
 
     #[test]

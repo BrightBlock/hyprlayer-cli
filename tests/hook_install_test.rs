@@ -7,6 +7,37 @@ use std::path::{Path, PathBuf};
 
 const HOOK_SUFFIX: &str = "hyprlayer telemetry record-from-hook";
 
+/// Mirror of the production `is_hyprlayer_hook` predicate, kept here
+/// so the integration test stays free of `crate::`-internal imports.
+/// The unit tests in `hook.rs` pin the exact recognizer behavior;
+/// this just needs to count our entries among possibly-quoted forms.
+fn is_hyprlayer_hook(cmd: &str) -> bool {
+    let cmd = cmd.trim_start();
+    let (argv0, rest) = match cmd.chars().next() {
+        Some(q @ ('\'' | '"')) => {
+            let Some(close) = cmd[1..].find(q) else {
+                return false;
+            };
+            (&cmd[1..1 + close], cmd[1 + close + 1..].trim_start())
+        }
+        Some(_) => {
+            let Some(sp) = cmd.find(' ') else {
+                return false;
+            };
+            (&cmd[..sp], cmd[sp + 1..].trim_start())
+        }
+        None => return false,
+    };
+    if rest != "telemetry record-from-hook" {
+        return false;
+    }
+    let basename = argv0
+        .rsplit_once(['/', '\\'])
+        .map(|(_, b)| b)
+        .unwrap_or(argv0);
+    matches!(basename, "hyprlayer" | "hyprlayer.exe")
+}
+
 fn settings_path(home: &Path) -> PathBuf {
     home.join(".claude").join("settings.json")
 }
@@ -31,7 +62,7 @@ fn stop_commands(root: &serde_json::Value) -> Vec<String> {
 }
 
 fn count_hyprlayer_hooks(cmds: &[String]) -> usize {
-    cmds.iter().filter(|c| c.ends_with(HOOK_SUFFIX)).count()
+    cmds.iter().filter(|c| is_hyprlayer_hook(c)).count()
 }
 
 #[test]
@@ -46,10 +77,12 @@ fn install_creates_settings_when_missing() {
 
     let cmds = stop_commands(&read_json(&path));
     assert_eq!(count_hyprlayer_hooks(&cmds), 1, "{cmds:?}");
-    let cmd = cmds.iter().find(|c| c.ends_with(HOOK_SUFFIX)).unwrap();
+    let cmd = cmds.iter().find(|c| is_hyprlayer_hook(c)).unwrap();
+    // Absolute path either bare (legacy) or single-quoted on Unix; both
+    // produce a leading `/` or `'`.
     assert!(
-        cmd.starts_with('/'),
-        "hook command should be an absolute path, got `{cmd}`"
+        cmd.starts_with('/') || cmd.starts_with('\''),
+        "hook command should embed an absolute path, got `{cmd}`"
     );
 }
 
@@ -115,8 +148,11 @@ fn install_upgrades_bare_command_in_existing_settings() {
         .pointer("/hooks/0/command")
         .and_then(|v| v.as_str())
         .unwrap();
-    assert!(cmd.ends_with(HOOK_SUFFIX));
-    assert!(cmd.starts_with('/'), "expected absolute path: {cmd}");
+    assert!(is_hyprlayer_hook(cmd), "{cmd}");
+    assert!(
+        cmd.starts_with('/') || cmd.starts_with('\''),
+        "expected absolute path: {cmd}"
+    );
 }
 
 #[test]

@@ -301,7 +301,7 @@ fn try_refresh_agents(
             e
         ),
     }
-    crate::commands::ai::install_claude_hook_if_applicable(tool);
+    crate::commands::ai::install_claude_hook_if_applicable(tool, cfg);
 }
 
 /// Print update notification with install-method-specific hint.

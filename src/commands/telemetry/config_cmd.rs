@@ -75,10 +75,12 @@ fn run_refresh(cfg: &mut HyprlayerConfig, config_path: &std::path::Path) -> Resu
         }
         Err(ResolveError::NoBackend) => {
             eprintln!("No git-backend thoughts repo configured; nothing to refresh.");
+            demote_stale_github_key(cfg, config_path)?;
             return Ok(());
         }
         Err(ResolveError::NotGithub) => {
             eprintln!("Thoughts repo origin is not a GitHub remote; falling back to default key.");
+            demote_stale_github_key(cfg, config_path)?;
             return Ok(());
         }
     };
@@ -105,4 +107,99 @@ fn run_refresh(cfg: &mut HyprlayerConfig, config_path: &std::path::Path) -> Resu
         let _ = identify::record_identify(cfg);
     }
     Ok(())
+}
+
+/// Drop a previously-fetched `Github` key + demote source to `Default`
+/// when the thoughts repo can no longer serve as the org-config source
+/// (no git backend, or origin no longer GitHub). Without this the user
+/// stays on stale org credentials indefinitely after migrating their
+/// thoughts repo away from GitHub.
+fn demote_stale_github_key(cfg: &mut HyprlayerConfig, config_path: &std::path::Path) -> Result<()> {
+    if cfg.telemetry.api_key_source != KeySource::Github {
+        return Ok(());
+    }
+    cfg.telemetry.api_key = None;
+    cfg.telemetry.api_key_source = KeySource::Default;
+    cfg.telemetry.last_config_refresh = unix_now();
+    cfg.save(config_path)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::TelemetryConfig;
+    use tempfile::tempdir;
+
+    fn cfg_with_github_key() -> HyprlayerConfig {
+        HyprlayerConfig {
+            telemetry: TelemetryConfig {
+                mode: TelemetryMode::Anonymous,
+                installation_id: Some("id".into()),
+                api_key: Some("phc_org".into()),
+                api_key_source: KeySource::Github,
+                org_id: Some("org-1".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn demote_clears_github_key_and_resets_source() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let mut cfg = cfg_with_github_key();
+        cfg.save(&path).unwrap();
+
+        demote_stale_github_key(&mut cfg, &path).unwrap();
+
+        assert!(cfg.telemetry.api_key.is_none());
+        assert_eq!(cfg.telemetry.api_key_source, KeySource::Default);
+        let reloaded = HyprlayerConfig::load(&path).unwrap();
+        assert!(reloaded.telemetry.api_key.is_none());
+        assert_eq!(reloaded.telemetry.api_key_source, KeySource::Default);
+    }
+
+    #[test]
+    fn demote_is_noop_when_source_is_default() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let mut cfg = HyprlayerConfig {
+            telemetry: TelemetryConfig {
+                mode: TelemetryMode::Anonymous,
+                installation_id: Some("id".into()),
+                api_key_source: KeySource::Default,
+                last_config_refresh: 12345,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        cfg.save(&path).unwrap();
+
+        demote_stale_github_key(&mut cfg, &path).unwrap();
+        assert_eq!(cfg.telemetry.api_key_source, KeySource::Default);
+        assert_eq!(cfg.telemetry.last_config_refresh, 12345);
+    }
+
+    #[test]
+    fn demote_preserves_manual_key() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let mut cfg = HyprlayerConfig {
+            telemetry: TelemetryConfig {
+                mode: TelemetryMode::Anonymous,
+                installation_id: Some("id".into()),
+                api_key: Some("phc_manual".into()),
+                api_key_source: KeySource::Manual,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        cfg.save(&path).unwrap();
+
+        demote_stale_github_key(&mut cfg, &path).unwrap();
+        assert_eq!(cfg.telemetry.api_key.as_deref(), Some("phc_manual"));
+        assert_eq!(cfg.telemetry.api_key_source, KeySource::Manual);
+    }
 }

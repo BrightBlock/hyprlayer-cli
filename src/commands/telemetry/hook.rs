@@ -9,14 +9,60 @@ use std::path::{Path, PathBuf};
 use crate::cli::{TelemetryHookInstallArgs, TelemetryHookStatusArgs, TelemetryHookUninstallArgs};
 use crate::secure_fs::open_secure;
 
-/// Suffix that identifies any of our hook entries — historic bare-name
-/// installs (`hyprlayer telemetry record-from-hook`) and current
-/// absolute-path installs (`/abs/path/to/hyprlayer telemetry
-/// record-from-hook`) both end with this. Idempotency keys on the
-/// suffix so a v1.6.0 → v1.6.1 upgrade replaces the bare entry with
-/// the absolute-path entry rather than landing a duplicate.
+/// Human-facing suffix shown in `status --json` and the bare-name
+/// install historically used pre-quoting. Recognition of the various
+/// real-world command spellings goes through `is_hyprlayer_hook`.
 const HOOK_COMMAND_SUFFIX: &str = "hyprlayer telemetry record-from-hook";
 const HOOK_TIMEOUT: u64 = 30;
+
+/// Recognize a hyprlayer Stop-hook entry in any spelling we've ever
+/// shipped: bare name (`hyprlayer telemetry record-from-hook`),
+/// unquoted absolute path (v1.5.4 / PR #52), single-quoted Unix path,
+/// and double-quoted Windows path. The dedup, removal, and
+/// is-installed predicates all key on this so a v1.6.0 → v1.6.x →
+/// v1.6.y upgrade chain replaces the entry in place rather than
+/// landing duplicates.
+///
+/// Anchored on argv: argv[0]'s basename must be exactly `hyprlayer`
+/// (or `hyprlayer.exe`) and the remaining args must be literally
+/// `telemetry record-from-hook`. Unrelated user wrappers like
+/// `/opt/hyprlayer-tools/custom telemetry record-from-hook` or
+/// `myhyprlayer telemetry record-from-hook` are *not* claimed.
+fn is_hyprlayer_hook(cmd: &str) -> bool {
+    let Some((argv0, rest)) = split_argv0(cmd) else {
+        return false;
+    };
+    if rest != "telemetry record-from-hook" {
+        return false;
+    }
+    let basename = argv0
+        .rsplit_once(['/', '\\'])
+        .map(|(_, base)| base)
+        .unwrap_or(argv0);
+    matches!(basename, "hyprlayer" | "hyprlayer.exe")
+}
+
+/// Split a hook command string into `(argv0, rest)`. Strips matching
+/// outer quotes (single or double) from argv0; doesn't attempt to
+/// honor shell escapes inside the quoted region. Paths containing
+/// embedded `'` or `"` are uncommon enough that we accept missed
+/// dedup (they'll show up as duplicate entries on next install)
+/// rather than implementing a full shell parser here.
+fn split_argv0(cmd: &str) -> Option<(&str, &str)> {
+    let cmd = cmd.trim_start();
+    match cmd.chars().next()? {
+        q @ ('\'' | '"') => {
+            let close = cmd[1..].find(q)?;
+            let argv0 = &cmd[1..1 + close];
+            let rest = cmd[1 + close + 1..].trim_start();
+            Some((argv0, rest))
+        }
+        _ => {
+            let sp = cmd.find(' ')?;
+            Some((&cmd[..sp], cmd[sp + 1..].trim_start()))
+        }
+    }
+}
 
 pub fn install_cmd(_args: TelemetryHookInstallArgs) -> Result<()> {
     install_at(&settings_path()?)
@@ -53,11 +99,47 @@ pub fn settings_path() -> Result<PathBuf> {
 /// Absolute path to the currently-running hyprlayer binary, used as the
 /// hook command. Falls back to the bare name if `current_exe` fails
 /// (e.g. on a platform without /proc).
+///
+/// The path is shell-quoted so installations under directories with
+/// spaces (e.g. `C:\Program Files\…` on Windows or any spaced $HOME on
+/// Unix) produce a command the Claude Code shell parses as one argv[0].
 fn hook_command() -> String {
     match std::env::current_exe() {
-        Ok(p) => format!("{} telemetry record-from-hook", p.display()),
+        Ok(p) => format!(
+            "{} telemetry record-from-hook",
+            shell_quote(&p.display().to_string())
+        ),
         Err(_) => HOOK_COMMAND_SUFFIX.to_string(),
     }
+}
+
+/// Quote a single argv token for the shell that runs Claude Code hooks.
+///
+/// On Unix, hooks run via `/bin/sh -c`; we wrap in single quotes and
+/// escape any embedded `'` as the standard `'\''` dance.
+///
+/// On Windows, hooks run via `cmd.exe /c`; double quotes are sufficient
+/// because filesystem rules forbid `"` in paths, so a path can't break
+/// out of the quoted region. cmd.exe's metacharacters (`& | < > ^ %`)
+/// are inert inside double quotes.
+#[cfg(unix)]
+fn shell_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for ch in s.chars() {
+        if ch == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(ch);
+        }
+    }
+    out.push('\'');
+    out
+}
+
+#[cfg(windows)]
+fn shell_quote(s: &str) -> String {
+    format!("\"{s}\"")
 }
 
 pub fn install_at(path: &Path) -> Result<()> {
@@ -195,7 +277,7 @@ fn insert_hook(root: &mut Value, command: &str) -> Result<bool> {
             if existing == command {
                 return Ok(false);
             }
-            if existing.ends_with(HOOK_COMMAND_SUFFIX) {
+            if is_hyprlayer_hook(existing) {
                 handler["command"] = json!(command);
                 replaced_in_place = true;
             }
@@ -228,7 +310,7 @@ fn remove_hook(root: &mut Value) -> bool {
         arr.retain(|h| {
             h.get("command")
                 .and_then(Value::as_str)
-                .is_none_or(|c| !c.ends_with(HOOK_COMMAND_SUFFIX))
+                .is_none_or(|c| !is_hyprlayer_hook(c))
         });
         if arr.len() != before {
             changed = true;
@@ -261,7 +343,7 @@ fn has_hook(root: &Value) -> bool {
             arr.iter().any(|h| {
                 h.get("command")
                     .and_then(Value::as_str)
-                    .is_some_and(|c| c.ends_with(HOOK_COMMAND_SUFFIX))
+                    .is_some_and(is_hyprlayer_hook)
             })
         })
     })
@@ -496,6 +578,119 @@ mod tests {
     fn is_installed_returns_false_for_missing_file() {
         let dir = tempdir().unwrap();
         assert!(!is_installed_at(&dir.path().join("nope.json")));
+    }
+
+    #[test]
+    fn is_hyprlayer_hook_recognizes_every_install_format() {
+        assert!(is_hyprlayer_hook("hyprlayer telemetry record-from-hook"));
+        assert!(is_hyprlayer_hook(
+            "/usr/local/bin/hyprlayer telemetry record-from-hook"
+        ));
+        assert!(is_hyprlayer_hook(
+            "'/Users/jt/Some User/hyprlayer' telemetry record-from-hook"
+        ));
+        assert!(is_hyprlayer_hook(
+            r#""C:\Program Files\hyprlayer\hyprlayer.exe" telemetry record-from-hook"#
+        ));
+    }
+
+    #[test]
+    fn is_hyprlayer_hook_rejects_unrelated_commands() {
+        assert!(!is_hyprlayer_hook("/usr/bin/lint"));
+        assert!(!is_hyprlayer_hook("hyprlayer telemetry flush"));
+        assert!(!is_hyprlayer_hook(
+            "/path/to/other-tool telemetry record-from-hook"
+        ));
+    }
+
+    #[test]
+    fn is_hyprlayer_hook_rejects_user_wrappers_with_hyprlayer_in_path() {
+        // Regression: previous loose `contains("hyprlayer")` check
+        // would clobber any user hook whose path mentioned hyprlayer.
+        assert!(!is_hyprlayer_hook(
+            "/opt/hyprlayer-tools/custom telemetry record-from-hook"
+        ));
+        assert!(!is_hyprlayer_hook(
+            "/usr/local/bin/myhyprlayer telemetry record-from-hook"
+        ));
+        assert!(!is_hyprlayer_hook(
+            "/usr/local/bin/hyprlayer-extra telemetry record-from-hook"
+        ));
+    }
+
+    #[test]
+    fn is_hyprlayer_hook_rejects_extra_args_or_wrong_subcommand() {
+        assert!(!is_hyprlayer_hook(
+            "/usr/local/bin/hyprlayer telemetry record-from-hook --debug"
+        ));
+        assert!(!is_hyprlayer_hook("/usr/local/bin/hyprlayer telemetry on"));
+        assert!(!is_hyprlayer_hook("/usr/local/bin/hyprlayer"));
+    }
+
+    #[test]
+    fn split_argv0_handles_every_quoting_style() {
+        assert_eq!(
+            split_argv0("hyprlayer telemetry record-from-hook"),
+            Some(("hyprlayer", "telemetry record-from-hook"))
+        );
+        assert_eq!(
+            split_argv0("/abs/hyprlayer telemetry record-from-hook"),
+            Some(("/abs/hyprlayer", "telemetry record-from-hook"))
+        );
+        assert_eq!(
+            split_argv0("'/with space/hyprlayer' telemetry record-from-hook"),
+            Some(("/with space/hyprlayer", "telemetry record-from-hook"))
+        );
+        assert_eq!(
+            split_argv0(r#""C:\Program Files\hyprlayer.exe" telemetry record-from-hook"#),
+            Some((
+                r"C:\Program Files\hyprlayer.exe",
+                "telemetry record-from-hook"
+            ))
+        );
+        assert_eq!(split_argv0(""), None);
+        assert_eq!(split_argv0("'unterminated telemetry"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shell_quote_wraps_path_with_spaces_in_single_quotes() {
+        assert_eq!(
+            shell_quote("/Users/Some User/hyprlayer"),
+            "'/Users/Some User/hyprlayer'"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shell_quote_escapes_embedded_single_quote() {
+        assert_eq!(
+            shell_quote("/path/o'malley/bin"),
+            "'/path/o'\\''malley/bin'"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hook_command_quotes_path_with_spaces() {
+        // Smoke test — the helper must produce something the shell can
+        // parse into our suffix as a single argv[0].
+        let cmd = hook_command();
+        assert!(cmd.ends_with(" telemetry record-from-hook"), "{cmd}");
+        if let Ok(exe) = std::env::current_exe()
+            && exe.display().to_string().contains(' ')
+        {
+            assert!(cmd.starts_with('\''), "spaced path must be quoted: {cmd}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn shell_quote_wraps_windows_path_in_double_quotes() {
+        assert_eq!(
+            shell_quote(r"C:\Program Files\hyprlayer\hyprlayer.exe"),
+            r#""C:\Program Files\hyprlayer\hyprlayer.exe""#
+        );
     }
 
     #[test]

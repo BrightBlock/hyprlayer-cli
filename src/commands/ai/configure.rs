@@ -28,7 +28,7 @@ pub fn configure(args: AiConfigureArgs) -> Result<()> {
             let sha = agent.install(opencode_provider.as_ref(), false)?;
             record_install(&mut hyprlayer_config, &config_path, sha)?;
             lifecycle::apply_side_effects(&mut hyprlayer_config, &config_path)?;
-            install_claude_hook_if_applicable(agent);
+            install_claude_hook_if_applicable(agent, &hyprlayer_config);
             return Ok(());
         }
         return Err(anyhow::anyhow!(
@@ -69,7 +69,7 @@ pub fn configure(args: AiConfigureArgs) -> Result<()> {
     record_install(&mut hyprlayer_config, &config_path, sha)?;
 
     lifecycle::apply_side_effects(&mut hyprlayer_config, &config_path)?;
-    install_claude_hook_if_applicable(agent_tool);
+    install_claude_hook_if_applicable(agent_tool, &hyprlayer_config);
     Ok(())
 }
 
