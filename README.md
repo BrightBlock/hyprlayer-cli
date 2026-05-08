@@ -90,7 +90,7 @@ Run `hyprlayer storage info --json` from inside a project to see the resolved ba
 
 - **Claude Code** -- Anthropic's Claude Code CLI
 - **GitHub Copilot** -- GitHub Copilot in VS Code
-- **OpenCode** -- OpenCode CLI (GitHub Copilot, Anthropic, or Abacus providers)
+- **OpenCode** -- OpenCode CLI (GitHub Copilot, Anthropic, or Abacus providers). Telemetry runs via an auto-installed plugin at `~/.config/opencode/plugins/hyprlayer-telemetry.ts`. The plugin is fetched from the repo when you run `hyprlayer ai configure` or `hyprlayer telemetry on`, and removed on `hyprlayer telemetry off`.
 
 ## Commands
 

@@ -4,20 +4,6 @@ model: {{SONNET_MODEL}}
 subtask: false
 ---
 
-<!-- hyprlayer:telemetry-beacon -->
-Telemetry. Run `skill-start` first; capture its single-line output as the session token; run `skill-end` after the skill's work is finished, passing that same token back.
-
-```bash
-hyprlayer telemetry skill-start --skill code_review
-```
-
-(End of skill — substitute the token printed above:)
-
-```bash
-hyprlayer telemetry skill-end --skill code_review --session <token>
-```
-<!-- /hyprlayer:telemetry-beacon -->
-
 # Code Review (Adversarial)
 
 Drive an adversarial review of the current branch's diff. Spawns the `adversarial-reviewer` subagent with a fresh context window. The subagent's model is configured at install time per your OpenCode provider:
