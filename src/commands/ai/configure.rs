@@ -3,7 +3,9 @@ use dialoguer::{Select, theme::ColorfulTheme};
 
 use crate::agents::{AgentTool, OpenCodeProvider};
 use crate::cli::AiConfigureArgs;
-use crate::commands::ai::{install_claude_hook_if_applicable, record_install};
+use crate::commands::ai::{
+    install_claude_hook_if_applicable, install_opencode_plugin_if_applicable, record_install,
+};
 use crate::telemetry::lifecycle;
 
 pub fn configure(args: AiConfigureArgs) -> Result<()> {
@@ -29,6 +31,7 @@ pub fn configure(args: AiConfigureArgs) -> Result<()> {
             record_install(&mut hyprlayer_config, &config_path, sha)?;
             lifecycle::apply_side_effects(&mut hyprlayer_config, &config_path)?;
             install_claude_hook_if_applicable(agent, &hyprlayer_config);
+            install_opencode_plugin_if_applicable(agent, &hyprlayer_config);
             return Ok(());
         }
         return Err(anyhow::anyhow!(
@@ -70,6 +73,7 @@ pub fn configure(args: AiConfigureArgs) -> Result<()> {
 
     lifecycle::apply_side_effects(&mut hyprlayer_config, &config_path)?;
     install_claude_hook_if_applicable(agent_tool, &hyprlayer_config);
+    install_opencode_plugin_if_applicable(agent_tool, &hyprlayer_config);
     Ok(())
 }
 

@@ -1,7 +1,9 @@
 use anyhow::Result;
 
 use crate::cli::AiReinstallArgs;
-use crate::commands::ai::{install_claude_hook_if_applicable, record_install};
+use crate::commands::ai::{
+    install_claude_hook_if_applicable, install_opencode_plugin_if_applicable, record_install,
+};
 
 pub fn reinstall(args: AiReinstallArgs) -> Result<()> {
     let AiReinstallArgs { config } = args;
@@ -24,6 +26,7 @@ pub fn reinstall(args: AiReinstallArgs) -> Result<()> {
     let sha = agent_tool.install(opencode_provider.as_ref(), false)?;
     record_install(&mut hyprlayer_config, &config_path, sha)?;
     install_claude_hook_if_applicable(agent_tool, &hyprlayer_config);
+    install_opencode_plugin_if_applicable(agent_tool, &hyprlayer_config);
 
     Ok(())
 }

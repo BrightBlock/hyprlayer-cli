@@ -4,6 +4,7 @@ pub mod hook;
 pub mod init;
 pub mod off;
 pub mod on;
+pub mod opencode_plugin;
 pub mod purge;
 pub mod record_from_hook;
 pub mod skill_end;
