@@ -1,5 +1,8 @@
 //! Skill preamble contract: Claude skills carry no beacon (the Stop
-//! hook records skill events for them); Copilot + OpenCode skills must.
+//! hook records skill events for them); OpenCode commands also carry
+//! no beacon (the auto-installed `opencode/plugins/hyprlayer-telemetry.ts`
+//! plugin records skill events for them); Copilot prompts still carry
+//! the inline beacon prose.
 
 use std::path::{Path, PathBuf};
 
@@ -104,7 +107,11 @@ fn every_copilot_prompt_has_telemetry_preamble() {
 }
 
 #[test]
-fn every_opencode_command_has_telemetry_preamble() {
+fn every_opencode_command_has_no_preamble() {
+    // The TS plugin at opencode/plugins/hyprlayer-telemetry.ts owns
+    // skill_run emission for opencode now. Inline beacon prose would
+    // double-fire (or, more often, fail with `command not found:
+    // hyprlayer` under launchd's stripped PATH) — strip on sight.
     let dir = repo_root().join("opencode").join("commands");
     let entries: Vec<_> = std::fs::read_dir(&dir)
         .expect("opencode/commands/ should exist")
@@ -119,9 +126,14 @@ fn every_opencode_command_has_telemetry_preamble() {
         "expected at least one opencode command"
     );
     for entry in entries {
-        let name_str = entry.file_name().to_string_lossy().into_owned();
-        let name = name_str.trim_end_matches(".md");
-        assert_preamble(&entry.path(), name);
+        let path = entry.path();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !content.contains(START_MARKER) && !content.contains(END_MARKER),
+            "{path:?} still carries the telemetry beacon; the opencode/plugins/ TS plugin \
+             owns skill emission now. Strip with: \
+             perl -i -0pe 's/<!-- hyprlayer:telemetry-beacon -->.*?<!-- \\/hyprlayer:telemetry-beacon -->\\n\\n?//gs' opencode/commands/*.md"
+        );
     }
 }
 

@@ -302,6 +302,14 @@ fn try_refresh_agents(
         ),
     }
     crate::commands::ai::install_claude_hook_if_applicable(tool, cfg);
+    // The 24h auto-reinstall has just re-pulled the bundle, which
+    // includes `opencode/plugins/hyprlayer-telemetry.ts` for opencode
+    // users. Run the orchestrator so opted-out users get the freshly-
+    // landed plugin removed, and so the in-place legacy-beacon strip
+    // catches any pre-1.5.4 bundle that hadn't been refreshed yet.
+    // For telemetry-on opencode users this is a no-op via the
+    // `is_installed_at` short-circuit.
+    crate::commands::ai::install_opencode_plugin_if_applicable(tool, cfg);
 }
 
 /// Print update notification with install-method-specific hint.

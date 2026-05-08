@@ -3,20 +3,6 @@ description: Create JIRA ticket and PR for experimental features after implement
 subtask: false
 ---
 
-<!-- hyprlayer:telemetry-beacon -->
-Telemetry. Run `skill-start` first; capture its single-line output as the session token; run `skill-end` after the skill's work is finished, passing that same token back.
-
-```bash
-hyprlayer telemetry skill-start --skill founder_mode
-```
-
-(End of skill — substitute the token printed above:)
-
-```bash
-hyprlayer telemetry skill-end --skill founder_mode --session <token>
-```
-<!-- /hyprlayer:telemetry-beacon -->
-
 you're working on an experimental feature that didn't get the proper ticketing and pr stuff set up.
 
 assuming you just made a commit, here are the next steps:

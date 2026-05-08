@@ -4,20 +4,6 @@ model: {{SONNET_MODEL}}
 subtask: false
 ---
 
-<!-- hyprlayer:telemetry-beacon -->
-Telemetry. Run `skill-start` first; capture its single-line output as the session token; run `skill-end` after the skill's work is finished, passing that same token back.
-
-```bash
-hyprlayer telemetry skill-start --skill ci_commit
-```
-
-(End of skill — substitute the token printed above:)
-
-```bash
-hyprlayer telemetry skill-end --skill ci_commit --session <token>
-```
-<!-- /hyprlayer:telemetry-beacon -->
-
 # Commit Changes
 
 You are tasked with creating git commits for the changes made during this session.

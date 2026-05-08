@@ -109,7 +109,7 @@ impl AgentTool {
         }
     }
 
-    fn dest_dir(&self) -> Result<PathBuf> {
+    pub(crate) fn dest_dir(&self) -> Result<PathBuf> {
         match self {
             Self::Claude => {
                 let home = dirs::home_dir()
@@ -454,6 +454,32 @@ pub(crate) fn curl_get_json(url: &str, timeout_secs: Option<u32>) -> Result<Stri
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Download a single file from the repo to `dest`. Pinned to the latest
+/// commit on `repo_path` (or to `BRANCH` if the SHA fetch fails).
+///
+/// Used by the opencode plugin install path to restore the plugin file
+/// after `telemetry off → on` without re-pulling the entire opencode/
+/// bundle. `download_directory` already pins itself across an
+/// install; this helper keeps single-file fetches on the same SHA-pin
+/// contract so a mid-fetch `master` advance can't deliver a file that
+/// references symbols not yet in the cached bundle.
+pub(crate) fn download_repo_file(repo_path: &str, dest: &Path) -> Result<()> {
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let sha = fetch_repo_dir_sha(repo_path).ok();
+    let git_ref = sha.as_deref().unwrap_or(BRANCH);
+    let url = raw_github_url(repo_path, git_ref);
+    curl_download_file(&url, dest)
+}
+
+/// Build the raw.githubusercontent.com URL for a repo file at a given
+/// commit SHA or branch ref. Factored out so URL construction is unit-
+/// testable without touching the network.
+fn raw_github_url(repo_path: &str, git_ref: &str) -> String {
+    format!("https://raw.githubusercontent.com/{REPO}/{git_ref}/{repo_path}")
 }
 
 /// Download a single file to disk.
@@ -1073,6 +1099,35 @@ mod tests {
         }
 
         fs::remove_dir_all(&temp_root).ok();
+    }
+
+    #[test]
+    fn raw_github_url_pins_to_sha_when_provided() {
+        let url = raw_github_url("opencode/plugins/hyprlayer-telemetry.ts", "abc123def456");
+        assert!(url.contains("/abc123def456/"), "missing SHA pin: {url}");
+        assert!(
+            url.starts_with("https://raw.githubusercontent.com/"),
+            "wrong host: {url}"
+        );
+        assert!(url.contains(REPO), "missing repo slug: {url}");
+    }
+
+    #[test]
+    fn raw_github_url_falls_back_to_branch() {
+        let url = raw_github_url("opencode/plugins/hyprlayer-telemetry.ts", BRANCH);
+        assert!(
+            url.contains(&format!("/{BRANCH}/")),
+            "missing branch ref: {url}"
+        );
+    }
+
+    #[test]
+    fn raw_github_url_includes_repo_path() {
+        let url = raw_github_url("opencode/plugins/hyprlayer-telemetry.ts", "deadbeef");
+        assert!(
+            url.ends_with("/opencode/plugins/hyprlayer-telemetry.ts"),
+            "wrong tail: {url}"
+        );
     }
 
     #[test]

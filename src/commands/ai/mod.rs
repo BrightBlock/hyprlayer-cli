@@ -7,6 +7,7 @@ use std::path::Path;
 
 use crate::agents::AgentTool;
 use crate::commands::telemetry::hook as telemetry_hook;
+use crate::commands::telemetry::opencode_plugin;
 use crate::config::HyprlayerConfig;
 use crate::telemetry;
 
@@ -92,6 +93,45 @@ pub(crate) fn install_claude_hook_if_applicable(agent: AgentTool, config: &Hyprl
     }
 }
 
+/// OpenCode equivalent of `should_install_hook`. The TS plugin only
+/// earns its keep on opencode + telemetry-recording — opted-out users
+/// would just pay an `execFile` per turn for `skill-end` to early-
+/// return on `is_recording()`. Mirrors the Claude reasoning at
+/// `src/commands/telemetry/off.rs` for the uninstall-on-opt-out path.
+fn should_install_opencode_plugin(agent: AgentTool, config: &HyprlayerConfig) -> bool {
+    agent == AgentTool::OpenCode && config.telemetry.is_recording()
+}
+
+/// On an OpenCode install with telemetry enabled, ensure the plugin
+/// file at `~/.config/opencode/plugins/hyprlayer-telemetry.ts` is
+/// present; otherwise scrub any prior file so a switch-away or opt-out
+/// stops the per-turn process spawn. The `is_installed_at` short-
+/// circuit avoids a redundant single-file fetch in the `ai configure`
+/// happy path where `download_directory` already pulled the plugin as
+/// part of the bulk opencode bundle. Failure is non-fatal (one-line
+/// stderr warning).
+pub(crate) fn install_opencode_plugin_if_applicable(agent: AgentTool, config: &HyprlayerConfig) {
+    let Ok(path) = opencode_plugin::install_path() else {
+        return;
+    };
+    let result = if should_install_opencode_plugin(agent, config) {
+        if opencode_plugin::is_installed_at(&path) {
+            Ok(())
+        } else {
+            opencode_plugin::install_at(&path)
+        }
+    } else {
+        opencode_plugin::uninstall_at(&path)
+    };
+    if let Err(e) = result {
+        eprintln!(
+            "warning: could not update OpenCode telemetry plugin at {}: {}",
+            path.display(),
+            e
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,6 +144,21 @@ mod tests {
         HyprlayerConfig {
             ai: Some(AiConfig {
                 agent_tool: Some(AgentTool::Claude),
+                ..Default::default()
+            }),
+            telemetry: TelemetryConfig {
+                mode: TelemetryMode::Anonymous,
+                installation_id: Some("install-uuid".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn cfg_recording_with_opencode() -> HyprlayerConfig {
+        HyprlayerConfig {
+            ai: Some(AiConfig {
+                agent_tool: Some(AgentTool::OpenCode),
                 ..Default::default()
             }),
             telemetry: TelemetryConfig {
@@ -140,6 +195,33 @@ mod tests {
         let mut cfg = cfg_recording_with_claude();
         cfg.telemetry.installation_id = None;
         assert!(!should_install_hook(AgentTool::Claude, &cfg));
+    }
+
+    #[test]
+    fn should_install_opencode_plugin_only_when_opencode_and_recording() {
+        let cfg = cfg_recording_with_opencode();
+        assert!(should_install_opencode_plugin(AgentTool::OpenCode, &cfg));
+    }
+
+    #[test]
+    fn should_not_install_opencode_plugin_when_telemetry_off() {
+        let mut cfg = cfg_recording_with_opencode();
+        cfg.telemetry.mode = TelemetryMode::Off;
+        assert!(!should_install_opencode_plugin(AgentTool::OpenCode, &cfg));
+    }
+
+    #[test]
+    fn should_not_install_opencode_plugin_for_non_opencode_agent() {
+        let cfg = cfg_recording_with_opencode();
+        assert!(!should_install_opencode_plugin(AgentTool::Claude, &cfg));
+        assert!(!should_install_opencode_plugin(AgentTool::Copilot, &cfg));
+    }
+
+    #[test]
+    fn should_not_install_opencode_plugin_without_installation_id() {
+        let mut cfg = cfg_recording_with_opencode();
+        cfg.telemetry.installation_id = None;
+        assert!(!should_install_opencode_plugin(AgentTool::OpenCode, &cfg));
     }
 
     #[test]
