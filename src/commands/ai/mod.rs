@@ -118,15 +118,6 @@ pub(crate) fn install_opencode_plugin_if_applicable(agent: AgentTool, config: &H
         if opencode_plugin::is_installed_at(&path) {
             Ok(())
         } else {
-            // Targeted-install path (e.g. `telemetry on` after `off`).
-            // Strip pre-1.5.4 inline beacons in-place before the
-            // plugin takes over emission, otherwise double-fire on
-            // platforms with healthy PATH. Bulk-install paths
-            // (configure / reinstall / 24h auto-refresh) hit the
-            // short-circuit above because download_directory has
-            // already pulled the plugin alongside the stripped
-            // commands — the strip would be redundant work there.
-            opencode_plugin::strip_legacy_beacons_in_commands_dir();
             opencode_plugin::install_at(&path)
         }
     } else {
