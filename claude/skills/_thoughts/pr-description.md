@@ -48,5 +48,5 @@ Do not duplicate metadata as a body header block — it rides as typed propertie
    - On `obsidian`: the scratch file IS the record; skip the sync.
    - On `notion`: also create or update the database row.
    - On `anytype`: also create or update the object.
-5. **Update the PR** with `gh pr edit {number} --body-file <scratch-file>`.
-6. **Promote and clean up** on `notion`/`anytype`: bump the record's `status` from `draft` to `active`, then delete the `/tmp` scratch file.
+5. **Update the PR** with `gh pr edit {number} --body-file <scratch-file>`. Confirm the command exited 0 before proceeding; transient failures like TLS timeouts are common, so retry up to twice with a short delay if it errors. If `gh pr edit` ultimately fails, halt — do not run step 6.
+6. **Promote and clean up** on `notion`/`anytype`, **only after step 5 succeeded**: bump the record's `status` from `draft` to `active`, then delete the `/tmp` scratch file. Doing this without step 5 confirmed leaves a `status: active` record advertising a synced PR while the body is still the placeholder.
