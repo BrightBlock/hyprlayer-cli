@@ -2,3 +2,6 @@
 /logs
 /tools
 /dashboards
+
+# Local Claude Code state — settings, worktrees, etc. Never committed.
+.claude/

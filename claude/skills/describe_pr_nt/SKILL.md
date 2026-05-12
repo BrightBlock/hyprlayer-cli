@@ -1,6 +1,6 @@
 ---
 name: describe_pr_nt
-description: Generate comprehensive PR descriptions using a built-in template, no-thoughts variant (writes to /tmp instead of thoughts/shared/prs). Use when the user asks to describe a PR in a repo without a thoughts/shared/pr_description.md template.
+description: Generate comprehensive PR descriptions using a built-in template, no-thoughts variant (writes to the OS temp directory instead of thoughts/shared/prs). Use when the user asks to describe a PR in a repo without a thoughts/shared/pr_description.md template.
 allowed-tools: Bash, Read
 ---
 
@@ -36,7 +36,7 @@ You are tasked with generating a comprehensive pull request description followin
    - Ask the user which PR they want to describe
 
 3. **Check for existing description:**
-   - Check if `/tmp/{repo_name}/prs/{number}_description.md` already exists
+   - Check if `${TMPDIR:-${TEMP:-/tmp}}/{repo_name}/prs/{number}_description.md` already exists
    - If it exists, read it and inform the user you'll be updating it
    - Consider what has changed since the last description was written
 
@@ -73,11 +73,11 @@ You are tasked with generating a comprehensive pull request description followin
    - Ensure all checklist items are addressed (checked or explained)
 
 8. **Save and sync the description:**
-   - Write the completed description to `/tmp/{repo_name}/prs/{number}_description.md`
+   - Write the completed description to `${TMPDIR:-${TEMP:-/tmp}}/{repo_name}/prs/{number}_description.md`
    - Show the user the generated description
 
 9. **Update the PR:**
-   - Update the PR description directly: `gh pr edit {number} --body-file /tmp/{repo_name}/prs/{number}_description.md`
+   - Update the PR description directly: `gh pr edit {number} --body-file "${TMPDIR:-${TEMP:-/tmp}}/{repo_name}/prs/{number}_description.md"`
    - Confirm the update was successful
    - If any verification steps remain unchecked, remind the user to complete them before merging
 
