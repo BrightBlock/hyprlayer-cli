@@ -35,15 +35,20 @@ pub fn write_opted_in_config(xdg: &Path) {
 }
 
 pub fn write_opted_out_config(xdg: &Path) {
+    // `installationId` makes auto-enroll see this as sticky-off
+    // (explicit `telemetry off`) rather than a pristine install.
     write_config(
         xdg,
         serde_json::json!({
             "version": 4,
             "telemetry": {
                 "mode": "off",
+                "installationId": "deadbeef-dead-beef-dead-beefdeadbeef",
+                "deviceSalt": "00000000000000000000000000000000",
                 "apiKeySource": "default",
                 "lastFlush": 0,
                 "lastConfigRefresh": 0,
+                "lastEnrollmentCheck": 9_999_999_999u64,
             }
         }),
     );

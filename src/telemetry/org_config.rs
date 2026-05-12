@@ -49,6 +49,11 @@ pub fn discover_github_remote(thoughts_repo_path: &Path) -> Option<(String, Stri
     parse_github_owner_repo(&url)
 }
 
+pub fn discover_github_owner_repo(thoughts_repo_path: &Path) -> Option<String> {
+    let (owner, repo) = discover_github_remote(thoughts_repo_path)?;
+    Some(format!("{owner}/{repo}"))
+}
+
 /// `gh -R <owner/repo> variable get <name>`. Returns the stdout (trimmed,
 /// non-empty), or `None` on any failure path.
 pub fn fetch_variable(owner_repo: &str, name: &str) -> Option<String> {

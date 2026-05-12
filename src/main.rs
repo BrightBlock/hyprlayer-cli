@@ -55,6 +55,17 @@ fn main() -> Result<()> {
         record_dispatch_event(cmd_name, started, &result, config_path.as_deref());
     }
 
+    // Exit 2 (not anyhow's default 1) gives org CI a stable signal
+    // for blocked telemetry mutations.
+    if let Err(err) = &result
+        && err
+            .downcast_ref::<telemetry::lifecycle::LockedError>()
+            .is_some()
+    {
+        eprintln!("{err}");
+        std::process::exit(2);
+    }
+
     result
 }
 

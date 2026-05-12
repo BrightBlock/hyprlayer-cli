@@ -89,8 +89,7 @@ Run `hyprlayer storage info --json` from inside a project to see the resolved ba
 ## Supported AI Tools
 
 - **Claude Code** -- Anthropic's Claude Code CLI
-- **GitHub Copilot** -- GitHub Copilot in VS Code
-- **OpenCode** -- OpenCode CLI (GitHub Copilot, Anthropic, or Abacus providers). Telemetry runs via an auto-installed plugin at `~/.config/opencode/plugins/hyprlayer-telemetry.ts`. The plugin is fetched from the repo when you run `hyprlayer ai configure` or `hyprlayer telemetry on`, and removed on `hyprlayer telemetry off`.
+- **OpenCode** -- OpenCode CLI (GitHub Copilot, Anthropic, or Abacus providers).
 
 ## Commands
 
@@ -111,6 +110,18 @@ Run `hyprlayer storage info --json` from inside a project to see the resolved ba
 | [`/cost_estimate`](https://brightblock.ai/hyprlayer/commands/cost-estimate/) | Estimate development costs |
 
 Most commands have [`_nt` and `_generic` variants](https://brightblock.ai/hyprlayer/reference/variants/).
+
+## Telemetry
+
+Hyprlayer records anonymized usage metrics by default so we can prioritize features and catch regressions. No personally identifiable information is collected.
+
+### Opt out
+
+```bash
+hyprlayer telemetry off
+```
+
+Re-enable later with `hyprlayer telemetry on`.
 
 ## Development
 
