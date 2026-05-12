@@ -27,6 +27,10 @@ pub fn config(args: TelemetryConfigArgs) -> Result<()> {
         return Ok(());
     }
 
+    if cfg.telemetry.is_locked() && (api_key.is_some() || reset) {
+        return Err(cfg.telemetry.locked_error());
+    }
+
     if reset {
         cfg.telemetry.api_key = None;
         cfg.telemetry.api_key_source = KeySource::Default;
@@ -51,13 +55,7 @@ pub fn config(args: TelemetryConfigArgs) -> Result<()> {
 }
 
 /// Force-pull HYPRLAYER_TELEMETRY_KEY / HYPRLAYER_ORG_ID from the thoughts
-/// repo on GitHub. Differs from the auto-lifecycle refresh by printing
-/// friendly diagnostics for every refusal path and demoting a stale
-/// `Github` source back to `Default` when the org's variable has been
-/// removed (so a rotated/removed org key auto-falls-back to community).
-///
-/// Refuses to run while telemetry is off — `gh`/`git` are exec surfaces
-/// we promised the user we wouldn't touch until they explicitly opt in.
+/// repo on GitHub.
 fn run_refresh(cfg: &mut HyprlayerConfig, config_path: &std::path::Path) -> Result<()> {
     if cfg.telemetry.mode == TelemetryMode::Off {
         eprintln!(
@@ -88,20 +86,16 @@ fn run_refresh(cfg: &mut HyprlayerConfig, config_path: &std::path::Path) -> Resu
     if let Some(key) = org_config::fetch_telemetry_key(&owner_repo) {
         cfg.telemetry.api_key = Some(key);
         cfg.telemetry.api_key_source = KeySource::Github;
-    } else {
-        cfg.telemetry.api_key = None;
-        if cfg.telemetry.api_key_source == KeySource::Github {
-            cfg.telemetry.api_key_source = KeySource::Default;
+        // Refresh org tag only while the org-managed key is in effect.
+        if let Some(org) = org_config::fetch_org_id(&owner_repo) {
+            cfg.telemetry.org_id = Some(org);
         }
-    }
-    if let Some(org) = org_config::fetch_org_id(&owner_repo) {
-        cfg.telemetry.org_id = Some(org);
+    } else {
+        release_lock(cfg);
     }
     cfg.telemetry.last_config_refresh = unix_now();
     let mode_elevated = auto_elevate_if_org_keyed(cfg);
-    // Save before spool: if save fails, we must not leave behind an
-    // `$identify` event linking installation_id to user_id while the
-    // on-disk config still says anonymous.
+
     cfg.save(config_path)?;
     if mode_elevated {
         let _ = identify::record_identify(cfg);
@@ -109,26 +103,30 @@ fn run_refresh(cfg: &mut HyprlayerConfig, config_path: &std::path::Path) -> Resu
     Ok(())
 }
 
-/// Drop a previously-fetched `Github` key + demote source to `Default`
-/// when the thoughts repo can no longer serve as the org-config source
-/// (no git backend, or origin no longer GitHub). Without this the user
-/// stays on stale org credentials indefinitely after migrating their
-/// thoughts repo away from GitHub.
 fn demote_stale_github_key(cfg: &mut HyprlayerConfig, config_path: &std::path::Path) -> Result<()> {
     if cfg.telemetry.api_key_source != KeySource::Github {
         return Ok(());
     }
-    cfg.telemetry.api_key = None;
-    cfg.telemetry.api_key_source = KeySource::Default;
-    cfg.telemetry.last_config_refresh = unix_now();
+    release_lock(cfg);
     cfg.save(config_path)?;
     Ok(())
+}
+
+fn release_lock(cfg: &mut HyprlayerConfig) {
+    cfg.telemetry.api_key = None;
+    cfg.telemetry.api_key_source = KeySource::Default;
+    cfg.telemetry.org_id = None;
+    if cfg.telemetry.mode == TelemetryMode::Identified {
+        cfg.telemetry.mode = TelemetryMode::Anonymous;
+    }
+    cfg.telemetry.last_config_refresh = unix_now();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::TelemetryConfig;
+    use crate::telemetry::lifecycle::LockedError;
     use tempfile::tempdir;
 
     fn cfg_with_github_key() -> HyprlayerConfig {
@@ -156,9 +154,40 @@ mod tests {
 
         assert!(cfg.telemetry.api_key.is_none());
         assert_eq!(cfg.telemetry.api_key_source, KeySource::Default);
+        assert!(cfg.telemetry.org_id.is_none(), "stale org_id must clear");
         let reloaded = HyprlayerConfig::load(&path).unwrap();
         assert!(reloaded.telemetry.api_key.is_none());
         assert_eq!(reloaded.telemetry.api_key_source, KeySource::Default);
+        assert!(reloaded.telemetry.org_id.is_none());
+    }
+
+    #[test]
+    fn release_lock_demotes_identified_to_anonymous() {
+        let mut cfg = locked_cfg();
+        release_lock(&mut cfg);
+        assert_eq!(cfg.telemetry.mode, TelemetryMode::Anonymous);
+        assert_eq!(cfg.telemetry.api_key_source, KeySource::Default);
+        assert!(cfg.telemetry.api_key.is_none());
+        assert!(cfg.telemetry.org_id.is_none());
+    }
+
+    /// Release must demote, never promote: an `Anonymous`+Github
+    /// cached state (rare — explicit `init --mode anonymous` before
+    /// the lock landed) stays Anonymous.
+    #[test]
+    fn release_lock_preserves_non_identified_mode() {
+        let mut cfg = HyprlayerConfig {
+            telemetry: TelemetryConfig {
+                mode: TelemetryMode::Anonymous,
+                installation_id: Some("id".into()),
+                api_key: Some("phc_corp".into()),
+                api_key_source: KeySource::Github,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        release_lock(&mut cfg);
+        assert_eq!(cfg.telemetry.mode, TelemetryMode::Anonymous);
     }
 
     #[test]
@@ -180,6 +209,101 @@ mod tests {
         demote_stale_github_key(&mut cfg, &path).unwrap();
         assert_eq!(cfg.telemetry.api_key_source, KeySource::Default);
         assert_eq!(cfg.telemetry.last_config_refresh, 12345);
+    }
+
+    fn locked_cfg() -> HyprlayerConfig {
+        HyprlayerConfig {
+            telemetry: TelemetryConfig {
+                mode: TelemetryMode::Identified,
+                installation_id: Some("id".into()),
+                api_key: Some("phc_corp".into()),
+                api_key_source: KeySource::Github,
+                org_id: Some("acme".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn build_args(
+        path: &std::path::Path,
+        api_key: Option<&str>,
+        org_id: Option<&str>,
+        reset: bool,
+        refresh: bool,
+    ) -> TelemetryConfigArgs {
+        TelemetryConfigArgs {
+            api_key: api_key.map(str::to_string),
+            org_id: org_id.map(str::to_string),
+            reset,
+            refresh,
+            show: false,
+            config: crate::cli::ConfigArgs {
+                config_file: Some(path.to_string_lossy().into_owned()),
+            },
+        }
+    }
+
+    #[test]
+    fn config_refuses_api_key_override_when_locked() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        locked_cfg().save(&path).unwrap();
+
+        let err = config(build_args(&path, Some("phc_attacker"), None, false, false))
+            .expect_err("expected locked refusal");
+        assert!(
+            err.downcast_ref::<LockedError>().is_some(),
+            "expected LockedError"
+        );
+
+        let reloaded = HyprlayerConfig::load(&path).unwrap();
+        assert_eq!(reloaded.telemetry.api_key.as_deref(), Some("phc_corp"));
+        assert_eq!(reloaded.telemetry.api_key_source, KeySource::Github);
+    }
+
+    #[test]
+    fn config_refuses_reset_when_locked() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        locked_cfg().save(&path).unwrap();
+
+        let err = config(build_args(&path, None, None, true, false))
+            .expect_err("expected locked refusal");
+        assert!(err.downcast_ref::<LockedError>().is_some());
+
+        let reloaded = HyprlayerConfig::load(&path).unwrap();
+        assert_eq!(reloaded.telemetry.api_key.as_deref(), Some("phc_corp"));
+    }
+
+    #[test]
+    fn config_org_id_alone_passes_when_locked() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        locked_cfg().save(&path).unwrap();
+
+        config(build_args(&path, None, Some("acme-2"), false, false))
+            .expect("--org-id alone must not trigger the lock");
+        let reloaded = HyprlayerConfig::load(&path).unwrap();
+        assert_eq!(reloaded.telemetry.org_id.as_deref(), Some("acme-2"));
+        assert_eq!(reloaded.telemetry.api_key_source, KeySource::Github);
+        assert_eq!(reloaded.telemetry.api_key.as_deref(), Some("phc_corp"));
+    }
+
+    /// `--refresh` is the org's release path and must NOT be blocked.
+    /// `NoBackend` short-circuits the gh shellout in this unit test;
+    /// we're only asserting the lock guard didn't fire.
+    #[test]
+    fn config_refresh_not_blocked_by_lock() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        locked_cfg().save(&path).unwrap();
+
+        let result = config(build_args(&path, None, None, false, true));
+        assert!(
+            result.is_ok(),
+            "refresh must not be lock-blocked: {result:?}"
+        );
     }
 
     #[test]

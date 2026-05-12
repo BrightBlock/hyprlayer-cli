@@ -1,17 +1,3 @@
-//! Lifecycle hooks for telemetry, called from `hyprlayer ai configure`,
-//! `hyprlayer thoughts init`, and the once-per-day startup background
-//! pass. These are best-effort side effects against an *already-enrolled*
-//! installation — they do not opt the user in.
-//!
-//! Enrollment lives in the explicit `telemetry on` / `telemetry init`
-//! commands. A user who has never run those keeps `mode == Off` and
-//! `installation_id == None`; lifecycle hooks short-circuit and do
-//! nothing. Once they opt in, lifecycle calls run `refresh_org_config` to
-//! pick up `HYPRLAYER_TELEMETRY_KEY` / `HYPRLAYER_ORG_ID` from the
-//! thoughts repo's GitHub origin — including the active per-cwd profile
-//! when the user keeps a non-git default backend (notion / obsidian /
-//! anytype) but maps a corporate project to a git profile.
-
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -20,15 +6,23 @@ use crate::config::{HyprlayerConfig, KeySource, TelemetryMode, ThoughtsConfig};
 
 use super::{disclosure, generate_device_salt, identify, org_config, unix_now};
 
-/// Why `resolve_owner_repo` couldn't produce an `<owner>/<repo>` pair.
-/// Narrow on purpose so the explicit `--refresh` handler can match
-/// exhaustively without `unreachable!` arms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResolveError {
     Manual,
     NoBackend,
     NotGithub,
 }
+
+#[derive(Debug)]
+pub struct LockedError(pub(crate) String);
+
+impl std::fmt::Display for LockedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for LockedError {}
 
 /// Outcome of one `gh variable get` cycle. Caller decides whether to print
 /// user-facing diagnostics, save, or just record.
@@ -56,17 +50,10 @@ impl From<ResolveError> for RefreshOutcome {
     }
 }
 
-/// Resolve `<owner>/<repo>` for a `gh variable get` against the user's
-/// thoughts repo, or report which preflight check skipped the lookup.
-/// Shared by the auto-refresh path and the explicit `telemetry config
-/// --refresh` CLI handler.
 pub fn resolve_owner_repo(config: &HyprlayerConfig) -> Result<String, ResolveError> {
     resolve_owner_repo_at(config, std::env::current_dir().ok().as_deref())
 }
 
-/// Testable inner of `resolve_owner_repo`: cwd is injected so unit tests
-/// don't have to mutate process-wide state. Production callers go through
-/// `resolve_owner_repo`, which reads `std::env::current_dir()`.
 fn resolve_owner_repo_at(
     config: &HyprlayerConfig,
     cwd: Option<&Path>,
@@ -76,15 +63,9 @@ fn resolve_owner_repo_at(
     }
     let thoughts = config.thoughts.as_ref().ok_or(ResolveError::NoBackend)?;
     let path = active_thoughts_repo_path(thoughts, cwd).ok_or(ResolveError::NoBackend)?;
-    let (owner, repo) = org_config::discover_github_remote(&path).ok_or(ResolveError::NotGithub)?;
-    Ok(format!("{owner}/{repo}"))
+    org_config::discover_github_owner_repo(&path).ok_or(ResolveError::NotGithub)
 }
 
-/// Pick the thoughts repo path the org-config refresh should consult.
-/// Prefers the active per-cwd profile's git backend (so a user with
-/// notion as their default but a per-project profile mapped to the
-/// corporate repo gets the corporate origin scanned). Falls back to the
-/// top-level backend when the active profile has no git checkout.
 fn active_thoughts_repo_path(thoughts: &ThoughtsConfig, cwd: Option<&Path>) -> Option<PathBuf> {
     if let Some(cwd) = cwd {
         let cwd_str = cwd.display().to_string();
@@ -96,26 +77,165 @@ fn active_thoughts_repo_path(thoughts: &ThoughtsConfig, cwd: Option<&Path>) -> O
     thoughts.backend.thoughts_repo_path()
 }
 
-/// Run org-config refresh + auto-elevate, save once if anything changed.
-/// Skipped entirely when telemetry isn't enabled — no `gh`/`git` shellouts
-/// for opted-out users. Never enrolls the user.
-///
-/// Save is ordered before the `$identify` spool: a failed save must not
-/// leave behind an `$identify` event that links an installation_id to a
-/// user_id while the on-disk config still says anonymous (the spool
-/// would survive across runs and PostHog would receive a half-committed
-/// state change).
+/// Reconcile telemetry state at explicit-user-intent entry points
+/// (`thoughts init`, `ai configure`). Bypasses the 24h throttle.
 pub fn apply_side_effects(config: &mut HyprlayerConfig, config_path: &Path) -> Result<()> {
-    let key_mut = matches!(
-        refresh_org_config(config),
-        RefreshOutcome::Fetched { mutated: true }
+    let _ = auto_enroll_and_enforce(config, config_path, true)?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum AutoEnrollOutcome {
+    /// `was_first_lock` gates the one-time disclosure and `$identify` spool.
+    Locked {
+        owner_repo: String,
+        org_id: Option<String>,
+        was_first_lock: bool,
+    },
+    SkippedStickyOff,
+    AlreadyEnrolled,
+    EnrolledAnonymous,
+    /// Throttle window: cached `is_locked()` re-enforced; no discovery.
+    Reenforced,
+}
+
+/// Returns the first git backend (top-level or profile) whose GitHub
+/// origin has `HYPRLAYER_TELEMETRY_KEY` set. Profiles are visited in
+/// sorted-key order — HashMap iteration would otherwise pick a
+/// different first-match per invocation.
+pub fn discover_any_corporate_origin(
+    thoughts: &ThoughtsConfig,
+) -> Option<(String, String, Option<String>)> {
+    discover_with(thoughts, |owner_repo| {
+        let key = org_config::fetch_telemetry_key(owner_repo)?;
+        Some((key, org_config::fetch_org_id(owner_repo)))
+    })
+}
+
+fn discover_with<F>(
+    thoughts: &ThoughtsConfig,
+    fetch_fn: F,
+) -> Option<(String, String, Option<String>)>
+where
+    F: Fn(&str) -> Option<(String, Option<String>)>,
+{
+    let mut profile_keys: Vec<&String> = thoughts.profiles.keys().collect();
+    profile_keys.sort();
+    let backends = std::iter::once(&thoughts.backend).chain(
+        profile_keys
+            .into_iter()
+            .map(|k| &thoughts.profiles[k].backend),
     );
-    let mode_mut = auto_elevate_if_org_keyed(config);
-    if key_mut || mode_mut {
-        config.save(config_path)?;
+    for backend in backends {
+        let Some(repo_path) = backend.thoughts_repo_path() else {
+            continue;
+        };
+        let Some(owner_repo) = org_config::discover_github_owner_repo(&repo_path) else {
+            continue;
+        };
+        let Some((key, org_id)) = fetch_fn(&owner_repo) else {
+            continue;
+        };
+        return Some((owner_repo, key, org_id));
     }
-    if mode_mut {
-        let _ = identify::record_identify(config);
+    None
+}
+
+/// Reconcile on-disk telemetry state with the policy. Saves inline on
+/// every mutating branch: the `telemetry flush` child spawned by
+/// `maybe_flush_telemetry_in` reads mode from disk, so the final mode
+/// must land before the fork.
+///
+/// `allow_gh_shellout=true` runs the discovery walk; `false` enforces
+/// only the cached `is_locked()` state.
+pub fn auto_enroll_and_enforce(
+    config: &mut HyprlayerConfig,
+    config_path: &Path,
+    allow_gh_shellout: bool,
+) -> Result<AutoEnrollOutcome> {
+    // `thoughts == None` and "thoughts Some but no git backend" share
+    // the same code path: empty walk, falls through to Anonymous.
+    let discovery = if allow_gh_shellout {
+        config
+            .thoughts
+            .as_ref()
+            .and_then(discover_any_corporate_origin)
+    } else {
+        None
+    };
+    auto_enroll_inner(config, config_path, discovery, allow_gh_shellout)
+}
+
+fn auto_enroll_inner(
+    config: &mut HyprlayerConfig,
+    config_path: &Path,
+    discovery: Option<(String, String, Option<String>)>,
+    allow_gh_shellout: bool,
+) -> Result<AutoEnrollOutcome> {
+    if !allow_gh_shellout {
+        reenforce_cached_lock(config, config_path)?;
+        return Ok(AutoEnrollOutcome::Reenforced);
+    }
+
+    if let Some((owner_repo, key, org_id)) = discovery {
+        let was_first_lock =
+            !config.telemetry.is_locked() || config.telemetry.mode != TelemetryMode::Identified;
+        config.telemetry.ensure_ids(generate_device_salt);
+        config.telemetry.api_key = Some(key);
+        config.telemetry.api_key_source = KeySource::Github;
+        if org_id.is_some() {
+            config.telemetry.org_id = org_id.clone();
+        }
+        config.telemetry.mode = TelemetryMode::Identified;
+        let now = unix_now();
+        config.telemetry.last_enrollment_check = now;
+        config.telemetry.last_config_refresh = now;
+        // Save before spooling $identify so a failed save can't leave
+        // behind an identify event that contradicts on-disk mode.
+        config.save(config_path)?;
+        if was_first_lock {
+            disclosure::print_corporate_lock_disclosure(&owner_repo, org_id.as_deref());
+            let _ = identify::record_identify(config);
+        }
+        return Ok(AutoEnrollOutcome::Locked {
+            owner_repo,
+            org_id,
+            was_first_lock,
+        });
+    }
+
+    if config.telemetry.is_locked() {
+        reenforce_cached_lock(config, config_path)?;
+        return Ok(AutoEnrollOutcome::Reenforced);
+    }
+
+    config.telemetry.last_enrollment_check = unix_now();
+
+    if config.telemetry.installation_id.is_some() {
+        let outcome = if config.telemetry.mode == TelemetryMode::Off {
+            AutoEnrollOutcome::SkippedStickyOff
+        } else {
+            AutoEnrollOutcome::AlreadyEnrolled
+        };
+        config.save(config_path)?;
+        return Ok(outcome);
+    }
+
+    config.telemetry.ensure_ids(generate_device_salt);
+    config.telemetry.mode = TelemetryMode::Anonymous;
+    config.save(config_path)?;
+    disclosure::print_telemetry_disclosure();
+    Ok(AutoEnrollOutcome::EnrolledAnonymous)
+}
+
+/// Drag mode back to `Identified` when `is_locked()` says locked but
+/// `mode` has been edited away. Shared by the throttled and
+/// discovery-empty paths so neither gate becomes a bypass.
+fn reenforce_cached_lock(config: &mut HyprlayerConfig, config_path: &Path) -> Result<()> {
+    if config.telemetry.is_locked() && config.telemetry.mode != TelemetryMode::Identified {
+        config.telemetry.mode = TelemetryMode::Identified;
+        config.save(config_path)?;
     }
     Ok(())
 }
@@ -172,14 +292,6 @@ pub fn maybe_print_disclosure(config: &HyprlayerConfig, was_first_run: bool) {
     }
 }
 
-/// Flip mode Anonymous → Identified when an org-managed PostHog key is
-/// in effect for a configured user. Returns true if the mode changed.
-///
-/// Caller contract: persist the config first, then (only on a successful
-/// save) spool the `$identify` event via `identify::record_identify`. A
-/// spooled identify with no on-disk mode change leaves a half-committed
-/// state across runs. The split exists so unit tests can verify the
-/// decision without touching the on-disk spool.
 pub fn auto_elevate_if_org_keyed(config: &mut HyprlayerConfig) -> bool {
     if config.telemetry.mode != TelemetryMode::Anonymous {
         return false;
@@ -199,15 +311,6 @@ pub fn auto_elevate_if_org_keyed(config: &mut HyprlayerConfig) -> bool {
     true
 }
 
-/// `telemetry on` opt-in entry point. Provisions identity, pulls org
-/// config, auto-elevates to Identified when an org key is in effect, and
-/// persists the result. `telemetry init` does *not* go through this; it
-/// pins `--mode` explicitly and uses the granular pieces above.
-///
-/// Save is ordered before the `$identify` spool so a failed save can't
-/// leave behind an `$identify` event with no corresponding mode change
-/// on disk. Returns true on first run (installation_id was just
-/// generated).
 pub fn enroll(config: &mut HyprlayerConfig, config_path: &Path) -> Result<bool> {
     let was_first_run = provision_identity(config);
 
@@ -268,8 +371,41 @@ mod tests {
         (dir, path)
     }
 
-    /// `telemetry on` is the explicit opt-in. First call flips mode and
-    /// generates ids; second call is idempotent.
+    /// `None` signals "skip this test" — CI without `git` on PATH.
+    fn init_git_repo_with_origin(origin_url: &str) -> Option<tempfile::TempDir> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_str().unwrap();
+        std::process::Command::new("git")
+            .args(["-C", path, "init", "-q"])
+            .status()
+            .ok()
+            .filter(|s| s.success())?;
+        std::process::Command::new("git")
+            .args(["-C", path, "remote", "add", "origin", origin_url])
+            .status()
+            .ok()
+            .filter(|s| s.success())?;
+        Some(dir)
+    }
+
+    fn locked_config(mode: TelemetryMode, installation_id: Option<&str>) -> HyprlayerConfig {
+        HyprlayerConfig {
+            telemetry: TelemetryConfig {
+                mode,
+                installation_id: installation_id.map(str::to_string),
+                api_key: Some("phc_corp".to_string()),
+                api_key_source: KeySource::Github,
+                ..Default::default()
+            },
+            thoughts: Some(ThoughtsConfig {
+                user: "alice".to_string(),
+                backend: notion_backend(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn enroll_first_run_flips_mode_and_generates_ids() {
         let (_dir, path) = temp_config_path();
@@ -288,20 +424,18 @@ mod tests {
         assert_eq!(cfg.telemetry.installation_id, id);
     }
 
-    /// Off survives subsequent lifecycle hooks: a user who explicitly
-    /// opted out keeps `mode == Off` even when `ai configure` /
-    /// `thoughts init` re-fire `apply_side_effects`.
     #[test]
-    fn off_survives_lifecycle_apply_side_effects() {
+    fn auto_enroll_preserves_sticky_off_when_no_corporate() {
         let (_dir, path) = temp_config_path();
         let mut cfg = fresh_config();
         enroll(&mut cfg, &path).unwrap();
         cfg.telemetry.mode = TelemetryMode::Off;
+        let installation_id = cfg.telemetry.installation_id.clone();
 
-        // Lifecycle hook would short-circuit — the gate is `mode == Off`.
-        let outcome = refresh_org_config(&mut cfg);
-        assert_eq!(outcome, RefreshOutcome::SkippedNotOptedIn);
+        let outcome = auto_enroll_inner(&mut cfg, &path, None, true).unwrap();
+        assert_eq!(outcome, AutoEnrollOutcome::SkippedStickyOff);
         assert_eq!(cfg.telemetry.mode, TelemetryMode::Off);
+        assert_eq!(cfg.telemetry.installation_id, installation_id);
     }
 
     /// `apply_side_effects` propagates a save error (rather than
@@ -334,16 +468,176 @@ mod tests {
         assert!(apply_side_effects(&mut cfg, unwritable).is_err());
     }
 
-    /// A user who never ran `telemetry on` is never enrolled by lifecycle.
-    /// Confirms the privacy-critical invariant: `ai configure` and
-    /// `thoughts init` cannot opt the user in.
     #[test]
-    fn lifecycle_does_not_enroll_pristine_install() {
+    fn auto_enroll_pristine_no_thoughts_lands_at_anonymous() {
+        let (_dir, path) = temp_config_path();
         let mut cfg = fresh_config();
-        let outcome = refresh_org_config(&mut cfg);
-        assert_eq!(outcome, RefreshOutcome::SkippedNotOptedIn);
-        assert_eq!(cfg.telemetry.mode, TelemetryMode::Off);
-        assert!(cfg.telemetry.installation_id.is_none());
+        assert!(cfg.thoughts.is_none());
+        let outcome = auto_enroll_inner(&mut cfg, &path, None, true).unwrap();
+        assert_eq!(outcome, AutoEnrollOutcome::EnrolledAnonymous);
+        assert_eq!(cfg.telemetry.mode, TelemetryMode::Anonymous);
+        assert!(cfg.telemetry.installation_id.is_some());
+        assert!(cfg.telemetry.device_salt.is_some());
+    }
+
+    #[test]
+    fn auto_enroll_pristine_with_thoughts_no_corporate_lands_at_anonymous() {
+        let (_dir, path) = temp_config_path();
+        let mut cfg = HyprlayerConfig {
+            thoughts: Some(ThoughtsConfig {
+                user: "alice".to_string(),
+                backend: notion_backend(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let outcome = auto_enroll_inner(&mut cfg, &path, None, true).unwrap();
+        assert_eq!(outcome, AutoEnrollOutcome::EnrolledAnonymous);
+        assert_eq!(cfg.telemetry.mode, TelemetryMode::Anonymous);
+        assert!(cfg.telemetry.installation_id.is_some());
+    }
+
+    #[test]
+    fn auto_enroll_corporate_overrides_sticky_off() {
+        let (_dir, path) = temp_config_path();
+        let mut cfg = HyprlayerConfig {
+            telemetry: TelemetryConfig {
+                mode: TelemetryMode::Off,
+                installation_id: Some("preexisting".to_string()),
+                ..Default::default()
+            },
+            thoughts: Some(ThoughtsConfig {
+                user: "alice".to_string(),
+                backend: notion_backend(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let discovery = Some((
+            "acme/thoughts".to_string(),
+            "phc_corp".to_string(),
+            Some("acme".to_string()),
+        ));
+        let outcome = auto_enroll_inner(&mut cfg, &path, discovery, true).unwrap();
+        assert!(matches!(outcome, AutoEnrollOutcome::Locked { .. }));
+        assert_eq!(cfg.telemetry.mode, TelemetryMode::Identified);
+        assert_eq!(cfg.telemetry.api_key_source, KeySource::Github);
+        assert_eq!(cfg.telemetry.api_key.as_deref(), Some("phc_corp"));
+        assert_eq!(cfg.telemetry.org_id.as_deref(), Some("acme"));
+        assert_eq!(
+            cfg.telemetry.installation_id.as_deref(),
+            Some("preexisting")
+        );
+        assert!(cfg.telemetry.is_locked());
+    }
+
+    #[test]
+    fn auto_enroll_throttled_reenforces_manual_off_edit() {
+        let (_dir, path) = temp_config_path();
+        let mut cfg = locked_config(TelemetryMode::Off, Some("id"));
+        assert!(cfg.telemetry.is_locked());
+
+        let outcome = auto_enroll_inner(&mut cfg, &path, None, false).unwrap();
+        assert_eq!(outcome, AutoEnrollOutcome::Reenforced);
+        assert_eq!(cfg.telemetry.mode, TelemetryMode::Identified);
+    }
+
+    #[test]
+    fn auto_enroll_throttled_noop_when_already_consistent() {
+        let (_dir, path) = temp_config_path();
+        let mut cfg = locked_config(TelemetryMode::Identified, Some("id"));
+        let outcome = auto_enroll_inner(&mut cfg, &path, None, false).unwrap();
+        assert_eq!(outcome, AutoEnrollOutcome::Reenforced);
+        assert_eq!(cfg.telemetry.mode, TelemetryMode::Identified);
+    }
+
+    /// `--refresh` is the only legitimate release path, so an empty
+    /// discovery walk (transient gh failure, thoughts config removed)
+    /// must NOT fall through and let a manual `mode=off` edit survive.
+    #[test]
+    fn auto_enroll_discovery_empty_reenforces_cached_lock() {
+        let (_dir, path) = temp_config_path();
+        let mut cfg = locked_config(TelemetryMode::Off, Some("id"));
+        assert!(cfg.telemetry.is_locked());
+
+        let outcome = auto_enroll_inner(&mut cfg, &path, None, true).unwrap();
+        assert_eq!(outcome, AutoEnrollOutcome::Reenforced);
+        assert_eq!(cfg.telemetry.mode, TelemetryMode::Identified);
+    }
+
+    #[test]
+    fn auto_enroll_first_run_no_corporate_lands_at_anonymous() {
+        let (_dir, path) = temp_config_path();
+        let mut cfg = HyprlayerConfig {
+            thoughts: Some(ThoughtsConfig {
+                user: "alice".to_string(),
+                backend: notion_backend(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let outcome = auto_enroll_inner(&mut cfg, &path, None, true).unwrap();
+        assert_eq!(outcome, AutoEnrollOutcome::EnrolledAnonymous);
+        assert_eq!(cfg.telemetry.mode, TelemetryMode::Anonymous);
+        assert_eq!(cfg.telemetry.api_key_source, KeySource::Default);
+        assert!(cfg.telemetry.installation_id.is_some());
+    }
+
+    #[test]
+    fn discover_walk_returns_first_match_across_backends() {
+        let Some(dir) = init_git_repo_with_origin("https://github.com/acme/thoughts.git") else {
+            return;
+        };
+        let thoughts = ThoughtsConfig {
+            user: "alice".to_string(),
+            backend: git_backend(dir.path().to_str().unwrap()),
+            ..Default::default()
+        };
+        let result = discover_with(&thoughts, |owner_repo| {
+            (owner_repo == "acme/thoughts")
+                .then(|| ("phc_corp".to_string(), Some("acme-org".to_string())))
+        });
+        assert_eq!(
+            result,
+            Some((
+                "acme/thoughts".to_string(),
+                "phc_corp".to_string(),
+                Some("acme-org".to_string())
+            ))
+        );
+    }
+
+    #[test]
+    fn discover_walk_finds_profile_only_git_backend() {
+        let Some(dir) = init_git_repo_with_origin("https://github.com/corp/repo.git") else {
+            return;
+        };
+        let mut thoughts = ThoughtsConfig {
+            user: "alice".to_string(),
+            backend: notion_backend(),
+            ..Default::default()
+        };
+        thoughts.profiles.insert(
+            "corp".to_string(),
+            ProfileConfig {
+                backend: git_backend(dir.path().to_str().unwrap()),
+            },
+        );
+        let result = discover_with(&thoughts, |_| Some(("phc_corp".to_string(), None)));
+        assert!(matches!(result, Some((ref owner, _, _)) if owner == "corp/repo"));
+    }
+
+    #[test]
+    fn discover_walk_returns_none_without_git_backend() {
+        let thoughts = ThoughtsConfig {
+            user: "alice".to_string(),
+            backend: notion_backend(),
+            ..Default::default()
+        };
+        let result = discover_with(&thoughts, |_| {
+            Some(("phc_yes".to_string(), Some("any".to_string())))
+        });
+        assert_eq!(result, None);
     }
 
     #[test]

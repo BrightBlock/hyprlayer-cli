@@ -168,24 +168,36 @@ pub fn run_startup_checks(config_path: Option<&std::path::Path>, allow_backgroun
     let Ok(mut cfg) = config::HyprlayerConfig::load(&config_path) else {
         return;
     };
+
+    let now = unix_now();
+
+    // MUST run before `disable_update_check`: that flag suppresses
+    // update notifications, not corporate telemetry policy.
+    let allow_shellout = should_run_discovery(cfg.telemetry.last_enrollment_check, now);
+    let _ = telemetry::lifecycle::auto_enroll_and_enforce(&mut cfg, &config_path, allow_shellout);
+
     if cfg.disable_update_check {
         return;
     }
 
-    let now = unix_now();
     let release_changed = check_release_in(&mut cfg, now);
-    let (agents_changed, mode_elevated) = reinstall_agents_in(&mut cfg, now);
+    let agents_changed = reinstall_agents_in(&mut cfg, now);
     let telemetry_changed =
         allow_background_flush && maybe_flush_telemetry_in(&mut cfg, now, &config_path);
 
     if release_changed || agents_changed || telemetry_changed {
-        // Spool the `$identify` only after the save succeeds — a failed
-        // save must not leave behind an identify event that contradicts
-        // the on-disk telemetry mode.
-        if cfg.save(&config_path).is_ok() && mode_elevated {
-            let _ = telemetry::identify::record_identify(&cfg);
-        }
+        let _ = cfg.save(&config_path);
     }
+}
+
+/// Treats future and `u64`-overflowing anchors as "no anchor" so a
+/// poisoned `lastEnrollmentCheck` can't permanently suppress discovery.
+fn should_run_discovery(last_enrollment_check: u64, now: i64) -> bool {
+    let last = i64::try_from(last_enrollment_check).unwrap_or(i64::MAX);
+    if last > now {
+        return true;
+    }
+    !should_skip_due_to_throttle(last, now, CHECK_INTERVAL_SECS)
 }
 
 /// Spawn a detached `hyprlayer telemetry flush` if
@@ -244,39 +256,29 @@ fn check_release_in(cfg: &mut config::HyprlayerConfig, now: i64) -> bool {
     true
 }
 
-/// Returns `(mutated, mode_elevated)`. The caller is responsible for
-/// persisting `mutated == true` and only spooling `$identify` after a
-/// successful save when `mode_elevated == true`.
-fn reinstall_agents_in(cfg: &mut config::HyprlayerConfig, now: i64) -> (bool, bool) {
+/// Returns `true` when `cfg` was mutated and must be persisted.
+fn reinstall_agents_in(cfg: &mut config::HyprlayerConfig, now: i64) -> bool {
     // Auto-reinstall only refreshes an existing install — it never
     // bootstraps a new one for a user who has not run `ai configure`.
     let Some(ai) = cfg.ai.as_ref() else {
-        return (false, false);
+        return false;
     };
     let Some(tool) = ai.agent_tool else {
-        return (false, false);
+        return false;
     };
     if !tool.has_existing_install() {
-        return (false, false);
+        return false;
     }
     let opencode_provider = ai.opencode_provider.clone();
 
     if should_skip_due_to_throttle(cfg.last_agent_check.unwrap_or(0), now, CHECK_INTERVAL_SECS) {
-        return (false, false);
+        return false;
     }
     cfg.last_agent_check = Some(now);
 
     try_refresh_agents(cfg, tool, opencode_provider.as_ref());
 
-    // No-op for opted-out users; only refreshes the org-managed key for
-    // users who already ran `telemetry on`. The auto-elevate then flips
-    // anonymous → identified once an org key has been picked up, so
-    // existing corporate users move off the community key on the next
-    // 24h cycle without a manual `telemetry init --mode identified`.
-    telemetry::lifecycle::refresh_org_config(cfg);
-    let mode_elevated = telemetry::lifecycle::auto_elevate_if_org_keyed(cfg);
-
-    (true, mode_elevated)
+    true
 }
 
 /// Compare cached SHA to upstream; if stale, run the install. Failure is
@@ -399,5 +401,46 @@ mod tests {
         assert!(t < i);
         assert!(should_skip_due_to_throttle(now - (t - 1), now, t));
         assert!(!should_skip_due_to_throttle(now - t, now, t));
+    }
+
+    #[test]
+    fn enrollment_throttle_gates_shellout() {
+        let now: i64 = 2_000_000_000;
+        let i = CHECK_INTERVAL_SECS;
+        let allow = |last: i64| !should_skip_due_to_throttle(last, now, i);
+
+        assert!(!allow(now - 100), "100s ago: still inside the throttle");
+        assert!(
+            !allow(now - (i - 1)),
+            "1s before window edge: still skipped"
+        );
+        assert!(allow(now - i), "at window edge: shellout allowed");
+        assert!(
+            allow(now - 100_000),
+            "well outside window: shellout allowed"
+        );
+        assert!(allow(0), "fresh install (zero anchor): shellout allowed");
+    }
+
+    #[test]
+    fn should_run_discovery_rejects_future_anchors() {
+        let now: i64 = 2_000_000_000;
+        assert!(
+            !should_run_discovery((now - 100) as u64, now),
+            "recent past anchor stays throttled"
+        );
+        assert!(
+            should_run_discovery((now - CHECK_INTERVAL_SECS) as u64, now),
+            "lapsed window: allowed"
+        );
+        assert!(
+            should_run_discovery((now + 10) as u64, now),
+            "10s in the future: clamp treats as no anchor"
+        );
+        assert!(
+            should_run_discovery(u64::MAX, now),
+            "u64::MAX poisoned anchor: clamp treats as no anchor"
+        );
+        assert!(should_run_discovery(0, now), "fresh install anchor");
     }
 }

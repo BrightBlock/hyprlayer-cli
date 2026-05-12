@@ -363,6 +363,9 @@ pub struct TelemetryConfig {
     pub last_flush: u64,
     #[serde(default)]
     pub last_config_refresh: u64,
+    /// Unix-time anchor for the all-backends discovery walk's 24h throttle.
+    #[serde(default)]
+    pub last_enrollment_check: u64,
 }
 
 impl TelemetryConfig {
@@ -370,6 +373,27 @@ impl TelemetryConfig {
     /// installation_id has been provisioned.
     pub fn is_recording(&self) -> bool {
         self.mode != TelemetryMode::Off && self.installation_id.is_some()
+    }
+
+    /// True when an org-managed PostHog key is cached. Latches on the
+    /// cached source/key, not on `mode`, so a manual `mode` edit still
+    /// reads as locked and the startup pass re-enforces. Release path
+    /// is `telemetry config --refresh`.
+    pub fn is_locked(&self) -> bool {
+        self.api_key_source == KeySource::Github && self.api_key.is_some()
+    }
+
+    pub fn locked_error(&self) -> anyhow::Error {
+        let org = self
+            .org_id
+            .as_deref()
+            .map(|o| format!(" by `{o}`"))
+            .unwrap_or_default();
+        crate::telemetry::lifecycle::LockedError(format!(
+            "telemetry is enabled{org} through organization-managed settings and \
+             cannot be disabled."
+        ))
+        .into()
     }
 
     /// Provision installation_id and device_salt on first opt-in. Idempotent
@@ -1233,6 +1257,7 @@ mod tests {
             org_id: Some("acme".to_string()),
             last_flush: 1700000000,
             last_config_refresh: 1700000001,
+            last_enrollment_check: 1700000002,
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let back: TelemetryConfig = serde_json::from_str(&json).unwrap();
@@ -1243,6 +1268,54 @@ mod tests {
         );
         assert_eq!(back.api_key_source, KeySource::Github);
         assert_eq!(back.last_flush, 1700000000);
+        assert_eq!(back.last_enrollment_check, 1700000002);
+    }
+
+    #[test]
+    fn telemetry_config_legacy_deserialize_supplies_zero() {
+        let legacy = r#"{
+            "mode": "off",
+            "apiKeySource": "default",
+            "lastFlush": 0,
+            "lastConfigRefresh": 0
+        }"#;
+        let cfg: TelemetryConfig = serde_json::from_str(legacy).unwrap();
+        assert_eq!(cfg.last_enrollment_check, 0);
+    }
+
+    #[test]
+    fn telemetry_is_locked_truth_table() {
+        for mode in [
+            TelemetryMode::Identified,
+            TelemetryMode::Anonymous,
+            TelemetryMode::Off,
+        ] {
+            let cfg = TelemetryConfig {
+                mode,
+                api_key: Some("phc_org".to_string()),
+                api_key_source: KeySource::Github,
+                ..Default::default()
+            };
+            assert!(cfg.is_locked(), "expected locked for mode {mode:?}");
+        }
+
+        for source in [KeySource::Default, KeySource::Manual] {
+            let cfg = TelemetryConfig {
+                mode: TelemetryMode::Identified,
+                api_key: Some("phc_x".to_string()),
+                api_key_source: source,
+                ..Default::default()
+            };
+            assert!(!cfg.is_locked(), "expected unlocked for source {source:?}");
+        }
+
+        let github_no_key = TelemetryConfig {
+            mode: TelemetryMode::Identified,
+            api_key: None,
+            api_key_source: KeySource::Github,
+            ..Default::default()
+        };
+        assert!(!github_no_key.is_locked());
     }
 
     #[test]
