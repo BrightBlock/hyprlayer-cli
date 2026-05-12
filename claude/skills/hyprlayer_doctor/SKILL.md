@@ -39,10 +39,11 @@ Steps:
 The cache key is a hash of the config-file content, **not** a session identifier. `$SESSION_ID` is not reliably set in the Claude Code harness, and falling back to a constant (`default`) makes the cache global across sessions — that defeats the per-session intent and silently hides drift. Hashing the config gives us the actually-meaningful signal: the cache invalidates automatically whenever the user runs `hyprlayer thoughts init`, switches backends, changes a page ID, or edits the file any other way.
 
 Steps:
-1. Cache file: `/tmp/hyprlayer-doctor-<config-hash>.ok` (using the 16-char hash from step 1).
-2. If the file exists AND its mtime is < 4 hours old → emit `✅ Already verified for this config (cached <human-readable-ago>)` and exit successfully.
-3. If the file exists but mtime is >= 4 hours old → continue; the stale sentinel will be overwritten on pass.
-4. Otherwise → continue to step 3.
+1. Resolve the OS temp directory portably: `TMP="${TMPDIR:-${TEMP:-/tmp}}"`. macOS exports `$TMPDIR` (`/var/folders/...`); Linux usually has neither set and falls through to `/tmp`; Windows git-bash and WSL expose `$TEMP` (`/c/Users/<user>/AppData/Local/Temp`). Hard-coding `/tmp` would silently fail on Windows where the path doesn't exist.
+2. Cache file: `$TMP/hyprlayer-doctor-<config-hash>.ok` (using the 16-char hash from step 1).
+3. If the file exists AND its mtime is < 4 hours old → emit `✅ Already verified for this config (cached <human-readable-ago>)` and exit successfully.
+4. If the file exists but mtime is >= 4 hours old → continue; the stale sentinel will be overwritten on pass.
+5. Otherwise → continue to step 3.
 
 Why the 4h TTL on top of content-hashing: auth tokens / connector state can drift externally even when the config is untouched. Hash-only would let a disconnected Notion connector remain "verified" indefinitely.
 
@@ -69,10 +70,10 @@ hyprlayer_doctor (backend: notion, repo: brightblock/hyprlayer-cli):
 
 ### 5. Cache on full pass
 
-If — and only if — every step passed (❌ count is zero; ⏭ allowed only when explicitly marked optional or N/A by the procedure), write the sentinel using the config hash from step 1:
+If — and only if — every step passed (❌ count is zero; ⏭ allowed only when explicitly marked optional or N/A by the procedure), write the sentinel using the config hash from step 1 and the portable `$TMP` resolved in step 2:
 
 ```bash
-touch "/tmp/hyprlayer-doctor-<config-hash>.ok"
+touch "${TMPDIR:-${TEMP:-/tmp}}/hyprlayer-doctor-<config-hash>.ok"
 ```
 
 On any failure, do not write the sentinel; the next backend-touching call re-triggers the doctor.

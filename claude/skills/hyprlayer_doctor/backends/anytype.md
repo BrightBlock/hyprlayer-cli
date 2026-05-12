@@ -4,19 +4,21 @@ Anytype is MCP-backed, but unlike Notion, hyprlayer **does** register the MCP se
 
 Inputs from the dispatcher: `AnytypeConfig { spaceId, typeId?, apiTokenEnv? }`, the resolved `user`, the resolved `agent_tool` (`claude`, `opencode`, or `copilot`).
 
-## 1. API token env var
-
-- The env var name is `AnytypeConfig.apiTokenEnv` if set, otherwise the default `ANYTYPE_API_KEY` (constant `DEFAULT_ANYTYPE_TOKEN_ENV` in `src/backends/anytype.rs`).
-- ❌ if the env var is unset. The MCP server boots with this token; missing token = every request 401s.
-- Remediation: `Settings → API Keys` in Anytype → issue a key → `export <ENV_VAR>=<key>` before starting the agent. Note: the agent must have been *launched* with the var set; setting it in a child shell after the agent started won't help.
-
-## 2. MCP server registered
+## 1. MCP server registered
 
 - Probe by running `<cli> mcp list` and looking for the literal name `anytype` in the output. The CLI is:
   - `agent_tool = claude` → `claude mcp list`
   - `agent_tool = opencode` → `opencode mcp list`
   - `agent_tool = copilot` → no `mcp list` command; the registration lives in VS Code `settings.json` under `github.copilot.mcp.servers.anytype`. Read that file and check for the key. ⏭ if the file is unreadable.
 - ❌ if not registered. Remediation: `hyprlayer thoughts init` (for Claude/OpenCode) will re-run the registration; for Copilot, the printed JSON snippet must be pasted into `settings.json`.
+- Keep the probe result; step 2 needs it.
+
+## 2. API token env var
+
+- The env var name is `AnytypeConfig.apiTokenEnv` if set, otherwise the default `ANYTYPE_API_KEY` (constant `DEFAULT_ANYTYPE_TOKEN_ENV` in `src/backends/anytype.rs`).
+- **If step 1 says the MCP server is already registered** → ⏭ `Token baked into MCP registration; runtime export not required.` Rationale: `resolve_mcp_env_pair` (`src/backends/common.rs`) expands the env var at `mcp add` time and stores the literal `KEY=value` in the registration, so the agent's spawned MCP server gets the token even when the shell no longer exports it. Validity of the stored token is verified end-to-end in step 4 — don't double-check it here.
+- **If step 1 says the MCP server is not yet registered** → ❌ when the env var is unset, since the upcoming `hyprlayer thoughts init` re-registration would fail to capture a value.
+- Remediation (unregistered + unset case): `Settings → API Keys` in Anytype → issue a key → `export <ENV_VAR>=<key>`, then re-run `hyprlayer thoughts init`. Note: the agent must have been *launched* with the var set; setting it in a child shell after the agent started won't help.
 
 ## 3. Anytype desktop app reachable
 
@@ -43,13 +45,14 @@ Inputs from the dispatcher: `AnytypeConfig { spaceId, typeId?, apiTokenEnv? }`, 
 
   | Relation | Format |
   |---|---|
-  | title, project, author, ticket | text |
+  | project, author, ticket | text |
   | type, status, scope | select (with the same option lists Notion uses) |
   | date | date |
   | tags | tags / multi-select |
   | related | relation |
 
-- ❌ on missing required Relations; ⚠ on option drift in select fields.
+- **Do not check for a `title` Relation.** In Anytype, `title` maps to the built-in object `name` and is intentionally not created as a separate property (see `claude/skills/_thoughts/storage-backend.md` step 2, "except `title`, which maps to the object's `name` field and does not need a property"). Flagging a missing `title` Relation here would FAIL valid setups produced by the documented hyprlayer write flow.
+- ❌ on missing required Relations (from the table above); ⚠ on option drift in select fields.
 - Remediation: edit the Type in Anytype to add/rename the Relation, or delete the Type and let hyprlayer recreate it.
 
 ## 7. Write permission
