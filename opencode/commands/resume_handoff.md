@@ -47,7 +47,9 @@ Then wait for the user's input.
 
 ## Storage backend dispatch
 
-Before you start, run `hyprlayer storage info --json` and parse the `backend` field. This command reads an existing handoff from storage:
+> **Do not act on this section until the user has provided a handoff path or ticket number.** The Initial Response gate above takes precedence — if no parameters were provided, you must emit the welcome message and wait. The instructions below apply once a parameter is in hand.
+
+Once the user has provided a parameter, run `hyprlayer storage info --json` and parse the `backend` field. This command reads an existing handoff from storage:
 
 - **`git`**: read from `thoughts/shared/handoffs/ENG-XXXX/<name>.md` via the symlink, or the absolute path under `settings.thoughtsRepo`. If the user provides only a ticket number (e.g. `ENG-2124`), list `thoughts/shared/handoffs/ENG-2124/` and pick the most recent file by the `YYYY-MM-DD_HH-MM-SS` prefix. For `backend: git` you may first run `hyprlayer thoughts sync` to ensure latest handoffs are pulled.
 - **`obsidian`**: read via the project's `thoughts/shared/handoffs/...` symlink (identical to git), or via absolute path under `settings.contentRoot`. Skip any sync step — Obsidian has no pull.

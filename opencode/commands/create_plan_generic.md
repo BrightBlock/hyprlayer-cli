@@ -38,7 +38,9 @@ Then wait for the user's input.
 
 ## Storage backend dispatch
 
-Before you start, run `hyprlayer storage info --json` and parse the output. The `backend` field tells you where to save any artifacts this command produces. The `schema` field tells you which metadata properties are required — **populate every required field** regardless of backend. If the `hyprlayer` binary is not available or the project isn't mapped, proceed with the `git` branch below using relative `thoughts/shared/...` paths.
+> **Do not act on this section until the user has provided a task.** The Initial Response gate above takes precedence — if no parameters were provided, you must emit the welcome message and wait. The instructions below apply at Step 4 (Save), not on first invocation.
+
+When you reach Step 4 (Save), run `hyprlayer storage info --json` and parse the output. The `backend` field tells you where to save any artifacts this command produces. The `schema` field tells you which metadata properties are required — **populate every required field** regardless of backend. If the `hyprlayer` binary is not available or the project isn't mapped, proceed with the `git` branch below using relative `thoughts/shared/...` paths.
 
 ### Where to save
 
