@@ -64,7 +64,7 @@ The numbered steps below fold the dispatched read/write into the broader flow (t
 9. **Update the PR:**
    - `gh pr edit {number} --body-file <scratch-file>`
    - Confirm the update was successful.
-   - Promote and clean up per the dispatch (bump `status` from `draft` to `active`, delete the `/tmp` scratch file on `notion`/`anytype`).
+   - Promote and clean up per the dispatch (bump `status` from `draft` to `active`, delete the scratch file on `notion`/`anytype` at the path resolved by `${TMPDIR:-${TEMP:-/tmp}}`).
    - If any verification steps remain unchecked, remind the user to complete them before merging.
 
 ## Important notes:
