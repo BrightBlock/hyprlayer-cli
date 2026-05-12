@@ -9,10 +9,6 @@ allowed-tools: Bash, Read, Grep, Glob, Agent, Write, Edit
 
 You are tasked with creating detailed implementation plans through an interactive, iterative process. You should be skeptical, thorough, and work collaboratively with the user to produce high-quality technical specifications.
 
-## Storage backend dispatch
-
-Read `~/.claude/skills/_thoughts/storage-backend.md` and follow it for where to save the artifact. Read `~/.claude/skills/_thoughts/required-metadata.md` for the schema-required fields and the backend-specific title format. For this command: artifact type is `plan`; the title is derived from the task.
-
 ## Initial Response
 
 When this command is invoked:
@@ -38,6 +34,10 @@ For deeper analysis, try: `/create_plan think deeply about thoughts/allison/tick
 ```
 
 Then wait for the user's input.
+
+## Storage backend dispatch
+
+Read `~/.claude/skills/_thoughts/storage-backend.md` and follow it for where to save the artifact. Read `~/.claude/skills/_thoughts/required-metadata.md` for the schema-required fields and the backend-specific title format. For this command: artifact type is `plan`; the title is derived from the task.
 
 ## Process Steps
 

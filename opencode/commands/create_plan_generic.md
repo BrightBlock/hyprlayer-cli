@@ -10,21 +10,6 @@ subtask: false
 
 You are tasked with creating detailed implementation plans through an interactive, iterative process. You should be skeptical, thorough, and work collaboratively with the user to produce high-quality technical specifications.
 
-## Storage backend dispatch
-
-Before you start, run `hyprlayer storage info --json` and parse the output. The `backend` field tells you where to save any artifacts this command produces. The `schema` field tells you which metadata properties are required — **populate every required field** regardless of backend. If the `hyprlayer` binary is not available or the project isn't mapped, proceed with the `git` branch below using relative `thoughts/shared/...` paths.
-
-### Where to save
-
-- **`git`**: write local markdown files through the project's `thoughts/shared/...` symlinks. Prepend the required metadata as YAML frontmatter (see "Required metadata" below). `settings.thoughtsRepo` gives the absolute path. At the end, remind the user to run `hyprlayer thoughts sync`.
-- **`obsidian`**: the project's `thoughts/` symlinks point into the user's vault, so relative paths like `thoughts/shared/plans/<file>.md` work for writes. Prepend the required metadata as YAML frontmatter — Obsidian's Properties panel picks it up automatically. Do NOT remind the user to sync.
-- **`notion`**: do NOT write local files. Ensure the target database exists (retrieve-database → create-database if missing → persist via `hyprlayer storage set-database-id`). Create a row via `mcp__notion__create-page`, populating every required schema field as a typed property. If the Notion MCP tools are not available, tell the user to run `hyprlayer thoughts init --backend notion` and stop.
-- **`anytype`**: do NOT write local files. Ensure the target type exists (get-type → create-type + create-property if missing → persist via `hyprlayer storage set-type-id`). Create an object via `mcp__anytype__API-create-object`, populating every required schema field. If the Anytype MCP tools are not available, tell the user to start the Anytype app and run `hyprlayer thoughts init --backend anytype`, then stop.
-
-### Required metadata
-
-Read the `schema` array from `storage info --json`. Populate **every field marked `required: true`**. For this command, `type: plan`, `status: draft`, `project: <mappedName>`, `scope: shared` unless otherwise indicated, `date: YYYY-MM-DD`, and pull `author` from `hyprlayer thoughts config --json`. Capture a `ticket` if the task references one, and derive 2-5 `tags`. For `select` fields, use only values from `schema.options`. Render as YAML frontmatter for `git`/`obsidian`; set as typed properties for `notion`/`anytype`.
-
 ## Initial Response
 
 When this command is invoked:
@@ -50,6 +35,21 @@ For deeper analysis, try: `/create_plan think deeply about thoughts/allison/tick
 ```
 
 Then wait for the user's input.
+
+## Storage backend dispatch
+
+Before you start, run `hyprlayer storage info --json` and parse the output. The `backend` field tells you where to save any artifacts this command produces. The `schema` field tells you which metadata properties are required — **populate every required field** regardless of backend. If the `hyprlayer` binary is not available or the project isn't mapped, proceed with the `git` branch below using relative `thoughts/shared/...` paths.
+
+### Where to save
+
+- **`git`**: write local markdown files through the project's `thoughts/shared/...` symlinks. Prepend the required metadata as YAML frontmatter (see "Required metadata" below). `settings.thoughtsRepo` gives the absolute path. At the end, remind the user to run `hyprlayer thoughts sync`.
+- **`obsidian`**: the project's `thoughts/` symlinks point into the user's vault, so relative paths like `thoughts/shared/plans/<file>.md` work for writes. Prepend the required metadata as YAML frontmatter — Obsidian's Properties panel picks it up automatically. Do NOT remind the user to sync.
+- **`notion`**: do NOT write local files. Ensure the target database exists (retrieve-database → create-database if missing → persist via `hyprlayer storage set-database-id`). Create a row via `mcp__notion__create-page`, populating every required schema field as a typed property. If the Notion MCP tools are not available, tell the user to run `hyprlayer thoughts init --backend notion` and stop.
+- **`anytype`**: do NOT write local files. Ensure the target type exists (get-type → create-type + create-property if missing → persist via `hyprlayer storage set-type-id`). Create an object via `mcp__anytype__API-create-object`, populating every required schema field. If the Anytype MCP tools are not available, tell the user to start the Anytype app and run `hyprlayer thoughts init --backend anytype`, then stop.
+
+### Required metadata
+
+Read the `schema` array from `storage info --json`. Populate **every field marked `required: true`**. For this command, `type: plan`, `status: draft`, `project: <mappedName>`, `scope: shared` unless otherwise indicated, `date: YYYY-MM-DD`, and pull `author` from `hyprlayer thoughts config --json`. Capture a `ticket` if the task references one, and derive 2-5 `tags`. For `select` fields, use only values from `schema.options`. Render as YAML frontmatter for `git`/`obsidian`; set as typed properties for `notion`/`anytype`.
 
 ## Process Steps
 

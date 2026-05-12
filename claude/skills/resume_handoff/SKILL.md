@@ -9,15 +9,6 @@ disable-model-invocation: true
 
 You are tasked with resuming work from a handoff document through an interactive process. These handoffs contain critical context, learnings, and next steps from previous work sessions that need to be understood and continued.
 
-## Storage backend dispatch
-
-Read `~/.claude/skills/_thoughts/storage-backend.md` for the per-backend mechanics — see the "How to read existing artifacts" section. For this command: artifact type is `handoff`. If the user provides only a ticket number (e.g. `ENG-2124`), find the most recent handoff for that ticket per the backend's rules:
-
-- **`git`** / **`obsidian`**: list `thoughts/shared/handoffs/ENG-2124/` and pick the most recent file by the `YYYY-MM-DD_HH-MM-SS` filename prefix.
-- **`notion`** / **`anytype`**: query the database/type filtered by `type = handoff` + `project = <mappedName>` + `ticket = ENG-XXXX`, sorted by `date` descending.
-
-If the referenced handoff points to related artifacts (plan, research docs), apply the same dispatch logic to retrieve those — use the same backend; use the artifacts' `type` schema field to locate them.
-
 ## Initial Response
 
 When this command is invoked:
@@ -53,6 +44,15 @@ or using a ticket number to resume from the most recent handoff for that ticket:
 ```
 
 Then wait for the user's input.
+
+## Storage backend dispatch
+
+Read `~/.claude/skills/_thoughts/storage-backend.md` for the per-backend mechanics — see the "How to read existing artifacts" section. For this command: artifact type is `handoff`. If the user provides only a ticket number (e.g. `ENG-2124`), find the most recent handoff for that ticket per the backend's rules:
+
+- **`git`** / **`obsidian`**: list `thoughts/shared/handoffs/ENG-2124/` and pick the most recent file by the `YYYY-MM-DD_HH-MM-SS` filename prefix.
+- **`notion`** / **`anytype`**: query the database/type filtered by `type = handoff` + `project = <mappedName>` + `ticket = ENG-XXXX`, sorted by `date` descending.
+
+If the referenced handoff points to related artifacts (plan, research docs), apply the same dispatch logic to retrieve those — use the same backend; use the artifacts' `type` schema field to locate them.
 
 ## Process Steps
 
