@@ -133,3 +133,5 @@ cargo test
 ## Acknowledgements
 
 Inspired by [HumanLayer](https://humanlayer.dev).
+
+<!-- greptile check probe 2026-05-13T13:12:22Z -->
