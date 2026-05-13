@@ -100,24 +100,34 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     steps:
-      - name: Download release assets
+      - name: Extract SHA256 digests from release API
+        id: checksums
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          gh release download "v${VERSION}" \
+          RELEASE_JSON=$(gh release view "v${VERSION}" \
             --repo BrightBlock/hyprlayer-cli \
-            --pattern 'hyprlayer-aarch64-apple-darwin' \
-            --pattern 'hyprlayer-x86_64-unknown-linux-gnu' \
-            --pattern 'hyprlayer-aarch64-unknown-linux-gnu' \
-            --dir assets
-
-      - name: Compute SHA256 checksums
-        id: checksums
-        run: |
-          echo "macos_arm64=$(sha256sum assets/hyprlayer-aarch64-apple-darwin | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
-          echo "linux_x86_64=$(sha256sum assets/hyprlayer-x86_64-unknown-linux-gnu | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
-          echo "linux_arm64=$(sha256sum assets/hyprlayer-aarch64-unknown-linux-gnu | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+            --json assets)
+          extract() {
+            local name="$1"
+            echo "$RELEASE_JSON" | jq -er --arg name "$name" \
+              '[.assets[] | select(.name == $name) | .digest][0]
+               | select(type == "string" and test("^sha256:[A-Fa-f0-9]{64}$"))
+               | sub("^sha256:"; "")'
+          }
+          if ! macos_arm64=$(extract hyprlayer-aarch64-apple-darwin) ||
+             ! linux_x86_64=$(extract hyprlayer-x86_64-unknown-linux-gnu) ||
+             ! linux_arm64=$(extract hyprlayer-aarch64-unknown-linux-gnu); then
+            echo "ERROR: missing or malformed sha256 digest entries in release API response" >&2
+            echo "$RELEASE_JSON" >&2
+            exit 1
+          fi
+          {
+            echo "macos_arm64=$macos_arm64"
+            echo "linux_x86_64=$linux_x86_64"
+            echo "linux_arm64=$linux_arm64"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Checkout tap repo
         uses: actions/checkout@v6
@@ -139,7 +149,6 @@ jobs:
           sed -i "s/sha256 \"PLACEHOLDER_MACOS_ARM64\"/sha256 \"${SHA_MACOS_ARM64}\"/" "$FORMULA"
           sed -i "s/sha256 \"PLACEHOLDER_LINUX_X86_64\"/sha256 \"${SHA_LINUX_X86_64}\"/" "$FORMULA"
           sed -i "s/sha256 \"PLACEHOLDER_LINUX_ARM64\"/sha256 \"${SHA_LINUX_ARM64}\"/" "$FORMULA"
-          # Also handle updates where placeholders were already replaced
           cd homebrew-tap
           sed -i -E "/aarch64-apple-darwin/,/sha256/{s/sha256 \"[a-f0-9]{64}\"/sha256 \"${SHA_MACOS_ARM64}\"/}" Formula/hyprlayer.rb
           sed -i -E "/x86_64-unknown-linux-gnu/,/sha256/{s/sha256 \"[a-f0-9]{64}\"/sha256 \"${SHA_LINUX_X86_64}\"/}" Formula/hyprlayer.rb
@@ -162,20 +171,22 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     steps:
-      - name: Download Windows binary
+      - name: Extract SHA256 digest from release API
+        id: hash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          gh release download "v${VERSION}" \
-            --repo BrightBlock/hyprlayer-cli \
-            --pattern 'hyprlayer-x86_64-pc-windows-msvc.exe' \
-            --dir assets
-
-      - name: Compute SHA256
-        id: hash
-        run: |
-          echo "sha256=$(sha256sum assets/hyprlayer-x86_64-pc-windows-msvc.exe | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          if ! sha256=$(gh release view "v${VERSION}" \
+              --repo BrightBlock/hyprlayer-cli \
+              --json assets \
+              | jq -er '[.assets[] | select(.name == "hyprlayer-x86_64-pc-windows-msvc.exe") | .digest][0]
+                         | select(type == "string" and test("^sha256:[A-Fa-f0-9]{64}$"))
+                         | sub("^sha256:"; "")'); then
+            echo "ERROR: missing or malformed Windows sha256 digest in release API response" >&2
+            exit 1
+          fi
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
 
       - name: Checkout scoop bucket
         uses: actions/checkout@v6
@@ -191,11 +202,8 @@ jobs:
         run: |
           VERSION="${VERSION#v}"
           MANIFEST="scoop-bucket/bucket/hyprlayer.json"
-          # Update version
           sed -i "s/\"version\": \".*\"/\"version\": \"${VERSION}\"/" "$MANIFEST"
-          # Update hash
           sed -i "s/\"hash\": \".*\"/\"hash\": \"${SHA256}\"/" "$MANIFEST"
-          # Update url version
           sed -i "s|/download/v[^/]*/|/download/v${VERSION}/|" "$MANIFEST"
 
       - name: Commit and push
@@ -216,11 +224,33 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Update PKGBUILD version from tag
+      - name: Update PKGBUILD with version and SHA256 digests from release API
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
+          RELEASE_JSON=$(gh release view "v${VERSION}" \
+            --repo BrightBlock/hyprlayer-cli \
+            --json assets)
+          extract() {
+            local name="$1"
+            echo "$RELEASE_JSON" | jq -er --arg name "$name" \
+              '[.assets[] | select(.name == $name) | .digest][0]
+               | select(type == "string" and test("^sha256:[A-Fa-f0-9]{64}$"))
+               | sub("^sha256:"; "")'
+          }
+          if ! SHA_X86_64=$(extract hyprlayer-x86_64-unknown-linux-gnu) ||
+             ! SHA_AARCH64=$(extract hyprlayer-aarch64-unknown-linux-gnu); then
+            echo "ERROR: missing or malformed Linux sha256 digest entries in release API response" >&2
+            echo "$RELEASE_JSON" >&2
+            exit 1
+          fi
           sed -i "s/^pkgver=.*/pkgver=${VERSION}/" PKGBUILD-bin
+          sed -i "s/^sha256sums_x86_64=.*/sha256sums_x86_64=('${SHA_X86_64}')/" PKGBUILD-bin
+          sed -i "s/^sha256sums_aarch64=.*/sha256sums_aarch64=('${SHA_AARCH64}')/" PKGBUILD-bin
           cp PKGBUILD-bin PKGBUILD
+          echo "--- patched PKGBUILD ---"
+          cat PKGBUILD
 
       - name: Publish hyprlayer-bin to AUR
         uses: KSXGitHub/github-actions-deploy-aur@v4.1.3

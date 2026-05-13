@@ -10,9 +10,11 @@ mod config;
 mod git_ops;
 mod hooks;
 mod http;
+mod integrity;
 mod secure_fs;
 mod telemetry;
 mod version;
+mod version_source;
 
 use cli::{
     AiCommands, CodexCommands, ProfileCommands, StorageCommands, TelemetryCommands,
@@ -20,6 +22,7 @@ use cli::{
 };
 use commands::ai::{configure as ai_configure, reinstall as ai_reinstall, status as ai_status};
 use commands::codex::stream as codex_stream;
+use commands::self_update as self_update_cmd;
 use commands::storage::{
     info as storage_info, set_database_id as storage_set_database_id,
     set_type_id as storage_set_type_id,
@@ -33,14 +36,6 @@ use commands::thoughts::{config_cmd, init, status, sync, uninit};
 fn main() -> Result<()> {
     let cli = cli::Cli::parse();
 
-    // Parse first, then run startup checks against the config the
-    // current command actually uses. Honors `--config-file` and the
-    // per-config `disableUpdateCheck` flag for that file. Skipped
-    // entirely for the spool-writing telemetry subcommands (skill-start
-    // / skill-end / record-from-hook / flush) so a skill preamble or
-    // Stop hook doesn't trip the version notification or agent
-    // reinstall path on every invocation — see
-    // `Cli::skip_startup_checks`.
     let config_path = cli.config_args().and_then(|a| a.path().ok());
     if !cli.skip_startup_checks() {
         version::run_startup_checks(config_path.as_deref(), cli.allows_background_flush());
@@ -55,8 +50,6 @@ fn main() -> Result<()> {
         record_dispatch_event(cmd_name, started, &result, config_path.as_deref());
     }
 
-    // Exit 2 (not anyhow's default 1) gives org CI a stable signal
-    // for blocked telemetry mutations.
     if let Err(err) = &result
         && err
             .downcast_ref::<telemetry::lifecycle::LockedError>()
@@ -116,15 +109,12 @@ fn dispatch(cli: cli::Cli) -> Result<()> {
             TelemetryCommands::Purge(args) => telemetry_cmd::purge::purge(args)?,
             TelemetryCommands::Config(args) => telemetry_cmd::config_cmd::config(args)?,
         },
+        cli::Cli::SelfUpdate(args) => self_update_cmd::run(args)?,
     }
     Ok(())
 }
 
-/// Append one `cli_command` event for the dispatched subcommand. Silent
-/// on every failure path: telemetry must never break the foreground
-/// command. Loads its own config fresh — the same `--config-file` the
-/// dispatch read from — so the event's `harness` / `installation_id` /
-/// `org_id` reflect the user's current state.
+/// Append one `cli_command` event without affecting command execution.
 fn record_dispatch_event(
     cmd_name: &str,
     started: Instant,

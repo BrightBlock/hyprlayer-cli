@@ -6,8 +6,16 @@ use std::io::Write;
 use std::path::{MAIN_SEPARATOR_STR as SEP, Path, PathBuf};
 use std::process::Command;
 
-const REPO: &str = "BrightBlock/hyprlayer-cli";
+pub(crate) const REPO: &str = "BrightBlock/hyprlayer-cli";
 const BRANCH: &str = "master";
+
+pub(crate) fn github_api_repo_url() -> String {
+    format!("https://api.github.com/repos/{REPO}")
+}
+
+pub(crate) fn github_release_download_base() -> String {
+    format!("https://github.com/{REPO}/releases/download")
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -36,15 +44,12 @@ impl fmt::Display for OpenCodeProvider {
 }
 
 impl OpenCodeProvider {
-    /// All available providers for selection prompts
     pub const ALL: &[OpenCodeProvider] = &[
         OpenCodeProvider::GithubCopilot,
         OpenCodeProvider::Anthropic,
         OpenCodeProvider::Abacus,
     ];
 
-    /// Get the default sonnet model string for this provider
-    /// Used for most commands and all agents
     pub fn default_sonnet_model(&self) -> &str {
         match self {
             Self::GithubCopilot => "github-copilot/claude-sonnet-4.5",
@@ -53,8 +58,6 @@ impl OpenCodeProvider {
         }
     }
 
-    /// Get the default opus model string for this provider
-    /// Used for research_codebase, create_plan, and iterate_plan commands
     pub fn default_opus_model(&self) -> &str {
         match self {
             Self::GithubCopilot => "github-copilot/claude-opus-4.5",
@@ -63,7 +66,6 @@ impl OpenCodeProvider {
         }
     }
 
-    /// Get the default model used for adversarial code reviews.
     /// Abacus routes to its highest-reasoning codex variant for a true
     /// cross-model second opinion; GitHub Copilot uses gpt-5-codex (the
     /// codex variant exposed through Copilot Chat); Anthropic stays on
@@ -76,7 +78,6 @@ impl OpenCodeProvider {
         }
     }
 
-    /// Get the provider prefix for model strings
     pub fn provider_prefix(&self) -> &str {
         match self {
             Self::GithubCopilot => "github-copilot",
@@ -97,10 +98,8 @@ impl fmt::Display for AgentTool {
 }
 
 impl AgentTool {
-    /// All available variants, for use in selection prompts
     pub const ALL: &[AgentTool] = &[AgentTool::Claude, AgentTool::Copilot, AgentTool::OpenCode];
 
-    /// The directory name in the repo that contains this tool's agent files
     pub(crate) fn repo_dir(&self) -> &str {
         match self {
             Self::Claude => "claude",
@@ -129,7 +128,6 @@ impl AgentTool {
         }
     }
 
-    /// Display the destination directory for user-facing messages
     pub fn dest_display(&self) -> String {
         match self {
             Self::Claude => format!("~{SEP}.claude{SEP}"),
@@ -145,8 +143,6 @@ impl AgentTool {
         }
     }
 
-    /// Check if agent files appear to be installed already.
-    /// Returns true if the destination directory contains the expected subdirectories.
     pub fn is_installed(&self) -> bool {
         let Ok(dest) = self.dest_dir() else {
             return false;
@@ -251,7 +247,6 @@ impl AgentTool {
         }
     }
 
-    /// Return status as JSON-serializable struct for --json output.
     pub fn status_json(&self, config: &crate::config::AiConfig) -> serde_json::Value {
         match self {
             Self::OpenCode => serde_json::json!({
@@ -323,7 +318,8 @@ impl AgentTool {
 /// Fetch the latest `master` commit SHA that touched `repo_path`.
 pub(crate) fn fetch_repo_dir_sha(repo_path: &str) -> Result<String> {
     let url = format!(
-        "https://api.github.com/repos/{REPO}/commits?path={repo_path}&sha={BRANCH}&per_page=1"
+        "{}/commits?path={repo_path}&sha={BRANCH}&per_page=1",
+        github_api_repo_url()
     );
     let json = curl_get_json(&url, Some(5))?;
     parse_repo_dir_sha(&json, repo_path)
@@ -366,7 +362,10 @@ fn download_directory(
     count: &mut usize,
     quiet: bool,
 ) -> Result<()> {
-    let api_url = format!("https://api.github.com/repos/{REPO}/contents/{repo_path}?ref={git_ref}");
+    let api_url = format!(
+        "{}/contents/{repo_path}?ref={git_ref}",
+        github_api_repo_url()
+    );
 
     let json = curl_get_json(&api_url, Some(15))?;
 
@@ -475,9 +474,7 @@ pub(crate) fn download_repo_file(repo_path: &str, dest: &Path) -> Result<()> {
     curl_download_file(&url, dest)
 }
 
-/// Build the raw.githubusercontent.com URL for a repo file at a given
-/// commit SHA or branch ref. Factored out so URL construction is unit-
-/// testable without touching the network.
+/// Factored out so URL construction is unit-testable without touching the network.
 fn raw_github_url(repo_path: &str, git_ref: &str) -> String {
     format!("https://raw.githubusercontent.com/{REPO}/{git_ref}/{repo_path}")
 }
@@ -521,8 +518,6 @@ const SONNET_MODEL_PLACEHOLDER: &str = "{{SONNET_MODEL}}";
 const OPUS_MODEL_PLACEHOLDER: &str = "{{OPUS_MODEL}}";
 const ADVERSARIAL_MODEL_PLACEHOLDER: &str = "{{ADVERSARIAL_MODEL}}";
 
-/// Replace model placeholders in a file with provider-specific values.
-/// Returns true if any replacements were made.
 fn replace_model_placeholders(path: &Path, provider: &OpenCodeProvider) -> Result<bool> {
     let content = fs::read_to_string(path)?;
 
@@ -545,7 +540,6 @@ fn replace_model_placeholders(path: &Path, provider: &OpenCodeProvider) -> Resul
     Ok(true)
 }
 
-/// Update all model placeholders in OpenCode agent/command files.
 /// Files use {{SONNET_MODEL}}, {{OPUS_MODEL}}, and {{ADVERSARIAL_MODEL}} placeholders.
 fn update_opencode_models(dest_dir: &Path, provider: &OpenCodeProvider) -> Result<usize> {
     let dirs = ["agents", "commands"];
@@ -567,7 +561,6 @@ fn update_opencode_models(dest_dir: &Path, provider: &OpenCodeProvider) -> Resul
 mod tests {
     use super::*;
 
-    /// Create `path` (and any missing parent dirs) as an empty stub file.
     fn touch(path: &Path) {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).unwrap();

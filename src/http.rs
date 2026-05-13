@@ -4,6 +4,7 @@
 //! The existing `curl_get_json` / `curl_download_file` callsites in
 //! `agents.rs` and `version.rs` migrate in a separate follow-up.
 
+use std::io::Read as _;
 use std::path::Path;
 use std::time::Duration;
 
@@ -71,9 +72,35 @@ fn build_agent(timeout: Duration, follow_redirects: bool) -> ureq::Agent {
 
 #[allow(dead_code)]
 pub fn get_json<T: DeserializeOwned>(url: &str, timeout: Duration) -> Result<T, HttpError> {
-    let resp = agent(timeout).get(url).call()?;
-    let body = resp.into_string()?;
+    let body = get_text(url, timeout)?;
     Ok(serde_json::from_str(&body)?)
+}
+
+pub fn get_text(url: &str, timeout: Duration) -> Result<String, HttpError> {
+    let resp = agent(timeout).get(url).call()?;
+    Ok(resp.into_string()?)
+}
+
+/// Like `get_text` but refuses to buffer more than `max_bytes` into memory.
+/// Use this for any endpoint whose response size isn't intrinsically bounded
+/// by our own infrastructure (e.g. the GitHub releases API), so a hostile or
+/// misconfigured source can't stream gigabytes into a `String`.
+pub fn get_text_capped(
+    url: &str,
+    timeout: Duration,
+    max_bytes: u64,
+) -> Result<String, HttpError> {
+    let resp = agent(timeout).get(url).call()?;
+    let mut reader = resp.into_reader().take(max_bytes + 1);
+    let mut buf = Vec::new();
+    reader.read_to_end(&mut buf)?;
+    if buf.len() as u64 > max_bytes {
+        return Err(HttpError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("response exceeded {max_bytes}-byte cap"),
+        )));
+    }
+    Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
 #[allow(dead_code)]
@@ -105,12 +132,45 @@ pub fn post_json_no_response<T: Serialize>(
 
 #[allow(dead_code)]
 pub fn download_file(url: &str, dest: &Path, timeout: Duration) -> Result<(), HttpError> {
+    download_file_capped(url, dest, timeout, None)
+}
+
+/// Streaming download with an optional byte cap. Once `max_bytes` is reached
+/// the connection is aborted and the partial file deleted so we never end up
+/// hashing/swapping an over-sized artifact.
+#[allow(dead_code)]
+pub fn download_file_capped(
+    url: &str,
+    dest: &Path,
+    timeout: Duration,
+    max_bytes: Option<u64>,
+) -> Result<(), HttpError> {
     let resp = agent(timeout).get(url).call()?;
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let mut reader = resp.into_reader();
     let mut file = std::fs::File::create(dest)?;
-    std::io::copy(&mut reader, &mut file)?;
+    let copy_result = match max_bytes {
+        Some(cap) => {
+            let mut reader = resp.into_reader().take(cap + 1);
+            let copied = std::io::copy(&mut reader, &mut file)?;
+            if copied > cap {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("download exceeded {cap}-byte cap"),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+        None => {
+            let mut reader = resp.into_reader();
+            std::io::copy(&mut reader, &mut file).map(|_| ())
+        }
+    };
+    if let Err(e) = copy_result {
+        let _ = std::fs::remove_file(dest);
+        return Err(e.into());
+    }
     Ok(())
 }

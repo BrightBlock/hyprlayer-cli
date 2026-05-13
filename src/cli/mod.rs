@@ -35,6 +35,8 @@ pub enum Cli {
         #[command(subcommand)]
         command: TelemetryCommands,
     },
+    /// Update hyprlayer through the detected install method
+    SelfUpdate(SelfUpdateArgs),
 }
 
 impl Cli {
@@ -96,6 +98,7 @@ impl Cli {
                 TelemetryCommands::Purge(_) => "telemetry.purge",
                 TelemetryCommands::Config(_) => "telemetry.config",
             },
+            Cli::SelfUpdate(_) => "self_update",
         }
     }
 
@@ -121,7 +124,7 @@ impl Cli {
     }
 
     pub fn skip_startup_checks(&self) -> bool {
-        self.is_silent_spool_writer()
+        self.is_silent_spool_writer() || matches!(self, Cli::SelfUpdate(_))
     }
 
     /// The `ConfigArgs` of whichever leaf subcommand was selected, or
@@ -171,6 +174,7 @@ impl Cli {
                 TelemetryCommands::Purge(a) => &a.config,
                 TelemetryCommands::Config(a) => &a.config,
             }),
+            Cli::SelfUpdate(args) => Some(&args.config),
         }
     }
 }
@@ -240,9 +244,6 @@ pub enum TelemetryCommands {
 mod tests {
     use super::*;
 
-    /// Tries to parse, asserts the dispatched leaf produces the expected
-    /// dotted name. Anchored on the public CLI surface — adding a new
-    /// subcommand without updating `subcommand_name` will fail here.
     fn parsed_name(argv: &[&str]) -> &'static str {
         Cli::try_parse_from(argv).unwrap().subcommand_name()
     }
@@ -270,6 +271,7 @@ mod tests {
             parsed_name(&["hyprlayer", "storage", "info"]),
             "storage.info"
         );
+        assert_eq!(parsed_name(&["hyprlayer", "self-update"]), "self_update");
     }
 
     #[test]
@@ -305,5 +307,12 @@ mod tests {
                 "expected dispatch event for `{cmd}`"
             );
         }
+    }
+
+    #[test]
+    fn self_update_skips_startup_checks_but_still_records_dispatch() {
+        let cli = Cli::try_parse_from(["hyprlayer", "self-update", "--check"]).unwrap();
+        assert!(cli.skip_startup_checks());
+        assert!(!cli.skip_dispatch_telemetry());
     }
 }

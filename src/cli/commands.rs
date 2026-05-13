@@ -269,6 +269,22 @@ pub struct StorageSetTypeIdArgs {
 
 #[derive(Debug, Args)]
 #[command(
+    name = "self-update",
+    about = "Update hyprlayer to the latest version installable for this install method"
+)]
+pub struct SelfUpdateArgs {
+    /// Only check whether an update is available; do not perform the update.
+    #[arg(long, help = "Report available update without performing it")]
+    pub check: bool,
+    /// Update even if the local version equals or exceeds the latest release.
+    #[arg(long, help = "Skip the \"already on latest\" short-circuit")]
+    pub force: bool,
+    #[command(flatten)]
+    pub config: ConfigArgs,
+}
+
+#[derive(Debug, Args)]
+#[command(
     name = "stream",
     about = "Read codex --json output on stdin, write formatted lines to stdout"
 )]

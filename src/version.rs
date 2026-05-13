@@ -1,21 +1,18 @@
 //! Version checking and update notification.
 
-use anyhow::Result;
-use serde::Deserialize;
 use std::env;
+use std::path::{Path, PathBuf};
 
 use crate::agents;
 use crate::config;
 use crate::telemetry;
+use crate::version_source;
 
-/// Throttle interval shared between the GitHub release check and the agent
-/// auto-reinstall check. Both poll a rate-limited external API.
 const CHECK_INTERVAL_SECS: i64 = 24 * 60 * 60;
 
-/// Telemetry flush throttle. The flush hits our own ingest endpoint, so a
-/// much shorter cadence is fine and keeps spool size + data-loss window
-/// bounded for active users.
 const TELEMETRY_FLUSH_INTERVAL_SECS: i64 = 5 * 60;
+const INSTALL_METHOD_ENV: &str = "HYPRLAYER_INSTALL_METHOD";
+const INSTALL_METHOD_MARKER: &str = "hyprlayer.install-method";
 
 fn unix_now() -> i64 {
     telemetry::unix_now() as i64
@@ -25,139 +22,184 @@ fn should_skip_due_to_throttle(last_check: i64, now: i64, interval_secs: i64) ->
     now - last_check < interval_secs
 }
 
-/// GitHub Release API response (minimal fields needed)
-#[derive(Deserialize)]
-struct GitHubRelease {
-    tag_name: String,
-    html_url: String,
-}
-
-/// How hyprlayer was installed - determines upgrade instructions
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum InstallMethod {
     Homebrew,
     Cargo,
     Winget,
     WindowsInstaller,
+    Scoop,
+    Aur,
     Unknown,
 }
 
 impl InstallMethod {
-    /// Detect installation method based on executable path
     pub fn detect() -> Self {
+        if let Ok(raw) = env::var(INSTALL_METHOD_ENV)
+            && let Some(method) = Self::parse(&raw)
+        {
+            return method;
+        }
+
         let exe_path = match env::current_exe() {
             Ok(p) => p,
             Err(_) => return Self::Unknown,
         };
+        if let Some(method) = detect_from_marker(&exe_path) {
+            return method;
+        }
 
         let path_str = exe_path.to_string_lossy();
-
-        // Homebrew: /opt/homebrew/Cellar/... or /usr/local/Cellar/...
-        if path_str.contains("/homebrew/") || path_str.contains("/Cellar/") {
-            return Self::Homebrew;
-        }
-
-        // Cargo: ~/.cargo/bin/hyprlayer
-        if path_str.contains(".cargo/bin") || path_str.contains(".cargo\\bin") {
-            return Self::Cargo;
-        }
-
-        // WinGet: %LOCALAPPDATA%\Microsoft\WinGet\Packages\
-        if path_str.contains("WinGet\\Packages") || path_str.contains("WinGet/Packages") {
-            return Self::Winget;
-        }
-
-        // Windows installer: %USERPROFILE%\.hyprlayer\bin
-        if path_str.contains(".hyprlayer\\bin") || path_str.contains(".hyprlayer/bin") {
-            return Self::WindowsInstaller;
-        }
-
-        Self::Unknown
+        classify_path(&path_str, pacman_has_hyprlayer_bin)
     }
 
-    /// Get the upgrade command for this installation method
-    pub fn upgrade_hint(&self) -> &'static str {
+    pub fn can_auto_update(&self) -> bool {
+        matches!(self, Self::WindowsInstaller)
+    }
+
+    /// Render the upgrade command for this method, interpolating `version`
+    /// where the install path needs it (currently only Cargo). Pass the
+    /// `latest` we just resolved so the printed command is copy-pasteable.
+    pub fn upgrade_hint(&self, version: &str) -> String {
         match self {
-            Self::Homebrew => "Run 'brew upgrade hyprlayer' to upgrade",
-            Self::Cargo => "Run 'cargo install hyprlayer' to upgrade",
-            Self::Winget => "Run 'winget upgrade BrightBlock.Hyprlayer' to upgrade",
-            Self::WindowsInstaller => "Re-run the install script to upgrade",
-            Self::Unknown => "Download the latest release from GitHub",
+            Self::Homebrew => "brew upgrade hyprlayer".to_string(),
+            Self::Cargo => format!(
+                "cargo install --git https://github.com/{} --tag v{} --force",
+                agents::REPO,
+                version
+            ),
+            Self::Winget => "winget upgrade BrightBlock.Hyprlayer".to_string(),
+            Self::Scoop => "scoop update hyprlayer".to_string(),
+            Self::Aur => "yay -S hyprlayer-bin   # or your AUR helper".to_string(),
+            Self::WindowsInstaller => "Re-run the install script".to_string(),
+            Self::Unknown => "Download the latest release from GitHub".to_string(),
+        }
+    }
+
+    /// Canonical marker-file / env-var values, accepted case-insensitively
+    /// with `_` normalized to `-`. Aliases are intentionally not supported:
+    /// the marker file is a stable ABI written by our own installers, and
+    /// the env var is a debug/test affordance — both have a single correct
+    /// spelling per variant.
+    fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().replace('_', "-").as_str() {
+            "homebrew" => Some(Self::Homebrew),
+            "cargo" => Some(Self::Cargo),
+            "winget" => Some(Self::Winget),
+            "windows-installer" => Some(Self::WindowsInstaller),
+            "scoop" => Some(Self::Scoop),
+            "aur" => Some(Self::Aur),
+            _ => None,
         }
     }
 }
 
-/// Result of checking for updates
+const PATH_RULES: &[(InstallMethod, &[&str])] = &[
+    (InstallMethod::Homebrew, &["/homebrew/", "/Cellar/"]),
+    (InstallMethod::Cargo, &[".cargo/bin", ".cargo\\bin"]),
+    (
+        InstallMethod::Winget,
+        &["WinGet\\Packages", "WinGet/Packages"],
+    ),
+    (
+        InstallMethod::Scoop,
+        &[
+            "\\scoop\\apps\\",
+            "\\scoop\\shims\\",
+            "/scoop/apps/",
+            "/scoop/shims/",
+        ],
+    ),
+    (
+        InstallMethod::WindowsInstaller,
+        &[".hyprlayer\\bin", ".hyprlayer/bin"],
+    ),
+];
+
+fn detect_from_marker(exe_path: &Path) -> Option<InstallMethod> {
+    install_method_marker_candidates(exe_path)
+        .into_iter()
+        .filter_map(|path| std::fs::read_to_string(path).ok())
+        .find_map(|raw| InstallMethod::parse(&raw))
+}
+
+fn install_method_marker_candidates(exe_path: &Path) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(bin_dir) = exe_path.parent() {
+        candidates.push(bin_dir.join(INSTALL_METHOD_MARKER));
+        if let Some(install_dir) = bin_dir.parent() {
+            candidates.push(install_dir.join(INSTALL_METHOD_MARKER));
+        }
+    }
+    candidates
+}
+
+fn classify_path<F: FnOnce() -> bool>(path: &str, aur_pacman_present: F) -> InstallMethod {
+    if let Some((method, _)) = PATH_RULES
+        .iter()
+        .find(|(_, needles)| needles.iter().any(|needle| path.contains(needle)))
+    {
+        return *method;
+    }
+    // pacman probe runs only if no path rule matched and we're on Linux at /usr/bin/.
+    if cfg!(target_os = "linux") && path.starts_with("/usr/bin/") && aur_pacman_present() {
+        return InstallMethod::Aur;
+    }
+    InstallMethod::Unknown
+}
+
+#[cfg(target_os = "linux")]
+fn pacman_has_hyprlayer_bin() -> bool {
+    let Ok(entries) = std::fs::read_dir("/var/lib/pacman/local") else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with("hyprlayer-bin-")
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn pacman_has_hyprlayer_bin() -> bool {
+    false
+}
+
 pub struct UpdateInfo {
     pub current: String,
     pub latest: String,
-    #[allow(dead_code)]
-    pub download_url: String,
     pub install_method: InstallMethod,
 }
 
-/// Check GitHub for the latest release version.
-/// Returns Some(UpdateInfo) if a newer version is available, None otherwise.
-/// Returns Ok(None) on any error (network, parse, etc.) - fails silently.
-pub fn check_for_updates() -> Option<UpdateInfo> {
-    check_for_updates_inner().ok().flatten()
-}
-
-fn check_for_updates_inner() -> Result<Option<UpdateInfo>> {
-    let current = env!("CARGO_PKG_VERSION");
-
-    // Fetch latest release from GitHub
-    let url = "https://api.github.com/repos/BrightBlock/hyprlayer-cli/releases/latest";
-    let json = agents::curl_get_json(url, Some(5))?;
-
-    let release: GitHubRelease = serde_json::from_str(&json)?;
-
-    // Strip 'v' prefix if present (e.g., "v1.5.0" -> "1.5.0")
-    let latest = release.tag_name.trim_start_matches('v');
-
-    if is_newer_version(latest, current) {
-        Ok(Some(UpdateInfo {
-            current: current.to_string(),
-            latest: latest.to_string(),
-            download_url: release.html_url,
-            install_method: InstallMethod::detect(),
-        }))
-    } else {
-        Ok(None)
-    }
-}
-
-/// Compare two semver version strings numerically.
-/// Returns true if `a` is newer than `b`.
 /// Pre-release suffixes (e.g., "-beta.1") are stripped before comparison.
-fn is_newer_version(a: &str, b: &str) -> bool {
+pub(crate) fn is_newer_version(a: &str, b: &str) -> bool {
     let parse = |v: &str| -> Vec<u64> {
-        // Strip pre-release suffix: "1.5.0-beta.1" -> "1.5.0"
         let base = v.split('-').next().unwrap_or(v);
         base.split('.').filter_map(|s| s.parse().ok()).collect()
     };
     parse(a) > parse(b)
 }
 
-/// Equality on the cached vs upstream SHA. `None` (no SHA cached yet —
-/// first run after the field was added) always counts as stale.
+/// No cached SHA always counts as stale.
 fn should_reinstall(installed_sha: Option<&str>, latest_sha: &str) -> bool {
     installed_sha != Some(latest_sha)
 }
 
-/// Run all once-per-invocation startup checks (release notification + agent
-/// bundle auto-reinstall). Loads the config once and saves it at most once,
-/// only when a check actually mutated something.
-///
-/// `config_path = None` means "use the default path." The caller passes
-/// the parsed `--config-file` value when present so a user with a custom
-/// config (and their custom `disableUpdateCheck` setting) gets the
-/// expected startup behavior.
-///
-/// `allow_background_flush = false` suppresses the background telemetry
-/// flush spawn. Telemetry subcommands set this so `telemetry off` can't
-/// flush queued events before disabling and `telemetry flush` can't
-/// recursively spawn another flush.
+/// What `check_release_in` did, so `run_startup_checks` can persist state
+/// once and the caller can short-circuit the rest of the CLI on auto-update.
+#[derive(Debug, PartialEq)]
+enum ReleaseCheckOutcome {
+    /// Within the throttle window — nothing changed.
+    Throttled,
+    /// Network attempt occurred; `last_version_check` must be persisted.
+    Checked,
+    /// Auto-update succeeded; binary was replaced. Caller exits after save.
+    AutoUpdated { new_version: String },
+}
+
+/// Run startup checks using the same config path as the selected command.
+/// Exits the process with status 0 if a silent auto-update succeeded.
 pub fn run_startup_checks(config_path: Option<&std::path::Path>, allow_background_flush: bool) {
     let resolved = config_path
         .map(std::path::Path::to_path_buf)
@@ -180,7 +222,20 @@ pub fn run_startup_checks(config_path: Option<&std::path::Path>, allow_backgroun
         return;
     }
 
-    let release_changed = check_release_in(&mut cfg, now);
+    let release_outcome = check_release_in(&mut cfg, now);
+
+    // Exit BEFORE agent reinstall / telemetry flush: the executable has
+    // been replaced, but this process is still running the old binary
+    // in memory. Continuing would (a) re-exec the new binary as a child
+    // for telemetry flush — risking schema mismatch — and (b) print
+    // post-update startup chatter after the "please re-run" line.
+    if let ReleaseCheckOutcome::AutoUpdated { new_version } = release_outcome {
+        let _ = cfg.save(&config_path);
+        println!("hyprlayer updated to {new_version}, please re-run your command.");
+        std::process::exit(0);
+    }
+
+    let release_changed = !matches!(release_outcome, ReleaseCheckOutcome::Throttled);
     let agents_changed = reinstall_agents_in(&mut cfg, now);
     let telemetry_changed =
         allow_background_flush && maybe_flush_telemetry_in(&mut cfg, now, &config_path);
@@ -200,17 +255,7 @@ fn should_run_discovery(last_enrollment_check: u64, now: i64) -> bool {
     !should_skip_due_to_throttle(last, now, CHECK_INTERVAL_SECS)
 }
 
-/// Spawn a detached `hyprlayer telemetry flush` if
-/// `TELEMETRY_FLUSH_INTERVAL_SECS` have passed since the last flush and
-/// telemetry is enabled. Passes through `--config-file` so the child reads
-/// the same config as the parent. Returns true if last_flush was updated
-/// so the caller persists it.
-///
-/// Bumps `last_flush` unconditionally on a spawn attempt — even if `spawn`
-/// fails — so a broken transport can't cause us to hammer the process
-/// table. The child is `Telemetry::Flush`, which sets
-/// `allows_background_flush = false`, so it cannot recursively re-enter
-/// this function.
+/// Spawn a detached telemetry flush and bump the throttle on any spawn attempt.
 fn maybe_flush_telemetry_in(
     cfg: &mut config::HyprlayerConfig,
     now: i64,
@@ -241,22 +286,52 @@ fn maybe_flush_telemetry_in(
     true
 }
 
-fn check_release_in(cfg: &mut config::HyprlayerConfig, now: i64) -> bool {
-    if should_skip_due_to_throttle(
-        cfg.last_version_check.unwrap_or(0),
-        now,
-        CHECK_INTERVAL_SECS,
-    ) {
-        return false;
+/// Bump `last_version_check` on every network attempt.
+fn check_release_in(cfg: &mut config::HyprlayerConfig, now: i64) -> ReleaseCheckOutcome {
+    let current = env!("CARGO_PKG_VERSION");
+    let last_check = cfg.last_version_check.unwrap_or(0);
+    if should_skip_due_to_throttle(last_check, now, CHECK_INTERVAL_SECS) {
+        return ReleaseCheckOutcome::Throttled;
     }
-    if let Some(update_info) = check_for_updates() {
-        print_update_notification(&update_info);
-    }
+    // Bump the throttle *before* attempting any network/PM work; a flaky
+    // source mustn't cause us to retry on every startup until the next window.
     cfg.last_version_check = Some(now);
-    true
+
+    let method = InstallMethod::detect();
+    let latest = version_source::latest_available_for(&method);
+    if !should_notify(current, latest.as_deref()) {
+        return ReleaseCheckOutcome::Checked;
+    }
+    let info = UpdateInfo {
+        current: current.to_string(),
+        latest: latest.unwrap(),
+        install_method: method,
+    };
+    if should_auto_update(cfg.auto_update, &method) {
+        match crate::commands::self_update::run_silent(&info) {
+            Ok(()) => {
+                return ReleaseCheckOutcome::AutoUpdated {
+                    new_version: info.latest,
+                };
+            }
+            Err(e) => eprintln!("Auto-update failed ({e}); falling back to notification."),
+        }
+    }
+    print_update_notification(&info);
+    ReleaseCheckOutcome::Checked
 }
 
-/// Returns `true` when `cfg` was mutated and must be persisted.
+fn should_auto_update(auto_update_flag: bool, method: &InstallMethod) -> bool {
+    auto_update_flag && method.can_auto_update()
+}
+
+fn should_notify(current: &str, latest_for_method: Option<&str>) -> bool {
+    match latest_for_method {
+        Some(latest) => is_newer_version(latest, current),
+        None => false,
+    }
+}
+
 fn reinstall_agents_in(cfg: &mut config::HyprlayerConfig, now: i64) -> bool {
     // Auto-reinstall only refreshes an existing install — it never
     // bootstraps a new one for a user who has not run `ai configure`.
@@ -278,11 +353,17 @@ fn reinstall_agents_in(cfg: &mut config::HyprlayerConfig, now: i64) -> bool {
 
     try_refresh_agents(cfg, tool, opencode_provider.as_ref());
 
+    if tool == agents::AgentTool::Copilot && !cfg.copilot_deprecation_warned {
+        eprintln!(
+            "Note: Copilot support in hyprlayer is deprecated and will be removed in a\n\
+             future release. To switch to Claude Code or OpenCode, run `hyprlayer ai configure`."
+        );
+        cfg.copilot_deprecation_warned = true;
+    }
+
     true
 }
 
-/// Compare cached SHA to upstream; if stale, run the install. Failure is
-/// logged once; the next 24h cycle retries.
 fn try_refresh_agents(
     cfg: &mut config::HyprlayerConfig,
     tool: agents::AgentTool,
@@ -304,24 +385,15 @@ fn try_refresh_agents(
         ),
     }
     crate::commands::ai::install_claude_hook_if_applicable(tool, cfg);
-    // The 24h auto-reinstall has just re-pulled the bundle, which
-    // includes `opencode/plugins/hyprlayer-telemetry.ts` for opencode
-    // users. Run the orchestrator so opted-out users get the freshly-
-    // landed plugin removed, and so the in-place legacy-beacon strip
-    // catches any pre-1.5.4 bundle that hadn't been refreshed yet.
-    // For telemetry-on opencode users this is a no-op via the
-    // `is_installed_at` short-circuit.
+    // Keep lifecycle artifacts consistent with the refreshed bundle.
     crate::commands::ai::install_opencode_plugin_if_applicable(tool, cfg);
 }
 
-/// Print update notification with install-method-specific hint.
-///
-/// Writes to stderr so it never pollutes stdout-piped output (e.g.
-/// `codex exec ... --json | hyprlayer codex stream`).
+/// Writes to stderr so it never pollutes stdout-piped output.
 fn print_update_notification(info: &UpdateInfo) {
     use colored::Colorize;
 
-    let hint = info.install_method.upgrade_hint();
+    let hint = info.install_method.upgrade_hint(&info.latest);
     eprintln!(
         "\n{} {} → {} ({})\n",
         "Update available:".yellow(),
@@ -340,27 +412,22 @@ mod tests {
         assert!(is_newer_version("1.5.0", "1.4.0"));
         assert!(is_newer_version("1.4.1", "1.4.0"));
         assert!(is_newer_version("2.0.0", "1.9.9"));
-        assert!(is_newer_version("1.10.0", "1.9.0")); // double-digit segment
-        assert!(!is_newer_version("1.4.0", "1.4.0")); // equal
-        assert!(!is_newer_version("1.3.0", "1.4.0")); // older
+        assert!(is_newer_version("1.10.0", "1.9.0"));
+        assert!(!is_newer_version("1.4.0", "1.4.0"));
+        assert!(!is_newer_version("1.3.0", "1.4.0"));
     }
 
     #[test]
     fn version_comparison_prerelease() {
-        // Pre-release of same version is not newer
         assert!(!is_newer_version("1.5.0-beta.1", "1.5.0"));
-        // Pre-release of newer version is still newer
         assert!(is_newer_version("1.6.0-rc.1", "1.5.0"));
-        // Two pre-releases of same version are equal (suffix stripped)
         assert!(!is_newer_version("1.5.0-beta.1", "1.5.0-beta.2"));
     }
 
     #[test]
     fn version_comparison_mismatched_segments() {
-        // Shorter version treated as less if it's a prefix
         assert!(is_newer_version("1.4.1", "1.4"));
         assert!(!is_newer_version("1.4", "1.4.0"));
-        // Two-segment vs three-segment
         assert!(is_newer_version("1.5", "1.4.9"));
     }
 
@@ -390,13 +457,8 @@ mod tests {
         assert!(!should_skip_due_to_throttle(now - i, now, i));
         assert!(!should_skip_due_to_throttle(now - (i + 1), now, i));
         assert!(!should_skip_due_to_throttle(0, now, i));
-        // Clock skew: last_check in the future → still skip (negative
-        // delta is < interval). Conservative: avoids hammering on a
-        // misconfigured clock that's about to be fixed.
         assert!(should_skip_due_to_throttle(now + 5, now, i));
 
-        // Telemetry uses a much shorter interval so a stale spool drains
-        // within minutes, not the next day.
         let t = TELEMETRY_FLUSH_INTERVAL_SECS;
         assert!(t < i);
         assert!(should_skip_due_to_throttle(now - (t - 1), now, t));
@@ -420,6 +482,185 @@ mod tests {
             "well outside window: shellout allowed"
         );
         assert!(allow(0), "fresh install (zero anchor): shellout allowed");
+    }
+
+    #[test]
+    fn classify_path_recognizes_every_variant() {
+        use InstallMethod::*;
+        let no_pacman = || false;
+        let with_pacman = || true;
+
+        assert_eq!(
+            classify_path(
+                "/opt/homebrew/Cellar/hyprlayer/1.5.5/bin/hyprlayer",
+                no_pacman
+            ),
+            Homebrew
+        );
+        assert_eq!(
+            classify_path("/usr/local/Cellar/hyprlayer/1.5.5/bin/hyprlayer", no_pacman),
+            Homebrew
+        );
+
+        assert_eq!(
+            classify_path("/home/jt/.cargo/bin/hyprlayer", no_pacman),
+            Cargo
+        );
+        assert_eq!(
+            classify_path(r"C:\Users\jt\.cargo\bin\hyprlayer.exe", no_pacman),
+            Cargo
+        );
+
+        assert_eq!(
+            classify_path(
+                r"C:\Users\jt\AppData\Local\Microsoft\WinGet\Packages\BrightBlock.Hyprlayer_..\hyprlayer.exe",
+                no_pacman,
+            ),
+            Winget
+        );
+
+        assert_eq!(
+            classify_path(
+                r"C:\Users\jt\scoop\apps\hyprlayer\current\hyprlayer.exe",
+                no_pacman,
+            ),
+            Scoop
+        );
+        assert_eq!(
+            classify_path(r"C:\Users\jt\scoop\shims\hyprlayer.exe", no_pacman),
+            Scoop
+        );
+
+        assert_eq!(
+            classify_path(r"C:\Users\jt\.hyprlayer\bin\hyprlayer.exe", no_pacman),
+            WindowsInstaller
+        );
+
+        if cfg!(target_os = "linux") {
+            assert_eq!(classify_path("/usr/bin/hyprlayer", with_pacman), Aur);
+            assert_eq!(classify_path("/usr/bin/hyprlayer", no_pacman), Unknown);
+        }
+
+        assert_eq!(classify_path("/opt/random/hyprlayer", no_pacman), Unknown);
+    }
+
+    #[test]
+    fn install_method_parser_accepts_canonical_names_only() {
+        assert_eq!(
+            InstallMethod::parse("windows-installer"),
+            Some(InstallMethod::WindowsInstaller)
+        );
+        assert_eq!(
+            InstallMethod::parse("WINDOWS_INSTALLER"),
+            Some(InstallMethod::WindowsInstaller)
+        );
+        assert_eq!(
+            InstallMethod::parse("homebrew"),
+            Some(InstallMethod::Homebrew)
+        );
+        assert_eq!(InstallMethod::parse("aur"), Some(InstallMethod::Aur));
+
+        // Aliases that used to parse are now rejected so the marker-file
+        // ABI is unambiguous.
+        assert_eq!(InstallMethod::parse("brew"), None);
+        assert_eq!(InstallMethod::parse("windows"), None);
+        assert_eq!(InstallMethod::parse("installer"), None);
+        assert_eq!(InstallMethod::parse("hyprlayer-bin"), None);
+
+        assert_eq!(InstallMethod::parse("garbage"), None);
+    }
+
+    #[test]
+    fn install_method_marker_beats_legacy_path_detection() {
+        let temp = tempfile::tempdir().unwrap();
+        let bin_dir = temp.path().join(".cargo").join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let exe = bin_dir.join("hyprlayer");
+        std::fs::write(&exe, b"").unwrap();
+        std::fs::write(bin_dir.join(INSTALL_METHOD_MARKER), "windows-installer").unwrap();
+
+        assert_eq!(
+            detect_from_marker(&exe),
+            Some(InstallMethod::WindowsInstaller)
+        );
+        assert_eq!(
+            classify_path(&exe.to_string_lossy(), || false),
+            InstallMethod::Cargo
+        );
+    }
+
+    #[test]
+    fn install_method_marker_can_live_in_install_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let bin_dir = temp.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let exe = bin_dir.join("hyprlayer");
+        std::fs::write(&exe, b"").unwrap();
+        std::fs::write(temp.path().join(INSTALL_METHOD_MARKER), "scoop").unwrap();
+
+        assert_eq!(detect_from_marker(&exe), Some(InstallMethod::Scoop));
+    }
+
+    #[test]
+    fn upgrade_hint_covers_every_variant() {
+        for m in [
+            InstallMethod::Homebrew,
+            InstallMethod::Cargo,
+            InstallMethod::Winget,
+            InstallMethod::WindowsInstaller,
+            InstallMethod::Scoop,
+            InstallMethod::Aur,
+            InstallMethod::Unknown,
+        ] {
+            let hint = m.upgrade_hint("1.6.0");
+            assert!(!hint.is_empty(), "empty hint for {m:?}");
+            assert!(
+                !hint.contains("<VERSION>"),
+                "unsubstituted placeholder in hint for {m:?}: {hint}"
+            );
+            if matches!(m, InstallMethod::Cargo) {
+                assert!(hint.contains("v1.6.0"), "version not interpolated: {hint}");
+            }
+        }
+    }
+
+    #[test]
+    fn should_notify_truth_table() {
+        assert!(should_notify("1.5.5", Some("1.6.0")));
+        assert!(should_notify("1.5.5", Some("1.10.0")));
+        assert!(!should_notify("1.6.0", Some("1.6.0")));
+        assert!(!should_notify("1.6.0", Some("1.5.5")));
+        assert!(!should_notify("1.5.5", None));
+        assert!(!should_notify("1.6.0", Some("1.6.0-rc1")));
+        assert!(should_notify("1.5.5", Some("1.6.0-rc1")));
+    }
+
+    #[test]
+    fn can_auto_update_only_for_direct_swap_methods() {
+        assert!(InstallMethod::WindowsInstaller.can_auto_update());
+
+        assert!(!InstallMethod::Unknown.can_auto_update());
+        assert!(!InstallMethod::Homebrew.can_auto_update());
+        assert!(!InstallMethod::Cargo.can_auto_update());
+        assert!(!InstallMethod::Winget.can_auto_update());
+        assert!(!InstallMethod::Scoop.can_auto_update());
+        assert!(!InstallMethod::Aur.can_auto_update());
+    }
+
+    #[test]
+    fn should_auto_update_requires_flag_and_capable_method() {
+        assert!(!should_auto_update(false, &InstallMethod::Unknown));
+        assert!(!should_auto_update(false, &InstallMethod::WindowsInstaller));
+        assert!(!should_auto_update(false, &InstallMethod::Homebrew));
+
+        assert!(should_auto_update(true, &InstallMethod::WindowsInstaller));
+
+        assert!(!should_auto_update(true, &InstallMethod::Unknown));
+        assert!(!should_auto_update(true, &InstallMethod::Homebrew));
+        assert!(!should_auto_update(true, &InstallMethod::Cargo));
+        assert!(!should_auto_update(true, &InstallMethod::Winget));
+        assert!(!should_auto_update(true, &InstallMethod::Scoop));
+        assert!(!should_auto_update(true, &InstallMethod::Aur));
     }
 
     #[test]
