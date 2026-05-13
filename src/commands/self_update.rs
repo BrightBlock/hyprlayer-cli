@@ -17,6 +17,11 @@ use crate::version_source;
 /// streaming gigabytes into the temp dir before we verify the digest.
 const MAX_BINARY_BYTES: u64 = 200 * 1024 * 1024;
 
+/// Release-API responses for a single tag run a few KB. 1 MiB is two orders
+/// of magnitude over what GitHub actually returns and still prevents a
+/// hostile or misconfigured source from buffering an unbounded `String`.
+const MAX_RELEASE_API_BYTES: u64 = 1024 * 1024;
+
 pub fn run(args: SelfUpdateArgs) -> Result<()> {
     let method = InstallMethod::detect();
 
@@ -40,7 +45,7 @@ pub fn run(args: SelfUpdateArgs) -> Result<()> {
             let Some(info) = preflight_update_info(method, args.force)? else {
                 return Ok(());
             };
-            direct_update(&info)?;
+            direct_update(&info, false)?;
             println!("hyprlayer updated to {}.", info.latest);
             Ok(())
         }
@@ -48,8 +53,10 @@ pub fn run(args: SelfUpdateArgs) -> Result<()> {
 }
 
 /// Startup auto-update path; callers fall back to notification on failure.
+/// `quiet = true` suppresses progress chatter so background updates don't
+/// inject text into stderr mid-command (e.g. `hyprlayer thoughts sync --json`).
 pub fn run_silent(info: &UpdateInfo) -> Result<()> {
-    direct_update(info)
+    direct_update(info, true)
 }
 
 fn report_update_status(method: InstallMethod, force: bool) -> Result<()> {
@@ -58,7 +65,7 @@ fn report_update_status(method: InstallMethod, force: bool) -> Result<()> {
             "Update available: {} → {} ({})",
             info.current,
             info.latest,
-            method.upgrade_hint()
+            method.upgrade_hint(&info.latest)
         );
     }
     Ok(())
@@ -152,7 +159,7 @@ fn which(program: &str) -> Option<PathBuf> {
     None
 }
 
-fn direct_update(info: &UpdateInfo) -> Result<()> {
+fn direct_update(info: &UpdateInfo, quiet: bool) -> Result<()> {
     let target = target_triple().ok_or_else(|| {
         anyhow!(
             "No precompiled binary is published for this target. \
@@ -165,8 +172,9 @@ fn direct_update(info: &UpdateInfo) -> Result<()> {
     let bin_url = format!("{}/{tag}/{asset}", agents::github_release_download_base());
 
     let api_url = format!("{}/releases/tags/{tag}", agents::github_api_repo_url());
-    let release_body = http::get_text(&api_url, Duration::from_secs(15))
-        .context("Unable to fetch release metadata from GitHub")?;
+    let release_body =
+        http::get_text_capped(&api_url, Duration::from_secs(15), MAX_RELEASE_API_BYTES)
+            .context("Unable to fetch release metadata from GitHub")?;
     let digests = integrity::digests_from_release_json(&release_body);
     let expected = digests.get(&asset).ok_or_else(|| {
         anyhow!(
@@ -181,7 +189,9 @@ fn direct_update(info: &UpdateInfo) -> Result<()> {
         .context("failed to create temp dir for download")?;
     let bin_path = tmp.path().join(&asset);
 
-    eprintln!("Downloading {asset}…");
+    if !quiet {
+        eprintln!("Downloading {asset}…");
+    }
     http::download_file_capped(
         &bin_url,
         &bin_path,

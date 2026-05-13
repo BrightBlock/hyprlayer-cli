@@ -123,16 +123,19 @@ fn parse_scoop_manifest(body: &str) -> Option<String> {
 }
 
 fn aur_helper_version() -> Option<String> {
-    for helper in ["paru", "yay"] {
-        let Some(body) = package_manager_stdout(helper, &["-Qua", "hyprlayer-bin"], &[]) else {
-            continue;
-        };
-        return Some(
-            parse_aur_helper_outdated(&body)
-                .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string()),
-        );
-    }
-    None
+    // Probe only the first helper actually on PATH. Falling through to a
+    // second `package_manager_stdout` call could double the worst-case
+    // 10 s timeout if both helpers are installed and the first one hangs.
+    let helper = ["paru", "yay"].into_iter().find(|h| path_has(h))?;
+    let body = package_manager_stdout(helper, &["-Qua", "hyprlayer-bin"], &[])?;
+    Some(parse_aur_helper_outdated(&body).unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string()))
+}
+
+fn path_has(program: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| dir.join(program).is_file())
 }
 
 fn parse_aur_helper_outdated(body: &str) -> Option<String> {

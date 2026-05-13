@@ -81,6 +81,28 @@ pub fn get_text(url: &str, timeout: Duration) -> Result<String, HttpError> {
     Ok(resp.into_string()?)
 }
 
+/// Like `get_text` but refuses to buffer more than `max_bytes` into memory.
+/// Use this for any endpoint whose response size isn't intrinsically bounded
+/// by our own infrastructure (e.g. the GitHub releases API), so a hostile or
+/// misconfigured source can't stream gigabytes into a `String`.
+pub fn get_text_capped(
+    url: &str,
+    timeout: Duration,
+    max_bytes: u64,
+) -> Result<String, HttpError> {
+    let resp = agent(timeout).get(url).call()?;
+    let mut reader = resp.into_reader().take(max_bytes + 1);
+    let mut buf = Vec::new();
+    reader.read_to_end(&mut buf)?;
+    if buf.len() as u64 > max_bytes {
+        return Err(HttpError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("response exceeded {max_bytes}-byte cap"),
+        )));
+    }
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
 #[allow(dead_code)]
 pub fn post_json<T: Serialize, R: DeserializeOwned>(
     url: &str,

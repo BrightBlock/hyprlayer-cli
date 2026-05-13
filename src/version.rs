@@ -57,19 +57,22 @@ impl InstallMethod {
         matches!(self, Self::WindowsInstaller)
     }
 
-    pub fn upgrade_hint(&self) -> &'static str {
+    /// Render the upgrade command for this method, interpolating `version`
+    /// where the install path needs it (currently only Cargo). Pass the
+    /// `latest` we just resolved so the printed command is copy-pasteable.
+    pub fn upgrade_hint(&self, version: &str) -> String {
         match self {
-            Self::Homebrew => "brew upgrade hyprlayer",
-            // Repo URL is inlined here because upgrade_hint returns &'static str;
-            // keep this string in sync with agents::REPO if that constant ever changes.
-            Self::Cargo => {
-                "cargo install --git https://github.com/BrightBlock/hyprlayer-cli --tag v<VERSION> --force"
-            }
-            Self::Winget => "winget upgrade BrightBlock.Hyprlayer",
-            Self::Scoop => "scoop update hyprlayer",
-            Self::Aur => "yay -S hyprlayer-bin   # or your AUR helper",
-            Self::WindowsInstaller => "Re-run the install script",
-            Self::Unknown => "Download the latest release from GitHub",
+            Self::Homebrew => "brew upgrade hyprlayer".to_string(),
+            Self::Cargo => format!(
+                "cargo install --git https://github.com/{} --tag v{} --force",
+                agents::REPO,
+                version
+            ),
+            Self::Winget => "winget upgrade BrightBlock.Hyprlayer".to_string(),
+            Self::Scoop => "scoop update hyprlayer".to_string(),
+            Self::Aur => "yay -S hyprlayer-bin   # or your AUR helper".to_string(),
+            Self::WindowsInstaller => "Re-run the install script".to_string(),
+            Self::Unknown => "Download the latest release from GitHub".to_string(),
         }
     }
 
@@ -390,7 +393,7 @@ fn try_refresh_agents(
 fn print_update_notification(info: &UpdateInfo) {
     use colored::Colorize;
 
-    let hint = info.install_method.upgrade_hint();
+    let hint = info.install_method.upgrade_hint(&info.latest);
     eprintln!(
         "\n{} {} → {} ({})\n",
         "Update available:".yellow(),
@@ -609,7 +612,15 @@ mod tests {
             InstallMethod::Aur,
             InstallMethod::Unknown,
         ] {
-            assert!(!m.upgrade_hint().is_empty(), "empty hint for {m:?}");
+            let hint = m.upgrade_hint("1.6.0");
+            assert!(!hint.is_empty(), "empty hint for {m:?}");
+            assert!(
+                !hint.contains("<VERSION>"),
+                "unsubstituted placeholder in hint for {m:?}: {hint}"
+            );
+            if matches!(m, InstallMethod::Cargo) {
+                assert!(hint.contains("v1.6.0"), "version not interpolated: {hint}");
+            }
         }
     }
 
