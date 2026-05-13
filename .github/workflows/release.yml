@@ -30,7 +30,7 @@ jobs:
             binary: hyprlayer-x86_64-pc-windows-msvc.exe
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -59,7 +59,7 @@ jobs:
           fi
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.binary }}
           path: ${{ matrix.binary }}
@@ -69,10 +69,10 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
@@ -120,7 +120,7 @@ jobs:
           echo "linux_arm64=$(sha256sum assets/hyprlayer-aarch64-unknown-linux-gnu | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Checkout tap repo
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           repository: BrightBlock/homebrew-tap
           token: ${{ secrets.TAP_GITHUB_TOKEN }}
@@ -178,7 +178,7 @@ jobs:
           echo "sha256=$(sha256sum assets/hyprlayer-x86_64-pc-windows-msvc.exe | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Checkout scoop bucket
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           repository: BrightBlock/scoop-bucket
           token: ${{ secrets.TAP_GITHUB_TOKEN }}
@@ -214,7 +214,7 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Update PKGBUILD version from tag
         run: |
