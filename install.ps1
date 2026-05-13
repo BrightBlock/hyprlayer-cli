@@ -63,7 +63,9 @@ try {
         Write-Host "Error: SHA256 mismatch for $Binary" -ForegroundColor Red
         Write-Host "  expected: $Expected" -ForegroundColor Red
         Write-Host "  actual:   $Actual" -ForegroundColor Red
-        exit 1
+        # `throw` (not `exit`) so PowerShell runs the `finally` block below
+        # and the unverified binary is removed from $TempDir before exit.
+        throw "SHA256 mismatch for $Binary"
     }
     Write-Host "Checksum verified ($Expected)" -ForegroundColor Green
 
