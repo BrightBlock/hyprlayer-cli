@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 
-preferences_dir="docs/conductor-preferences"
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+preferences_dir="$repo_root/docs/conductor-preferences"
 repo_name="${CONDUCTOR_REPO_NAME:-$(basename "$repo_root")}"
 
 mkdir -p "$preferences_dir"
