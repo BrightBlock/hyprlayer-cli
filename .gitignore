@@ -5,3 +5,6 @@
 
 # Local Claude Code state — settings, worktrees, etc. Never committed.
 .claude/
+
+# Conductor preference texts
+docs/conductor-preferences/
