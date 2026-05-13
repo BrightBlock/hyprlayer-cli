@@ -38,7 +38,6 @@ pub fn delete(args: ProfileDeleteArgs) -> Result<()> {
     } = args;
     let (config_path, mut config_json) = config.load_raw()?;
 
-    // Check if profile is in use (unless force)
     if !force {
         check_profile_not_in_use(&config_json, &profile_name)?;
     }

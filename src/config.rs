@@ -269,7 +269,6 @@ impl RepoMapping {
         }
     }
 
-    /// Create a new RepoMapping, using Object variant if profile is specified
     pub fn new(mapped_name: &str, profile: &Option<String>) -> Self {
         match profile {
             Some(name) => RepoMapping::Object {
@@ -419,9 +418,6 @@ pub struct EffectiveConfig {
 }
 
 impl ThoughtsConfig {
-    /// Check whether the essential thoughts fields are populated.
-    /// Returns false when only AI-related fields were configured
-    /// (e.g. after `hyprlayer ai configure` but before `thoughts init`).
     pub fn is_thoughts_configured(&self) -> bool {
         if self.user.is_empty() {
             return false;
@@ -438,7 +434,6 @@ impl ThoughtsConfig {
         }
     }
 
-    /// Validate that a profile exists in the config (if specified)
     pub fn validate_profile(&self, profile: &Option<String>) -> Result<()> {
         if let Some(name) = profile
             && !self.profiles.contains_key(name)
@@ -460,7 +455,6 @@ impl ThoughtsConfig {
             })
     }
 
-    /// Find repo mappings whose paths no longer exist on disk.
     pub fn find_orphaned_mappings(&self) -> Vec<String> {
         self.repo_mappings
             .keys()
@@ -469,7 +463,6 @@ impl ThoughtsConfig {
             .collect()
     }
 
-    /// Remove the given repo mappings by path.
     pub fn remove_mappings(&mut self, paths: &[String]) {
         for path in paths {
             self.repo_mappings.remove(path);
@@ -500,8 +493,6 @@ impl ThoughtsConfig {
         }
     }
 
-    /// Get the effective configuration for a repository path.
-    /// Resolves profile-specific settings if the repo is mapped to a profile.
     pub fn effective_config_for(&self, repo_path: &str) -> EffectiveConfig {
         let mapping = self.repo_mappings.get(repo_path);
 
@@ -538,6 +529,11 @@ pub struct HyprlayerConfig {
     pub agents_installed_sha: Option<String>,
     #[serde(default)]
     pub disable_update_check: bool,
+    /// Enables silent startup auto-update for direct-swap install methods.
+    #[serde(default)]
+    pub auto_update: bool,
+    #[serde(default)]
+    pub copilot_deprecation_warned: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thoughts: Option<ThoughtsConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -554,6 +550,8 @@ impl Default for HyprlayerConfig {
             last_agent_check: None,
             agents_installed_sha: None,
             disable_update_check: false,
+            auto_update: false,
+            copilot_deprecation_warned: false,
             thoughts: None,
             ai: None,
             telemetry: TelemetryConfig::default(),
@@ -763,12 +761,10 @@ impl HyprlayerConfig {
         Ok(())
     }
 
-    /// Get or create the thoughts section
     pub fn thoughts_mut(&mut self) -> &mut ThoughtsConfig {
         self.thoughts.get_or_insert_with(ThoughtsConfig::default)
     }
 
-    /// Get or create the AI section
     pub fn ai_mut(&mut self) -> &mut AiConfig {
         self.ai.get_or_insert_with(AiConfig::default)
     }
@@ -860,6 +856,8 @@ impl HyprlayerConfig {
             last_agent_check: v2.last_agent_check,
             agents_installed_sha: v2.agents_installed_sha,
             disable_update_check: v2.disable_update_check,
+            auto_update: false,
+            copilot_deprecation_warned: false,
             thoughts,
             ai: v2.ai,
             telemetry: TelemetryConfig::default(),
@@ -982,6 +980,8 @@ mod tests {
             last_agent_check: Some(1700000000),
             agents_installed_sha: Some("abc123def456".to_string()),
             disable_update_check: true,
+            auto_update: true,
+            copilot_deprecation_warned: true,
             thoughts: Some(git_thoughts("~/thoughts", "repos", "global")),
             ai: Some(AiConfig {
                 agent_tool: Some(AgentTool::Claude),
@@ -998,6 +998,8 @@ mod tests {
         assert_eq!(loaded.last_agent_check, Some(1700000000));
         assert_eq!(loaded.agents_installed_sha.as_deref(), Some("abc123def456"));
         assert!(loaded.disable_update_check);
+        assert!(loaded.auto_update);
+        assert!(loaded.copilot_deprecation_warned);
 
         let thoughts = loaded.thoughts.unwrap();
         assert_eq!(

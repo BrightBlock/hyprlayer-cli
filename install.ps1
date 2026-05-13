@@ -1,13 +1,8 @@
-# HyprLayer Installer for Windows
-# Install script for hyprlayer CLI
-
 $ErrorActionPreference = "Stop"
 
-# Installation directories
 $InstallDir = "$env:USERPROFILE\.hyprlayer"
 $BinDir = "$InstallDir\bin"
 
-# Repository info
 $Repo = "BrightBlock/hyprlayer-cli"
 $GitHubAPI = "https://api.github.com/repos/$Repo/releases/latest"
 
@@ -27,12 +22,10 @@ if (-not $Version) {
     exit 1
 }
 
-# Windows x86_64 only
 $Binary = "hyprlayer-x86_64-pc-windows-msvc.exe"
 
 Write-Host "Installing HyprLayer $Version..." -ForegroundColor Green
 
-# Check for existing installation
 if (Test-Path $InstallDir) {
     Write-Host "Warning: HyprLayer is already installed at $InstallDir" -ForegroundColor Yellow
     $Response = Read-Host "Do you want to reinstall? [y/N]"
@@ -40,24 +33,57 @@ if (Test-Path $InstallDir) {
         Write-Host "Installation cancelled."
         exit 0
     }
-    Remove-Item -Recurse -Force $InstallDir
 }
 
-# Create installation directories
-New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
+$Asset = $Release.assets | Where-Object { $_.name -eq $Binary } | Select-Object -First 1
+if (-not $Asset) {
+    Write-Host "Error: $Binary not found in release $Version assets" -ForegroundColor Red
+    exit 1
+}
+if (-not $Asset.digest -or -not ($Asset.digest -match '^sha256:[A-Fa-f0-9]{64}$')) {
+    Write-Host "Error: GitHub release $Version exposes no valid sha256 digest for $Binary" -ForegroundColor Red
+    Write-Host "       Refusing to install an unverified binary." -ForegroundColor Red
+    exit 1
+}
+$Expected = $Asset.digest.Substring(7).ToLower()
 
-# Download binary
 Write-Host "Downloading $Binary ($Version)..." -ForegroundColor Cyan
 
 $DownloadUrl = "https://github.com/$Repo/releases/download/$Version/$Binary"
-Invoke-WebRequest -Uri $DownloadUrl -OutFile "$BinDir\hyprlayer.exe"
+$BinaryPath = "$BinDir\hyprlayer.exe"
+$TempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("hyprlayer-install-" + [guid]::NewGuid().ToString("N"))
+$TempBinaryPath = Join-Path $TempDir "hyprlayer.exe"
 
-# Agent files are now installed by `hyprlayer thoughts init`
+New-Item -ItemType Directory -Force -Path $TempDir | Out-Null
+try {
+    Invoke-WebRequest -Uri $DownloadUrl -OutFile $TempBinaryPath
+
+    $Actual = (Get-FileHash -Algorithm SHA256 $TempBinaryPath).Hash.ToLower()
+    if ($Actual -ne $Expected) {
+        Write-Host "Error: SHA256 mismatch for $Binary" -ForegroundColor Red
+        Write-Host "  expected: $Expected" -ForegroundColor Red
+        Write-Host "  actual:   $Actual" -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "Checksum verified ($Expected)" -ForegroundColor Green
+
+    if (Test-Path $InstallDir) {
+        Remove-Item -Recurse -Force $InstallDir
+    }
+    New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
+    Move-Item -Force $TempBinaryPath $BinaryPath
+    Set-Content -Path "$BinDir\hyprlayer.install-method" -Value "windows-installer" -NoNewline -Encoding ascii
+}
+finally {
+    if (Test-Path $TempDir) {
+        Remove-Item -Recurse -Force $TempDir -ErrorAction SilentlyContinue
+    }
+}
+
 Write-Host ""
 Write-Host "Agent files will be installed when you run 'hyprlayer thoughts init'" -ForegroundColor Yellow
 Write-Host "You'll be prompted to choose between Claude Code and GitHub Copilot."
 
-# Check for Visual C++ runtime
 $VCRuntimeInstalled = Test-Path "$env:SystemRoot\System32\vcruntime140.dll"
 if (-not $VCRuntimeInstalled) {
     Write-Host ""
@@ -74,7 +100,6 @@ Write-Host "Installation successful!" -ForegroundColor Green
 Write-Host ""
 Write-Host "HyprLayer has been installed to: $BinDir"
 
-# Add to user PATH if not already present
 $UserPath = [Environment]::GetEnvironmentVariable('PATH', 'User')
 if ($UserPath -notlike "*$BinDir*") {
     [Environment]::SetEnvironmentVariable('PATH', "$UserPath;$BinDir", 'User')

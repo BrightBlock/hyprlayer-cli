@@ -111,6 +111,16 @@ Run `hyprlayer storage info --json` from inside a project to see the resolved ba
 
 Most commands have [`_nt` and `_generic` variants](https://brightblock.ai/hyprlayer/reference/variants/).
 
+## Configuration
+
+### Auto-update
+
+Set `"autoUpdate": true` in `~/.config/hyprlayer/config.json` to make the existing 24-hour startup check perform updates silently instead of just printing a notification. On success, hyprlayer prints `hyprlayer updated to X.Y.Z, please re-run your command.` and exits 0. On failure, it falls back to the notification so the user's command is never blocked.
+
+Auto-update only fires for the Windows `install.ps1` path, which is provided for emergency hotfixes. Every other install method — Homebrew, Winget, Scoop, AUR, `cargo install --git` — keeps the notification UX, so a background startup check never shells out to `brew upgrade` / `winget upgrade` / `pacman` (which may prompt for sudo or take minutes). On those install methods, run `hyprlayer self-update` explicitly when you want the upgrade; it dispatches to the same package manager you installed with.
+
+The default is `false`. Run `hyprlayer self-update` manually any time to update on demand regardless of this flag.
+
 ## Telemetry
 
 Hyprlayer records anonymized usage metrics by default so we can prioritize features and catch regressions. No personally identifiable information is collected.

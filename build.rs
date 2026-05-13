@@ -1,7 +1,6 @@
 use std::process::Command;
 
 fn main() {
-    // Get git commit hash
     let output = Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])
         .output()
@@ -14,7 +13,6 @@ fn main() {
 
     println!("cargo:rustc-env=GIT_COMMIT={}", commit);
 
-    // Rerun if git HEAD changes
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rerun-if-changed=.git/refs/heads/");
 }
