@@ -1,6 +1,7 @@
 ---
 name: commit
 description: Create git commits with user approval and no Claude attribution. Side-effecting; user-only — never auto-invoke.
+model: sonnet
 allowed-tools: Bash, Read
 disable-model-invocation: true
 ---

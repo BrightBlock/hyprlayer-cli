@@ -1,6 +1,7 @@
 ---
 name: describe_pr
 description: Generate comprehensive PR descriptions following the repository's pr_description.md template. Use when the user asks to describe an existing PR (including running its automated verification commands and updating the PR via gh pr edit).
+model: sonnet
 allowed-tools: Bash, Read, Write, mcp__claude_ai_Notion__*, mcp__anytype__*
 ---
 

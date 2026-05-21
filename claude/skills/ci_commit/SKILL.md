@@ -1,6 +1,7 @@
 ---
 name: ci_commit
 description: Create git commits for session changes with clear, atomic messages, without prompting the user for confirmation. Side-effecting; user-only — never auto-invoke. Use when the user asks for a non-interactive (CI-style) commit run.
+model: sonnet
 allowed-tools: Bash, Read
 disable-model-invocation: true
 ---
