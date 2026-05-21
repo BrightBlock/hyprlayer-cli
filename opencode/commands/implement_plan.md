@@ -1,5 +1,6 @@
 ---
 description: Implement technical plans with verification
+model: {{SONNET_MODEL}}
 subtask: false
 ---
 
