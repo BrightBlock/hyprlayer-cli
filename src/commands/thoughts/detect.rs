@@ -19,13 +19,9 @@ pub enum ThoughtsDirState {
     Reject,
 }
 
-/// Names that don't count as "real content" when judging whether a git repo is
-/// an empty/fresh thoughts repo: VCS/OS cruft plus the metadata files a freshly
-/// created repo carries — GitHub's "Add a README", a license, .gitignore. A repo
-/// cloned with just these is the canonical "I made my thoughts repo" state and
-/// must classify as CreateNew, not Reject. Matched case-insensitively so
-/// case-preserving filesystems (macOS/Windows) don't leak a `readme.md` or
-/// `.ds_store` through as content.
+/// Names that don't count as content when judging whether a git repo is a
+/// fresh/empty thoughts repo: VCS/OS cruft plus the metadata files (README,
+/// license, .gitignore) a new or freshly cloned repo carries. Case-insensitive.
 const IGNORABLE: &[&str] = &[
     ".git",
     ".gitignore",
@@ -49,9 +45,7 @@ fn is_effectively_empty(root: &Path) -> bool {
         Ok(entries) => !entries
             .flatten()
             .any(|e| !is_ignorable(&e.file_name().to_string_lossy())),
-        // We already confirmed this is a git repo but cannot enumerate it (e.g.
-        // an unreadable working tree). Don't assume empty — fall through to
-        // Reject rather than scaffold into a populated repo we couldn't inspect.
+        // A git repo we can't enumerate isn't "empty" — don't scaffold blind.
         Err(_) => false,
     }
 }
@@ -109,8 +103,7 @@ pub fn guard_git_thoughts_root(
 /// the interactive prompt. Returns the first that is recognizably a thoughts dir.
 pub fn detect_existing_thoughts_dir(repos_dir: &str, global_dir: &str) -> Option<PathBuf> {
     let home = dirs::home_dir()?;
-    // Reuse get_default_thoughts_repo() for ~/thoughts so the probed default and
-    // the prompt fallback stay one source of truth.
+    // ~/thoughts via get_default_thoughts_repo() so it stays one source of truth.
     let candidates = [
         get_default_thoughts_repo().ok(),
         Some(home.join("hyprlayer-thoughts")),
@@ -163,8 +156,7 @@ mod tests {
 
     #[test]
     fn classify_empty_git_repo_is_create_new() {
-        // An existing, empty git repo (e.g. `git init` or a fresh clone) is the
-        // legitimate create case — scaffold the thoughts tree into it.
+        // An existing empty git repo (git init / fresh clone) — the create case.
         let tmp = tempdir().unwrap();
         git_init(tmp.path());
         assert_eq!(
@@ -187,9 +179,7 @@ mod tests {
 
     #[test]
     fn classify_git_repo_with_readme_and_license_is_create_new() {
-        // GitHub's "Initialize this repository with a README" (and a license)
-        // is the most common way users create the repo the git backend now
-        // requires — it must still classify as empty/CreateNew, not Reject.
+        // A GitHub "Add a README" repo is the common create-first flow — still empty.
         let tmp = tempdir().unwrap();
         git_init(tmp.path());
         fs::write(tmp.path().join("README.md"), b"# my thoughts").unwrap();
@@ -203,8 +193,7 @@ mod tests {
 
     #[test]
     fn classify_ignores_entries_case_insensitively() {
-        // On case-preserving filesystems (macOS/Windows) a `readme.md` or
-        // `.ds_store` must not leak through as content and flip CreateNew→Reject.
+        // Case-preserving FS (macOS/Windows): readme.md/.ds_store must still be ignored.
         let tmp = tempdir().unwrap();
         git_init(tmp.path());
         fs::write(tmp.path().join("readme.md"), b"x").unwrap();
