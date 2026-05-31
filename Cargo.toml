@@ -1,7 +1,7 @@
 [package]
 name = "hyprlayer"
 
-version = "1.5.6"
+version = "1.5.7"
 edition = "2024"
 
 [dependencies]
@@ -26,6 +26,9 @@ self-replace = "1.5"
 tempfile = "3"
 # Bounded `Child::wait_timeout` so package-manager probes can't hang CLI startup.
 wait-timeout = "0.2"
+# Safe wrapper that enables ANSI rendering in the Windows console (no-op Ok
+# elsewhere) and reports via Result when the console can't support it.
+enable-ansi-support = "0.2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
