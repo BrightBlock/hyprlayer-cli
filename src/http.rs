@@ -85,11 +85,7 @@ pub fn get_text(url: &str, timeout: Duration) -> Result<String, HttpError> {
 /// Use this for any endpoint whose response size isn't intrinsically bounded
 /// by our own infrastructure (e.g. the GitHub releases API), so a hostile or
 /// misconfigured source can't stream gigabytes into a `String`.
-pub fn get_text_capped(
-    url: &str,
-    timeout: Duration,
-    max_bytes: u64,
-) -> Result<String, HttpError> {
+pub fn get_text_capped(url: &str, timeout: Duration, max_bytes: u64) -> Result<String, HttpError> {
     let resp = agent(timeout).get(url).call()?;
     let mut reader = resp.into_reader().take(max_bytes + 1);
     let mut buf = Vec::new();
