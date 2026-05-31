@@ -34,6 +34,18 @@ use commands::thoughts::profile::{
 use commands::thoughts::{config_cmd, init, status, sync, uninit};
 
 fn main() -> Result<()> {
+    // `colored` emits ANSI escape codes, but some terminals (legacy Windows
+    // consoles such as Windows 7/8 or pre-1607 conhost) can't render them and
+    // would show raw sequences like `[32m`. Enable ANSI support where possible;
+    // if the terminal can't support it, fall back to plain, uncolored output.
+    // Done before any output (including clap's colored --help/--version).
+    // Windows-only: every other platform renders ANSI natively, so the whole
+    // check (and its dependency) compiles out.
+    #[cfg(windows)]
+    if enable_ansi_support::enable_ansi_support().is_err() {
+        colored::control::set_override(false);
+    }
+
     let cli = cli::Cli::parse();
 
     let config_path = cli.config_args().and_then(|a| a.path().ok());
