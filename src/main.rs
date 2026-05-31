@@ -39,6 +39,9 @@ fn main() -> Result<()> {
     // would show raw sequences like `[32m`. Enable ANSI support where possible;
     // if the terminal can't support it, fall back to plain, uncolored output.
     // Done before any output (including clap's colored --help/--version).
+    // Windows-only: every other platform renders ANSI natively, so the whole
+    // check (and its dependency) compiles out.
+    #[cfg(windows)]
     if enable_ansi_support::enable_ansi_support().is_err() {
         colored::control::set_override(false);
     }
