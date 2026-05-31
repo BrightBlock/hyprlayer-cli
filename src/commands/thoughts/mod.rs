@@ -1,5 +1,6 @@
 pub mod backend_display;
 pub mod config_cmd;
+pub mod detect;
 pub mod init;
 pub mod profile;
 pub mod status;

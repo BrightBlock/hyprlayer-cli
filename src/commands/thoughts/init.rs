@@ -125,6 +125,18 @@ pub fn init(args: InitArgs) -> Result<()> {
     let resolved = hyprlayer_config.thoughts_mut().resolve_dirs(&profile);
     let mapped_name = if backend_kind.uses_filesystem() {
         let content_root = resolve_content_root(&resolved.backend)?;
+        if backend_kind == BackendKind::Git {
+            let g = resolved
+                .backend
+                .as_git()
+                .expect("git backend kind but not git config");
+            super::detect::guard_git_thoughts_root(
+                &content_root,
+                &g.repos_dir,
+                &g.global_dir,
+                force,
+            )?;
+        }
         ensure_content_root(&content_root)?;
 
         let repos_dir = resolved.backend.filesystem_repos_dir().unwrap_or("repos");
@@ -295,6 +307,18 @@ fn init_non_interactive(
 
     if backend_kind.uses_filesystem() {
         let content_root = resolve_content_root(&resolved.backend)?;
+        if backend_kind == BackendKind::Git {
+            let g = resolved
+                .backend
+                .as_git()
+                .expect("git backend kind but not git config");
+            super::detect::guard_git_thoughts_root(
+                &content_root,
+                &g.repos_dir,
+                &g.global_dir,
+                force,
+            )?;
+        }
         ensure_content_root(&content_root)?;
 
         let repos_dir = resolved.backend.filesystem_repos_dir().unwrap_or("repos");
@@ -390,7 +414,25 @@ fn prompt_for_thoughts_fields(
     let new_backend = match backend_kind {
         BackendKind::Git => {
             let prior = existing_profile.backend.as_git();
-            let fallback = get_default_thoughts_repo()?.display().to_string();
+            let repos_name = prior
+                .map(|g| g.repos_dir.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or("repos");
+            let global_name = prior
+                .map(|g| g.global_dir.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or("global");
+            let detected = super::detect::detect_existing_thoughts_dir(repos_name, global_name);
+            if let Some(ref d) = detected {
+                println!(
+                    "{}",
+                    format!("Found an existing thoughts directory at {}", d.display()).green()
+                );
+            }
+            let fallback = match &detected {
+                Some(d) => d.display().to_string(),
+                None => get_default_thoughts_repo()?.display().to_string(),
+            };
             let default_repo = prior
                 .map(|g| g.thoughts_repo.clone())
                 .filter(|s| !s.is_empty())
