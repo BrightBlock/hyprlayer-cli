@@ -124,19 +124,7 @@ pub fn init(args: InitArgs) -> Result<()> {
 
     let resolved = hyprlayer_config.thoughts_mut().resolve_dirs(&profile);
     let mapped_name = if backend_kind.uses_filesystem() {
-        let content_root = resolve_content_root(&resolved.backend)?;
-        if backend_kind == BackendKind::Git {
-            let g = resolved
-                .backend
-                .as_git()
-                .expect("git backend kind but not git config");
-            super::detect::guard_git_thoughts_root(
-                &content_root,
-                &g.repos_dir,
-                &g.global_dir,
-                force,
-            )?;
-        }
+        let content_root = resolve_content_root(&resolved.backend, force)?;
         ensure_content_root(&content_root)?;
 
         let repos_dir = resolved.backend.filesystem_repos_dir().unwrap_or("repos");
@@ -306,19 +294,7 @@ fn init_non_interactive(
     let mapped_name = sanitize_directory_name(&directory);
 
     if backend_kind.uses_filesystem() {
-        let content_root = resolve_content_root(&resolved.backend)?;
-        if backend_kind == BackendKind::Git {
-            let g = resolved
-                .backend
-                .as_git()
-                .expect("git backend kind but not git config");
-            super::detect::guard_git_thoughts_root(
-                &content_root,
-                &g.repos_dir,
-                &g.global_dir,
-                force,
-            )?;
-        }
+        let content_root = resolve_content_root(&resolved.backend, force)?;
         ensure_content_root(&content_root)?;
 
         let repos_dir = resolved.backend.filesystem_repos_dir().unwrap_or("repos");
@@ -414,29 +390,37 @@ fn prompt_for_thoughts_fields(
     let new_backend = match backend_kind {
         BackendKind::Git => {
             let prior = existing_profile.backend.as_git();
-            let repos_name = prior
-                .map(|g| g.repos_dir.as_str())
-                .filter(|s| !s.is_empty())
-                .unwrap_or("repos");
-            let global_name = prior
-                .map(|g| g.global_dir.as_str())
-                .filter(|s| !s.is_empty())
-                .unwrap_or("global");
-            let detected = super::detect::detect_existing_thoughts_dir(repos_name, global_name);
-            if let Some(ref d) = detected {
-                println!(
-                    "{}",
-                    format!("Found an existing thoughts directory at {}", d.display()).green()
-                );
-            }
-            let fallback = match &detected {
-                Some(d) => d.display().to_string(),
-                None => get_default_thoughts_repo()?.display().to_string(),
-            };
-            let default_repo = prior
+            // A previously-configured repo always wins as the prompt default.
+            // Only when there is none do we probe for an existing thoughts dir —
+            // and we only advertise ("Found …") the one we'll actually default
+            // to, so the message can't point at a path the prompt won't use.
+            let default_repo = match prior
                 .map(|g| g.thoughts_repo.clone())
                 .filter(|s| !s.is_empty())
-                .unwrap_or(fallback);
+            {
+                Some(repo) => repo,
+                None => {
+                    let repos_name = prior
+                        .map(|g| g.repos_dir.as_str())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or("repos");
+                    let global_name = prior
+                        .map(|g| g.global_dir.as_str())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or("global");
+                    match super::detect::detect_existing_thoughts_dir(repos_name, global_name) {
+                        Some(d) => {
+                            println!(
+                                "{}",
+                                format!("Found an existing thoughts directory at {}", d.display())
+                                    .green()
+                            );
+                            d.display().to_string()
+                        }
+                        None => get_default_thoughts_repo()?.display().to_string(),
+                    }
+                }
+            };
             let repo: String = Input::with_theme(&theme)
                 .with_prompt("Thoughts repository location")
                 .default(default_repo.clone())
@@ -725,9 +709,17 @@ fn check_existing_setup(current_repo: &Path, force: bool) -> Result<bool> {
     Ok(reconfigure)
 }
 
-fn resolve_content_root(backend: &BackendConfig) -> Result<PathBuf> {
+fn resolve_content_root(backend: &BackendConfig, force: bool) -> Result<PathBuf> {
     match backend {
-        BackendConfig::Git(g) => Ok(expand_path(&g.thoughts_repo)),
+        BackendConfig::Git(g) => {
+            // Validate the thoughts repo here, before `ensure_content_root`
+            // would create it — mirroring the Obsidian vault check below. The
+            // git backend requires an existing repo (created or cloned by the
+            // user); `--force` bypasses the check and lets init create one.
+            let root = expand_path(&g.thoughts_repo);
+            super::detect::guard_git_thoughts_root(&root, &g.repos_dir, &g.global_dir, force)?;
+            Ok(root)
+        }
         BackendConfig::Obsidian(o) => {
             // Check vault existence here, before `ensure_content_root` would
             // create the missing path. Obsidian vaults are user-managed — we

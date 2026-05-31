@@ -2,6 +2,7 @@ use anyhow::Result;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::config::get_default_thoughts_repo;
 use crate::git_ops::GitRepo;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,16 +19,40 @@ pub enum ThoughtsDirState {
     Reject,
 }
 
-/// Entries that don't count as "real content" when judging emptiness.
-const IGNORABLE: &[&str] = &[".git", ".DS_Store", "Thumbs.db"];
+/// Names that don't count as "real content" when judging whether a git repo is
+/// an empty/fresh thoughts repo: VCS/OS cruft plus the metadata files a freshly
+/// created repo carries — GitHub's "Add a README", a license, .gitignore. A repo
+/// cloned with just these is the canonical "I made my thoughts repo" state and
+/// must classify as CreateNew, not Reject. Matched case-insensitively so
+/// case-preserving filesystems (macOS/Windows) don't leak a `readme.md` or
+/// `.ds_store` through as content.
+const IGNORABLE: &[&str] = &[
+    ".git",
+    ".gitignore",
+    ".gitattributes",
+    ".DS_Store",
+    "Thumbs.db",
+    "README",
+    "README.md",
+    "README.txt",
+    "LICENSE",
+    "LICENSE.md",
+    "LICENSE.txt",
+];
+
+fn is_ignorable(name: &str) -> bool {
+    IGNORABLE.iter().any(|ig| name.eq_ignore_ascii_case(ig))
+}
 
 fn is_effectively_empty(root: &Path) -> bool {
     match fs::read_dir(root) {
-        Ok(entries) => !entries.flatten().any(|e| {
-            let name = e.file_name();
-            !IGNORABLE.contains(&name.to_string_lossy().as_ref())
-        }),
-        Err(_) => true, // absent / unreadable → treat as empty
+        Ok(entries) => !entries
+            .flatten()
+            .any(|e| !is_ignorable(&e.file_name().to_string_lossy())),
+        // We already confirmed this is a git repo but cannot enumerate it (e.g.
+        // an unreadable working tree). Don't assume empty — fall through to
+        // Reject rather than scaffold into a populated repo we couldn't inspect.
+        Err(_) => false,
     }
 }
 
@@ -64,7 +89,7 @@ pub fn guard_git_thoughts_root(
         ThoughtsDirState::NotGitRepo => Err(anyhow::anyhow!(
             "{0} is not a git repository. The git backend requires the thoughts \
              location to be an existing git repository — create one with \
-             `git init {0}` (or clone your thoughts repo there), then re-run init.\n\
+             `git init \"{0}\"` (or clone your thoughts repo there), then re-run init.\n\
              Re-run with --force to create and initialize it automatically.",
             root.display(),
         )),
@@ -84,13 +109,15 @@ pub fn guard_git_thoughts_root(
 /// the interactive prompt. Returns the first that is recognizably a thoughts dir.
 pub fn detect_existing_thoughts_dir(repos_dir: &str, global_dir: &str) -> Option<PathBuf> {
     let home = dirs::home_dir()?;
-    for name in ["thoughts", "hyprlayer-thoughts"] {
-        let cand = home.join(name);
-        if classify_git_target(&cand, repos_dir, global_dir) == ThoughtsDirState::AdoptHeuristic {
-            return Some(cand);
-        }
-    }
-    None
+    // Reuse get_default_thoughts_repo() for ~/thoughts so the probed default and
+    // the prompt fallback stay one source of truth.
+    let candidates = [
+        get_default_thoughts_repo().ok(),
+        Some(home.join("hyprlayer-thoughts")),
+    ];
+    candidates.into_iter().flatten().find(|cand| {
+        classify_git_target(cand, repos_dir, global_dir) == ThoughtsDirState::AdoptHeuristic
+    })
 }
 
 #[cfg(test)]
@@ -155,6 +182,49 @@ mod tests {
         assert_eq!(
             classify_git_target(tmp.path(), "repos", "global"),
             ThoughtsDirState::CreateNew
+        );
+    }
+
+    #[test]
+    fn classify_git_repo_with_readme_and_license_is_create_new() {
+        // GitHub's "Initialize this repository with a README" (and a license)
+        // is the most common way users create the repo the git backend now
+        // requires — it must still classify as empty/CreateNew, not Reject.
+        let tmp = tempdir().unwrap();
+        git_init(tmp.path());
+        fs::write(tmp.path().join("README.md"), b"# my thoughts").unwrap();
+        fs::write(tmp.path().join("LICENSE"), b"MIT").unwrap();
+        fs::write(tmp.path().join(".gitignore"), b"*.tmp").unwrap();
+        assert_eq!(
+            classify_git_target(tmp.path(), "repos", "global"),
+            ThoughtsDirState::CreateNew
+        );
+    }
+
+    #[test]
+    fn classify_ignores_entries_case_insensitively() {
+        // On case-preserving filesystems (macOS/Windows) a `readme.md` or
+        // `.ds_store` must not leak through as content and flip CreateNew→Reject.
+        let tmp = tempdir().unwrap();
+        git_init(tmp.path());
+        fs::write(tmp.path().join("readme.md"), b"x").unwrap();
+        fs::write(tmp.path().join(".ds_store"), b"").unwrap();
+        assert_eq!(
+            classify_git_target(tmp.path(), "repos", "global"),
+            ThoughtsDirState::CreateNew
+        );
+    }
+
+    #[test]
+    fn classify_git_repo_with_readme_and_real_content_is_reject() {
+        // README is ignorable, but a real source file alongside it is content.
+        let tmp = tempdir().unwrap();
+        git_init(tmp.path());
+        fs::write(tmp.path().join("README.md"), b"# code").unwrap();
+        fs::write(tmp.path().join("main.rs"), b"fn main() {}").unwrap();
+        assert_eq!(
+            classify_git_target(tmp.path(), "repos", "global"),
+            ThoughtsDirState::Reject
         );
     }
 
@@ -250,6 +320,9 @@ mod tests {
         let tmp = tempdir().unwrap();
         git_init(tmp.path());
         assert!(guard_git_thoughts_root(tmp.path(), "repos", "global", false).is_ok());
+        // The guard is a read-only pre-flight check: it must not scaffold.
+        assert!(!tmp.path().join("repos").exists());
+        assert!(!tmp.path().join("global").exists());
     }
 
     #[test]
