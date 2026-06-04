@@ -81,11 +81,17 @@ fn diagnose(cfg: &HyprlayerConfig) {
     );
 
     match org_config::gh_cli_status() {
-        GhStatus::NotInstalled => vlog!(
-            "gh CLI: NOT installed. The org-managed key lives in a GitHub repo \
-             variable; without `gh` it can't be read and telemetry stays anonymous. \
-             Install https://cli.github.com and run `gh auth login`."
-        ),
+        GhStatus::NotInstalled => {
+            vlog!(
+                "gh CLI: NOT installed. The org-managed key lives in a GitHub repo \
+                 variable; without `gh` it can't be read and telemetry stays anonymous. \
+                 Install https://cli.github.com and run `gh auth login`."
+            );
+            // Nothing downstream can read variables without `gh`. Stop here
+            // rather than fall through and emit a second, near-identical
+            // "gh not found" line from `fetch_variable`.
+            return;
+        }
         GhStatus::NotAuthenticated => vlog!(
             "gh CLI: installed but NOT authenticated. Run `gh auth login` — the same \
              auth gates pull requests and commits."

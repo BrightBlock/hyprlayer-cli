@@ -207,9 +207,12 @@ pub fn repo_variables_access(owner_repo: &str) -> VariableAccess {
 /// out as a pure function so the HTTP-status parsing is unit-testable
 /// against gh's real message strings.
 fn classify_list_failure(stderr: &str) -> VariableAccess {
-    if stderr.contains("HTTP 404") {
+    // Match both gh's current `HTTP 4xx: …` phrasing and the bare
+    // `4xx Not Found`/`Forbidden` form, so a wording change in gh degrades
+    // gracefully rather than dropping every failure into `OtherError`.
+    if stderr.contains("HTTP 404") || stderr.contains("404 Not Found") {
         VariableAccess::NotFound(stderr.to_string())
-    } else if stderr.contains("HTTP 403") {
+    } else if stderr.contains("HTTP 403") || stderr.contains("403 Forbidden") {
         VariableAccess::PermissionDenied(stderr.to_string())
     } else {
         VariableAccess::OtherError(stderr.to_string())
@@ -384,6 +387,16 @@ mod tests {
         assert!(matches!(
             classify_list_failure("gh: To get started with GitHub CLI, please run: gh auth login"),
             VariableAccess::OtherError(_)
+        ));
+
+        // Degrade gracefully if gh drops the `HTTP ` prefix.
+        assert!(matches!(
+            classify_list_failure("failed to get variables: 404 Not Found"),
+            VariableAccess::NotFound(_)
+        ));
+        assert!(matches!(
+            classify_list_failure("failed to get variables: 403 Forbidden"),
+            VariableAccess::PermissionDenied(_)
         ));
     }
 

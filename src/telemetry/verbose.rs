@@ -23,13 +23,13 @@ static FORCED: AtomicBool = AtomicBool::new(false);
 /// Turn verbose diagnostics on (or off) for the remainder of the process.
 /// Called from the command handlers when `--verbose` is passed.
 pub fn set_enabled(on: bool) {
-    FORCED.store(on, Ordering::Relaxed);
+    FORCED.store(on, Ordering::Release);
 }
 
 /// Verbose is on when `--verbose` was passed or
 /// `HYPRLAYER_TELEMETRY_VERBOSE` is set to a truthy value.
 pub fn is_enabled() -> bool {
-    FORCED.load(Ordering::Relaxed) || env_enabled()
+    FORCED.load(Ordering::Acquire) || env_enabled()
 }
 
 fn env_enabled() -> bool {
@@ -65,13 +65,14 @@ mod tests {
     use super::*;
 
     /// `set_enabled(true)` forces verbose on regardless of the env var.
-    /// Serialized implicitly: this is the only test that flips FORCED.
+    /// Saves and restores `FORCED` so the test neither depends on the
+    /// global starting clean nor leaks state into other tests.
     #[test]
     fn forced_flag_overrides() {
-        assert!(!FORCED.load(Ordering::Relaxed));
+        let prev = FORCED.load(Ordering::Acquire);
         set_enabled(true);
-        assert!(is_enabled());
-        set_enabled(false);
+        assert!(is_enabled(), "forced flag must enable verbose");
+        FORCED.store(prev, Ordering::Release);
     }
 
     #[test]
