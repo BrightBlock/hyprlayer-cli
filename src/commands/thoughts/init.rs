@@ -68,6 +68,11 @@ pub fn init(args: InitArgs) -> Result<()> {
     let config_path = config.path()?;
     let mut hyprlayer_config = config.load_if_exists()?.unwrap_or_default();
 
+    // No-op on a first-ever init: nothing configured yet to be standing inside.
+    if let Some(thoughts) = hyprlayer_config.thoughts.as_ref() {
+        super::detect::ensure_cwd_outside_thoughts_repo(thoughts, &current_repo, "init")?;
+    }
+
     if hyprlayer_config
         .ai
         .as_ref()
@@ -221,6 +226,8 @@ fn init_non_interactive(
         }
 
         thoughts.validate_profile(&profile)?;
+
+        super::detect::ensure_cwd_outside_thoughts_repo(thoughts, &current_repo, "init")?;
     }
 
     let thoughts_dir = current_repo.join("thoughts");

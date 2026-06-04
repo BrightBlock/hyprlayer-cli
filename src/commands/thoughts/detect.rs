@@ -2,8 +2,53 @@ use anyhow::Result;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::config::get_default_thoughts_repo;
+use crate::config::{ThoughtsConfig, get_default_thoughts_repo};
 use crate::git_ops::GitRepo;
+
+/// Every configured git thoughts-repo root (top-level backend + profiles).
+fn git_thoughts_repo_paths(thoughts: &ThoughtsConfig) -> Vec<PathBuf> {
+    std::iter::once(&thoughts.backend)
+        .chain(thoughts.profiles.values().map(|p| &p.backend))
+        .filter_map(|b| b.thoughts_repo_path())
+        .collect()
+}
+
+/// The configured git thoughts repo `cwd` sits at or beneath, if any.
+/// Canonicalizing collapses `<code_repo>/thoughts/` symlinks back into the
+/// repo, so one prefix check covers both the repo and its symlinked subtrees.
+pub fn thoughts_repo_containing(thoughts: &ThoughtsConfig, cwd: &Path) -> Option<PathBuf> {
+    let cwd_canon = fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    git_thoughts_repo_paths(thoughts).into_iter().find(|repo| {
+        // A repo that doesn't resolve can't contain us — and we never fall
+        // back to a raw prefix compare, which would mis-fire on `..`/symlinks.
+        match fs::canonicalize(repo) {
+            Ok(repo_canon) => cwd_canon.starts_with(&repo_canon),
+            Err(_) => false,
+        }
+    })
+}
+
+/// Error out if `cwd` is inside a thoughts repo; the message explains why.
+/// There is no `--force` escape — it is never valid to run from there.
+pub fn ensure_cwd_outside_thoughts_repo(
+    thoughts: &ThoughtsConfig,
+    cwd: &Path,
+    command: &str,
+) -> Result<()> {
+    if let Some(repo) = thoughts_repo_containing(thoughts, cwd) {
+        return Err(anyhow::anyhow!(
+            "Refusing to run `hyprlayer thoughts {command}` from inside your thoughts \
+             repository ({}).\n\
+             The current directory is the thoughts repo (or a `thoughts/` symlink that \
+             points into it). Running `{command}` here would recursively manage the \
+             thoughts repo and could add stray folders at its root, bypassing the commit \
+             guards.\n\
+             cd into the code repository you want to manage and run it from there.",
+            repo.display(),
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThoughtsDirState {
@@ -332,5 +377,110 @@ mod tests {
             err.to_string().contains(&target.display().to_string()),
             "error should name the path: {err}"
         );
+    }
+
+    // ── ensure_cwd_outside_thoughts_repo ─────────────────────────────────────
+
+    use crate::config::{BackendConfig, GitConfig, NotionConfig, ProfileConfig, ThoughtsConfig};
+
+    fn git_thoughts(repo: &Path) -> ThoughtsConfig {
+        ThoughtsConfig {
+            user: "alice".to_string(),
+            backend: BackendConfig::Git(GitConfig {
+                thoughts_repo: repo.to_string_lossy().into_owned(),
+                repos_dir: "repos".to_string(),
+                global_dir: "global".to_string(),
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn guard_blocks_cwd_at_thoughts_repo_root() {
+        let repo = tempdir().unwrap();
+        let thoughts = git_thoughts(repo.path());
+        let err = ensure_cwd_outside_thoughts_repo(&thoughts, repo.path(), "sync").unwrap_err();
+        assert!(
+            err.to_string().contains("inside your thoughts repository"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn guard_blocks_cwd_nested_inside_thoughts_repo() {
+        let repo = tempdir().unwrap();
+        let nested = repo.path().join("repos").join("proj").join("shared");
+        fs::create_dir_all(&nested).unwrap();
+        let thoughts = git_thoughts(repo.path());
+        assert!(ensure_cwd_outside_thoughts_repo(&thoughts, &nested, "init").is_err());
+    }
+
+    #[test]
+    fn guard_allows_cwd_outside_thoughts_repo() {
+        let repo = tempdir().unwrap();
+        let elsewhere = tempdir().unwrap();
+        let thoughts = git_thoughts(repo.path());
+        assert!(ensure_cwd_outside_thoughts_repo(&thoughts, elsewhere.path(), "sync").is_ok());
+    }
+
+    /// A `thoughts/` symlink pointing into the thoughts repo must be caught
+    /// via canonicalization — standing in it is standing in the repo.
+    #[cfg(unix)]
+    #[test]
+    fn guard_blocks_cwd_via_thoughts_symlink() {
+        let repo = tempdir().unwrap();
+        let inner = repo.path().join("repos").join("proj").join("shared");
+        fs::create_dir_all(&inner).unwrap();
+
+        let code = tempdir().unwrap();
+        let link = code.path().join("thoughts");
+        std::os::unix::fs::symlink(repo.path().join("repos").join("proj"), &link).unwrap();
+
+        let thoughts = git_thoughts(repo.path());
+        // cwd is `<code>/thoughts/shared`, a symlink that resolves into the repo.
+        assert!(ensure_cwd_outside_thoughts_repo(&thoughts, &link.join("shared"), "sync").is_err());
+    }
+
+    #[test]
+    fn guard_checks_profile_repos_too() {
+        let profile_repo = tempdir().unwrap();
+        let mut thoughts = ThoughtsConfig {
+            user: "alice".to_string(),
+            backend: BackendConfig::Notion(NotionConfig {
+                parent_page_id: "p1".to_string(),
+                database_id: None,
+            }),
+            ..Default::default()
+        };
+        thoughts.profiles.insert(
+            "corp".to_string(),
+            ProfileConfig {
+                backend: BackendConfig::Git(GitConfig {
+                    thoughts_repo: profile_repo.path().to_string_lossy().into_owned(),
+                    repos_dir: "repos".to_string(),
+                    global_dir: "global".to_string(),
+                }),
+            },
+        );
+        // Standing inside the profile's git repo is blocked even though the
+        // top-level backend is notion.
+        assert!(ensure_cwd_outside_thoughts_repo(&thoughts, profile_repo.path(), "sync").is_err());
+        // ...and an unrelated dir is allowed.
+        let elsewhere = tempdir().unwrap();
+        assert!(ensure_cwd_outside_thoughts_repo(&thoughts, elsewhere.path(), "sync").is_ok());
+    }
+
+    #[test]
+    fn guard_ignores_non_git_backends() {
+        let elsewhere = tempdir().unwrap();
+        let thoughts = ThoughtsConfig {
+            user: "alice".to_string(),
+            backend: BackendConfig::Notion(NotionConfig {
+                parent_page_id: "p1".to_string(),
+                database_id: None,
+            }),
+            ..Default::default()
+        };
+        assert!(ensure_cwd_outside_thoughts_repo(&thoughts, elsewhere.path(), "sync").is_ok());
     }
 }
