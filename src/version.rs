@@ -261,6 +261,15 @@ fn maybe_flush_telemetry_in(
     now: i64,
     config_path: &std::path::Path,
 ) -> bool {
+    // Escape hatch for the integration suite, which runs the real binary
+    // as a subprocess and asserts on the spool's contents. A detached
+    // `telemetry flush` child would race those assertions — claiming and
+    // draining the spool mid-read — and would POST the suite's events to
+    // PostHog. This disables only the *background* flush; an explicit
+    // `telemetry flush` is unaffected. Never set in production.
+    if env::var_os("HYPRLAYER_DISABLE_BACKGROUND_FLUSH").is_some() {
+        return false;
+    }
     if cfg.telemetry.mode == config::TelemetryMode::Off {
         return false;
     }

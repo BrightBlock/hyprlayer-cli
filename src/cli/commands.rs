@@ -334,6 +334,11 @@ pub struct TelemetryInitArgs {
 pub struct TelemetryStatusArgs {
     #[arg(long, help = "Output as JSON")]
     pub json: bool,
+    #[arg(
+        long,
+        help = "Probe the org-managed-key resolution (gh/git) and explain, on stderr, why the current mode was chosen"
+    )]
+    pub verbose: bool,
     #[command(flatten)]
     pub config: ConfigArgs,
 }
@@ -474,6 +479,11 @@ pub struct TelemetryConfigArgs {
     pub refresh: bool,
     #[arg(long, help = "Print the effective resolved config")]
     pub show: bool,
+    #[arg(
+        long,
+        help = "Trace the gh/git org-managed-key resolution on stderr (useful with --refresh when telemetry stays anonymous)"
+    )]
+    pub verbose: bool,
     #[command(flatten)]
     pub config: ConfigArgs,
 }

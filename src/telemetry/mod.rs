@@ -16,6 +16,7 @@ pub mod org_config;
 pub mod posthog;
 pub mod privacy;
 pub mod spool;
+pub mod verbose;
 
 pub(crate) const DEFAULT_API_KEY: &str = "phc_rwYxPEHvLJ5tPw4wesujdip5tD2WRNdLPLHtAqg7XcqS";
 pub(crate) const SPOOL_MAX_BYTES: u64 = 10 * 1024 * 1024;

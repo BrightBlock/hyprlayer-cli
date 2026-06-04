@@ -12,6 +12,7 @@ fn run_with_stdin(xdg: &Path, stdin_payload: &str) -> std::process::Output {
         .args(["telemetry", "record-from-hook"])
         .env("XDG_CONFIG_HOME", xdg)
         .env("HOME", xdg)
+        .env("HYPRLAYER_DISABLE_BACKGROUND_FLUSH", "1")
         .env_remove("HYPRLAYER_TELEMETRY_KEY")
         .env_remove("HYPRLAYER_ORG_ID")
         .stdin(Stdio::piped())
