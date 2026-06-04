@@ -5,49 +5,74 @@ use std::path::{Path, PathBuf};
 use crate::config::{ThoughtsConfig, get_default_thoughts_repo};
 use crate::git_ops::GitRepo;
 
-/// Every configured git thoughts-repo root (top-level backend + profiles).
-fn git_thoughts_repo_paths(thoughts: &ThoughtsConfig) -> Vec<PathBuf> {
+/// Canonicalize `p`, falling back to `p` itself when it can't be resolved
+/// (e.g. it doesn't exist yet) — an unresolved path is its own canonical form.
+fn canonicalize_or_self(p: &Path) -> PathBuf {
+    fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+}
+
+/// True if the already-canonicalized `cwd` is at or beneath `root`.
+/// Canonicalizing both sides collapses `thoughts/` symlinks back into the
+/// repo and neutralizes `..`; a `root` that can't be canonicalized contains
+/// nothing.
+fn path_at_or_within(root: &Path, cwd_canon: &Path) -> bool {
+    match fs::canonicalize(root) {
+        Ok(root_canon) => cwd_canon.starts_with(&root_canon),
+        Err(_) => false,
+    }
+}
+
+/// The configured thoughts root `cwd` sits at or beneath, if any —
+/// top-level backend plus every profile (git checkouts and Obsidian content
+/// roots; Notion/Anytype have no local tree).
+fn thoughts_repo_containing(thoughts: &ThoughtsConfig, cwd: &Path) -> Option<PathBuf> {
+    let cwd_canon = canonicalize_or_self(cwd);
     std::iter::once(&thoughts.backend)
         .chain(thoughts.profiles.values().map(|p| &p.backend))
-        .filter_map(|b| b.thoughts_repo_path())
-        .collect()
+        .filter_map(|b| b.filesystem_content_root())
+        .find(|root| path_at_or_within(root, &cwd_canon))
 }
 
-/// The configured git thoughts repo `cwd` sits at or beneath, if any.
-/// Canonicalizing collapses `<code_repo>/thoughts/` symlinks back into the
-/// repo, so one prefix check covers both the repo and its symlinked subtrees.
-pub fn thoughts_repo_containing(thoughts: &ThoughtsConfig, cwd: &Path) -> Option<PathBuf> {
-    let cwd_canon = fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
-    git_thoughts_repo_paths(thoughts).into_iter().find(|repo| {
-        // A repo that doesn't resolve can't contain us — and we never fall
-        // back to a raw prefix compare, which would mis-fire on `..`/symlinks.
-        match fs::canonicalize(repo) {
-            Ok(repo_canon) => cwd_canon.starts_with(&repo_canon),
-            Err(_) => false,
-        }
-    })
-}
-
-/// Error out if `cwd` is inside a thoughts repo; the message explains why.
-/// There is no `--force` escape — it is never valid to run from there.
+/// Error out if `cwd` is inside a *configured* thoughts root. No `--force`
+/// escape — it is never valid to run from there.
 pub fn ensure_cwd_outside_thoughts_repo(
     thoughts: &ThoughtsConfig,
     cwd: &Path,
     command: &str,
 ) -> Result<()> {
-    if let Some(repo) = thoughts_repo_containing(thoughts, cwd) {
-        return Err(anyhow::anyhow!(
-            "Refusing to run `hyprlayer thoughts {command}` from inside your thoughts \
-             repository ({}).\n\
-             The current directory is the thoughts repo (or a `thoughts/` symlink that \
-             points into it). Running `{command}` here would recursively manage the \
-             thoughts repo and could add stray folders at its root, bypassing the commit \
-             guards.\n\
-             cd into the code repository you want to manage and run it from there.",
-            repo.display(),
-        ));
+    match thoughts_repo_containing(thoughts, cwd) {
+        Some(root) => Err(recursive_run_error(command, &root)),
+        None => Ok(()),
     }
-    Ok(())
+}
+
+/// Error out if `cwd` is at or inside `content_root` — the thoughts root
+/// this `init` is about to write into. Catches what the configured-roots
+/// check can't: a first-ever init, or an interactive run that selects the
+/// cwd as the thoughts repo. Call on the resolved root, before any writes.
+pub fn ensure_cwd_outside_content_root(
+    content_root: &Path,
+    cwd: &Path,
+    command: &str,
+) -> Result<()> {
+    if path_at_or_within(content_root, &canonicalize_or_self(cwd)) {
+        Err(recursive_run_error(command, content_root))
+    } else {
+        Ok(())
+    }
+}
+
+fn recursive_run_error(command: &str, root: &Path) -> anyhow::Error {
+    anyhow::anyhow!(
+        "Refusing to run `hyprlayer thoughts {command}` from inside your thoughts \
+         repository ({}).\n\
+         The current directory is the thoughts repo (or a `thoughts/` symlink that \
+         points into it). Running `{command}` here would recursively manage the \
+         thoughts repo and could add stray folders at its root, bypassing the commit \
+         guards.\n\
+         cd into the code repository you want to manage and run it from there.",
+        root.display(),
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -482,5 +507,66 @@ mod tests {
             ..Default::default()
         };
         assert!(ensure_cwd_outside_thoughts_repo(&thoughts, elsewhere.path(), "sync").is_ok());
+    }
+
+    /// Obsidian is filesystem-backed too: standing inside its content root
+    /// (vault + subpath) must be blocked, not just git repos.
+    #[test]
+    fn guard_blocks_cwd_inside_obsidian_content_root() {
+        use crate::config::ObsidianConfig;
+        let vault = tempdir().unwrap();
+        let root = vault.path().join("hyprlayer");
+        fs::create_dir_all(root.join("repos").join("proj")).unwrap();
+        let thoughts = ThoughtsConfig {
+            user: "alice".to_string(),
+            backend: BackendConfig::Obsidian(ObsidianConfig {
+                vault_path: vault.path().to_string_lossy().into_owned(),
+                vault_subpath: Some("hyprlayer".to_string()),
+                repos_dir: "repos".to_string(),
+                global_dir: "global".to_string(),
+            }),
+            ..Default::default()
+        };
+        // Inside the content root → blocked.
+        assert!(ensure_cwd_outside_thoughts_repo(&thoughts, &root.join("repos"), "init").is_err());
+        // Elsewhere in the vault but outside the subpath → allowed.
+        assert!(ensure_cwd_outside_thoughts_repo(&thoughts, vault.path(), "init").is_ok());
+    }
+
+    // ── ensure_cwd_outside_content_root ──────────────────────────────────────
+
+    #[test]
+    fn content_root_guard_blocks_cwd_at_root() {
+        let root = tempdir().unwrap();
+        let err = ensure_cwd_outside_content_root(root.path(), root.path(), "init").unwrap_err();
+        assert!(err.to_string().contains("inside your thoughts repository"));
+    }
+
+    #[test]
+    fn content_root_guard_blocks_cwd_nested_in_root() {
+        let root = tempdir().unwrap();
+        let nested = root.path().join("repos").join("proj");
+        fs::create_dir_all(&nested).unwrap();
+        assert!(ensure_cwd_outside_content_root(root.path(), &nested, "init").is_err());
+    }
+
+    #[test]
+    fn content_root_guard_allows_cwd_outside_root() {
+        let root = tempdir().unwrap();
+        let elsewhere = tempdir().unwrap();
+        assert!(ensure_cwd_outside_content_root(root.path(), elsewhere.path(), "init").is_ok());
+    }
+
+    /// A sibling whose name merely shares a prefix with the root
+    /// (`/x/thoughts` vs `/x/thoughts-repo`) must NOT be treated as inside —
+    /// the canonical check is path-segment aware, not raw string prefix.
+    #[test]
+    fn content_root_guard_does_not_confuse_prefix_siblings() {
+        let base = tempdir().unwrap();
+        let root = base.path().join("thoughts");
+        let sibling = base.path().join("thoughts-repo");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&sibling).unwrap();
+        assert!(ensure_cwd_outside_content_root(&root, &sibling, "init").is_ok());
     }
 }
