@@ -495,8 +495,11 @@ mod tests {
         assert!(ensure_cwd_outside_thoughts_repo(&thoughts, elsewhere.path(), "sync").is_ok());
     }
 
+    /// API-only backends (Notion/Anytype) have no local tree, so there's
+    /// nothing to be "inside". Obsidian, though non-git, IS filesystem-backed
+    /// and is covered separately by `guard_blocks_cwd_inside_obsidian_content_root`.
     #[test]
-    fn guard_ignores_non_git_backends() {
+    fn guard_ignores_api_only_backends() {
         let elsewhere = tempdir().unwrap();
         let thoughts = ThoughtsConfig {
             user: "alice".to_string(),
