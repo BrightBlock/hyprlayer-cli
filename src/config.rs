@@ -213,10 +213,23 @@ impl BackendConfig {
     /// Obsidian / Notion / Anytype users use `hyprlayer telemetry config
     /// --api-key` for manual override.
     pub fn thoughts_repo_path(&self) -> Option<PathBuf> {
+        // Git is the only filesystem backend that's also a "repo path";
+        // delegate so the path expansion lives in exactly one place.
+        match self {
+            BackendConfig::Git(_) => self.filesystem_content_root(),
+            _ => None,
+        }
+    }
+
+    /// On-disk root of a filesystem-backed thoughts store: the git checkout
+    /// for `Git`, the resolved vault+subpath for `Obsidian`. `None` for
+    /// Notion/Anytype, which materialize no local tree.
+    pub fn filesystem_content_root(&self) -> Option<PathBuf> {
         match self {
             BackendConfig::Git(g) if !g.thoughts_repo.is_empty() => {
                 Some(expand_path(&g.thoughts_repo))
             }
+            BackendConfig::Obsidian(o) => o.obsidian_root(),
             _ => None,
         }
     }

@@ -68,6 +68,11 @@ pub fn init(args: InitArgs) -> Result<()> {
     let config_path = config.path()?;
     let mut hyprlayer_config = config.load_if_exists()?.unwrap_or_default();
 
+    // No-op on a first-ever init: nothing configured yet to be standing inside.
+    if let Some(thoughts) = hyprlayer_config.thoughts.as_ref() {
+        super::detect::ensure_cwd_outside_thoughts_repo(thoughts, &current_repo, "init")?;
+    }
+
     if hyprlayer_config
         .ai
         .as_ref()
@@ -124,7 +129,7 @@ pub fn init(args: InitArgs) -> Result<()> {
 
     let resolved = hyprlayer_config.thoughts_mut().resolve_dirs(&profile);
     let mapped_name = if backend_kind.uses_filesystem() {
-        let content_root = resolve_content_root(&resolved.backend, force)?;
+        let content_root = resolve_content_root(&resolved.backend, &current_repo, force)?;
         ensure_content_root(&content_root)?;
 
         let repos_dir = resolved.backend.filesystem_repos_dir().unwrap_or("repos");
@@ -221,6 +226,8 @@ fn init_non_interactive(
         }
 
         thoughts.validate_profile(&profile)?;
+
+        super::detect::ensure_cwd_outside_thoughts_repo(thoughts, &current_repo, "init")?;
     }
 
     let thoughts_dir = current_repo.join("thoughts");
@@ -294,7 +301,7 @@ fn init_non_interactive(
     let mapped_name = sanitize_directory_name(&directory);
 
     if backend_kind.uses_filesystem() {
-        let content_root = resolve_content_root(&resolved.backend, force)?;
+        let content_root = resolve_content_root(&resolved.backend, &current_repo, force)?;
         ensure_content_root(&content_root)?;
 
         let repos_dir = resolved.backend.filesystem_repos_dir().unwrap_or("repos");
@@ -709,8 +716,12 @@ fn check_existing_setup(current_repo: &Path, force: bool) -> Result<bool> {
     Ok(reconfigure)
 }
 
-fn resolve_content_root(backend: &BackendConfig, force: bool) -> Result<PathBuf> {
-    match backend {
+fn resolve_content_root(
+    backend: &BackendConfig,
+    current_repo: &Path,
+    force: bool,
+) -> Result<PathBuf> {
+    let root = match backend {
         BackendConfig::Git(g) => {
             // Validate the thoughts repo here, before `ensure_content_root`
             // would create it — mirroring the Obsidian vault check below. The
@@ -718,7 +729,7 @@ fn resolve_content_root(backend: &BackendConfig, force: bool) -> Result<PathBuf>
             // user); `--force` bypasses the check and lets init create one.
             let root = expand_path(&g.thoughts_repo);
             super::detect::guard_git_thoughts_root(&root, &g.repos_dir, &g.global_dir, force)?;
-            Ok(root)
+            root
         }
         BackendConfig::Obsidian(o) => {
             // Check vault existence here, before `ensure_content_root` would
@@ -737,13 +748,19 @@ fn resolve_content_root(backend: &BackendConfig, force: bool) -> Result<PathBuf>
                 ));
             }
             o.obsidian_root()
-                .ok_or_else(|| anyhow::anyhow!("Obsidian backend requires vaultPath in settings"))
+                .ok_or_else(|| anyhow::anyhow!("Obsidian backend requires vaultPath in settings"))?
         }
-        other => Err(anyhow::anyhow!(
-            "Backend '{}' has no content root",
-            other.kind().as_str()
-        )),
-    }
+        other => {
+            return Err(anyhow::anyhow!(
+                "Backend '{}' has no content root",
+                other.kind().as_str()
+            ));
+        }
+    };
+    // Refuse before any writes if the repo being initialized is at/inside
+    // the resolved thoughts root, regardless of prior config or backend.
+    super::detect::ensure_cwd_outside_content_root(&root, current_repo, "init")?;
+    Ok(root)
 }
 
 fn ensure_content_root(content_root: &Path) -> Result<()> {
