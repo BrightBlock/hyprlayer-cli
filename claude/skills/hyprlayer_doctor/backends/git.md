@@ -45,7 +45,15 @@ Inputs from the dispatcher: `GitConfig { thoughtsRepo, reposDir, globalDir }`, t
 - ⚠ if no remote: local-only thoughts. Push/pull will silently no-op. Remediation: `git -C <thoughtsRepo> remote add origin <url>` if cross-device sync is wanted.
 - On full-report mode only: `git -C <thoughtsRepo> ls-remote --heads origin` with a 5s timeout — surfaces network/auth issues that would make `sync`'s `pull --rebase` step warn at runtime. ⚠ on failure.
 
-## 7. Schema
+## 7. GitHub CLI (`gh`)
+
+- `gh` underpins pull-request and commit-push flows, and is also how hyprlayer reads org-managed telemetry config (`HYPRLAYER_TELEMETRY_KEY` / `HYPRLAYER_ORG_ID` repo variables — see `src/telemetry/org_config.rs`). When it's missing or unauthenticated, telemetry **silently** falls back to anonymous mode.
+- Installed? `command -v gh` returns 0. ⚠ (not ❌) if absent — git-backend reads/writes still work locally; remediation: install https://cli.github.com.
+- Authenticated? `gh auth status` returns 0 (it prints to **stderr**, so capture `2>&1`; a 5s timeout is plenty). ⚠ if installed but unauthed; remediation: `gh auth login`.
+- Diagnostic tie-in: if telemetry seems stuck on anonymous despite an org key being set, point the user at `hyprlayer telemetry status --verbose` (or `hyprlayer telemetry config --refresh --verbose`), which traces the exact `gh`/`git` resolution step that failed.
+- This is a ⚠ for the git backend, never a ❌: hyprlayer's local thoughts operations don't require `gh`.
+
+## 8. Schema
 
 - Schema (`THOUGHT_SCHEMA` in `src/backends/schema.rs`) is enforced at write time in markdown frontmatter, not at rest. A doctor cannot cheaply verify "every file has valid frontmatter."
 - ⏭ Schema check skipped: enforced on write by hyprlayer, not verifiable as a setup property.

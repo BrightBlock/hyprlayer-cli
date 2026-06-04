@@ -3,6 +3,7 @@ use anyhow::Result;
 use crate::cli::TelemetryConfigArgs;
 use crate::config::{HyprlayerConfig, KeySource, TelemetryMode};
 use crate::telemetry::lifecycle::{ResolveError, auto_elevate_if_org_keyed, resolve_owner_repo};
+use crate::telemetry::verbose::vlog;
 use crate::telemetry::{identify, org_config, unix_now};
 
 pub fn config(args: TelemetryConfigArgs) -> Result<()> {
@@ -12,8 +13,12 @@ pub fn config(args: TelemetryConfigArgs) -> Result<()> {
         reset,
         refresh,
         show,
+        verbose,
         config,
     } = args;
+    if verbose {
+        crate::telemetry::verbose::set_enabled(true);
+    }
     let config_path = config.path()?;
     let mut cfg = config.load_or_default()?;
 
@@ -66,7 +71,10 @@ fn run_refresh(cfg: &mut HyprlayerConfig, config_path: &std::path::Path) -> Resu
         return Ok(());
     }
     let owner_repo = match resolve_owner_repo(cfg) {
-        Ok(r) => r,
+        Ok(r) => {
+            vlog!("resolved thoughts-repo GitHub origin: {r}");
+            r
+        }
         Err(ResolveError::Manual) => {
             eprintln!("Manual override is active. Run with --reset first to clear it.");
             return Ok(());
@@ -90,7 +98,37 @@ fn run_refresh(cfg: &mut HyprlayerConfig, config_path: &std::path::Path) -> Resu
         if let Some(org) = org_config::fetch_org_id(&owner_repo) {
             cfg.telemetry.org_id = Some(org);
         }
+        vlog!("org-managed key applied; telemetry is now identified for {owner_repo}");
     } else {
+        // Only classify (an extra `gh variable list` shell-out) when the
+        // operator asked to see the detail. A readable repo with no key is
+        // the expected personal-repo case — not a failure.
+        if crate::telemetry::verbose::is_enabled() {
+            use org_config::VariableAccess;
+            match org_config::repo_variables_access(&owner_repo) {
+                VariableAccess::Readable => vlog!(
+                    "{owner_repo} has no HYPRLAYER_TELEMETRY_KEY set — that's fine; staying \
+                     on the default community key (anonymous)."
+                ),
+                VariableAccess::PermissionDenied(detail) => vlog!(
+                    "{owner_repo} is visible but this `gh` account can't read its Actions \
+                     variables (HTTP 403): {detail}. Org-managed telemetry needs the org to \
+                     grant variable access; staying anonymous meanwhile."
+                ),
+                VariableAccess::NotFound(detail) => vlog!(
+                    "{owner_repo} returned HTTP 404 ({detail}). Check the remote URL and your \
+                     `gh` access; staying on the default community key (anonymous)."
+                ),
+                VariableAccess::OtherError(detail) => vlog!(
+                    "could not read {owner_repo}'s Actions variables: {detail}. Staying \
+                     anonymous."
+                ),
+                VariableAccess::GhMissing => vlog!(
+                    "`gh` is not installed, so {owner_repo}'s org key can't be read; staying \
+                     on the default community key (anonymous)."
+                ),
+            }
+        }
         release_lock(cfg);
     }
     cfg.telemetry.last_config_refresh = unix_now();
@@ -238,6 +276,7 @@ mod tests {
             reset,
             refresh,
             show: false,
+            verbose: false,
             config: crate::cli::ConfigArgs {
                 config_file: Some(path.to_string_lossy().into_owned()),
             },
