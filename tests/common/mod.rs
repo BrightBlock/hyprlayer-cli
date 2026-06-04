@@ -111,6 +111,9 @@ pub fn run(xdg: &Path, args: &[&str]) -> std::process::Output {
     cmd.args(args)
         .env("XDG_CONFIG_HOME", xdg)
         .env("HOME", xdg)
+        // Keep the detached background `telemetry flush` from racing the
+        // spool these tests assert on (and from POSTing to PostHog).
+        .env("HYPRLAYER_DISABLE_BACKGROUND_FLUSH", "1")
         .env_remove("HYPRLAYER_TELEMETRY_KEY")
         .env_remove("HYPRLAYER_ORG_ID");
     cmd.output().expect("hyprlayer binary should be runnable")
