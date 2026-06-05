@@ -158,9 +158,10 @@ pub(crate) fn summarize_turn<R: BufRead>(reader: R) -> Option<TurnSummary> {
                 // reflects per-skill overrides (a sonnet-pinned skill records
                 // `claude-sonnet-*` even inside an opus session). Skip Claude
                 // Code's `<synthetic>` sentinel — and any `<…>` placeholder for
-                // locally-generated messages — so we keep the last *real* model
-                // rather than a trailing synthetic one.
+                // locally-generated messages — plus the empty string, so we keep
+                // the last *real* model rather than a trailing synthetic/blank one.
                 if let Some(model) = v.pointer("/message/model").and_then(|m| m.as_str())
+                    && !model.is_empty()
                     && !model.starts_with('<')
                 {
                     s.model = Some(model.to_string());
@@ -396,18 +397,20 @@ mod tests {
     }
 
     #[test]
-    fn summarize_turn_skips_synthetic_model_keeps_last_real() {
+    fn summarize_turn_skips_synthetic_and_empty_model_keeps_last_real() {
         // Claude Code tags locally-generated assistant messages with model
-        // "<synthetic>" (no real API call). The captured model must be the
-        // last *real* model, never the trailing synthetic sentinel.
+        // "<synthetic>" (no real API call), and some entries carry an empty
+        // model string. The captured model must be the last *real* model,
+        // never a trailing synthetic sentinel or a blank value.
         let jsonl = r#"
 {"type":"user","message":{"role":"user","content":"<command-message>commit</command-message>\n<command-name>/commit</command-name>"},"timestamp":"2026-05-08T00:57:57.000Z"}
 {"type":"assistant","message":{"model":"claude-sonnet-4-5","usage":{"input_tokens":10}},"timestamp":"2026-05-08T00:58:00.000Z"}
 {"type":"assistant","message":{"model":"<synthetic>","usage":{"input_tokens":0}},"timestamp":"2026-05-08T00:58:01.000Z"}
+{"type":"assistant","message":{"model":"","usage":{"input_tokens":0}},"timestamp":"2026-05-08T00:58:02.000Z"}
 "#;
         let s = summarize(jsonl).expect("must summarize");
         assert_eq!(s.skill, "commit");
-        // last real model wins; the trailing <synthetic> is ignored.
+        // last real model wins; trailing <synthetic> and "" are both ignored.
         assert_eq!(s.model.as_deref(), Some("claude-sonnet-4-5"));
     }
 
