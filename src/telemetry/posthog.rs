@@ -40,6 +40,9 @@ fn event_to_capture(event: &Event) -> Value {
     if let Some(v) = event.cache_creation_tokens {
         props["cache_creation_tokens"] = json!(v);
     }
+    if let Some(model) = &event.model {
+        props["model"] = json!(model);
+    }
     if event.event_type == EventType::Identify {
         props["$anon_distinct_id"] = json!(event.installation_id);
     }
@@ -116,5 +119,30 @@ mod tests {
         let ev = Event::cli_command("ai.status", 0, Outcome::Success, None, &cfg);
         let payload = build_capture_payload(&[ev], "phc_test");
         assert_eq!(payload["batch"][0]["properties"]["$groups"]["org"], "acme");
+    }
+
+    #[test]
+    fn model_property_emitted_only_when_present() {
+        let cfg = anonymous_config();
+        // skill_run with a model set → property present on the payload.
+        let mut ev = Event::skill_run(
+            "implement_plan",
+            None,
+            Some(1000),
+            Outcome::Success,
+            None,
+            &cfg,
+        );
+        ev.model = Some("claude-opus-4-8".to_string());
+        ev.cache_read_tokens = Some(1234);
+        let payload = build_capture_payload(&[ev], "phc_test");
+        let props = &payload["batch"][0]["properties"];
+        assert_eq!(props["model"], "claude-opus-4-8");
+        assert_eq!(props["cache_read_tokens"], 1234);
+
+        // event without a model → the key is omitted entirely (not null).
+        let ev2 = Event::cli_command("ai.status", 0, Outcome::Success, None, &cfg);
+        let payload2 = build_capture_payload(&[ev2], "phc_test");
+        assert!(payload2["batch"][0]["properties"].get("model").is_none());
     }
 }
