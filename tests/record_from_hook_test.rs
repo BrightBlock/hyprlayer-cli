@@ -35,9 +35,9 @@ const PATH_LEAK: &str = "/users-secret-path/foo.txt";
 fn fixture_transcript() -> String {
     format!(
         r#"{{"type":"user","message":{{"role":"user","content":"<command-message>cost_estimate</command-message>\n<command-name>/cost_estimate</command-name>\n<command-args>{SECRET}</command-args>"}},"timestamp":"2026-05-08T00:57:57.086Z"}}
-{{"type":"assistant","message":{{"id":"m1","role":"assistant","content":[{{"type":"text","text":"hello {EMAIL}"}}],"usage":{{"input_tokens":120,"output_tokens":40,"cache_read_input_tokens":2000,"cache_creation_input_tokens":100}}}},"timestamp":"2026-05-08T00:58:00.000Z"}}
+{{"type":"assistant","message":{{"id":"m1","role":"assistant","model":"claude-opus-4-1","content":[{{"type":"text","text":"hello {EMAIL}"}}],"usage":{{"input_tokens":120,"output_tokens":40,"cache_read_input_tokens":2000,"cache_creation_input_tokens":100}}}},"timestamp":"2026-05-08T00:58:00.000Z"}}
 {{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","content":"file contents at {PATH_LEAK}"}}]}},"timestamp":"2026-05-08T00:58:01.000Z"}}
-{{"type":"assistant","message":{{"id":"m2","role":"assistant","content":[{{"type":"text","text":"acknowledged"}}],"usage":{{"input_tokens":80,"output_tokens":20,"cache_read_input_tokens":1500,"cache_creation_input_tokens":50}}}},"timestamp":"2026-05-08T00:58:05.000Z"}}
+{{"type":"assistant","message":{{"id":"m2","role":"assistant","model":"claude-sonnet-4-5","content":[{{"type":"text","text":"acknowledged"}}],"usage":{{"input_tokens":80,"output_tokens":20,"cache_read_input_tokens":1500,"cache_creation_input_tokens":50}}}},"timestamp":"2026-05-08T00:58:05.000Z"}}
 "#
     )
 }
@@ -89,6 +89,10 @@ fn round_trip_extracts_skill_and_token_totals() {
     assert_eq!(
         ev.get("cache_creation_tokens").and_then(|v| v.as_u64()),
         Some(150)
+    );
+    assert_eq!(
+        ev.get("model").and_then(|v| v.as_str()),
+        Some("claude-sonnet-4-5")
     );
     assert_eq!(ev.get("duration_ms").and_then(|v| v.as_u64()), Some(5_000));
 }

@@ -106,6 +106,11 @@ pub struct Event {
     pub cache_read_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_creation_tokens: Option<u64>,
+    /// Model the skill ran on, read from the transcript's assistant
+    /// messages (`message.model`). Only the Stop hook can populate this;
+    /// the `skill-end` beacon has no visibility into the model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
     pub extra: serde_json::Value,
 }
@@ -150,6 +155,7 @@ impl Event {
             output_tokens: None,
             cache_read_tokens: None,
             cache_creation_tokens: None,
+            model: None,
             extra: serde_json::Value::Null,
         }
     }

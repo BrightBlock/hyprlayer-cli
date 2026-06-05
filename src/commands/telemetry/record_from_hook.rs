@@ -1,6 +1,6 @@
-//! Privacy invariant: only typed fields (`usage` integers, ISO timestamps,
-//! `<command-name>` markers) are read from the transcript. Pinned by
-//! `transcript_content_never_leaks_to_spool`.
+//! Privacy invariant: only typed fields (`usage` integers, the `model`
+//! identifier, ISO timestamps, `<command-name>` markers) are read from the
+//! transcript. Pinned by `transcript_content_never_leaks_to_spool`.
 //!
 //! Exit-code invariant: always `Ok(())`. Stop hook treats exit 2 as
 //! blocking and surfaces stderr's first line on any other non-zero exit.
@@ -63,6 +63,7 @@ pub fn record_from_hook(args: TelemetryRecordFromHookArgs) -> Result<()> {
     event.output_tokens = summary.output_tokens;
     event.cache_read_tokens = summary.cache_read_tokens;
     event.cache_creation_tokens = summary.cache_creation_tokens;
+    event.model = summary.model;
     if let Some(ts) = summary.started_at {
         event.event_timestamp = ts;
     }
@@ -100,6 +101,11 @@ pub(crate) struct TurnSummary {
     pub output_tokens: Option<u64>,
     pub cache_read_tokens: Option<u64>,
     pub cache_creation_tokens: Option<u64>,
+    /// Model from the most recent *real* assistant message in the skill
+    /// turn (`message.model`), ignoring Claude Code's `<synthetic>` sentinel
+    /// for locally-generated messages. Reflects per-skill model overrides;
+    /// the last real model wins on a mid-turn switch.
+    pub model: Option<String>,
     pub duration_ms: Option<u64>,
     /// First assistant timestamp after the skill marker, used as the
     /// PostHog `event_timestamp` so dashboards bucket events by when
@@ -148,6 +154,17 @@ pub(crate) fn summarize_turn<R: BufRead>(reader: R) -> Option<TurnSummary> {
             Some("assistant") => {
                 let Some(s) = active.as_mut() else { continue };
                 accumulate_usage(&v, s);
+                // `message.model` is the model that produced this turn and
+                // reflects per-skill overrides (a sonnet-pinned skill records
+                // `claude-sonnet-*` even inside an opus session). Skip Claude
+                // Code's `<synthetic>` sentinel — and any `<…>` placeholder for
+                // locally-generated messages — so we keep the last *real* model
+                // rather than a trailing synthetic one.
+                if let Some(model) = v.pointer("/message/model").and_then(|m| m.as_str())
+                    && !model.starts_with('<')
+                {
+                    s.model = Some(model.to_string());
+                }
                 if let Some(ts_str) = v.get("timestamp").and_then(|x| x.as_str())
                     && let Some(ms) = parse_ts_ms(ts_str)
                 {
@@ -363,8 +380,8 @@ mod tests {
     fn summarize_turn_extracts_skill_and_token_totals() {
         let jsonl = r#"
 {"type":"user","message":{"role":"user","content":"<command-message>implement_plan</command-message>\n<command-name>/implement_plan</command-name>"},"timestamp":"2026-05-08T00:57:57.086Z"}
-{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":5000,"cache_creation_input_tokens":250}},"timestamp":"2026-05-08T00:58:00.000Z"}
-{"type":"assistant","message":{"id":"m2","role":"assistant","content":[{"type":"text","text":"there"}],"usage":{"input_tokens":50,"output_tokens":10,"cache_read_input_tokens":3000,"cache_creation_input_tokens":0}},"timestamp":"2026-05-08T00:58:05.000Z"}
+{"type":"assistant","message":{"id":"m1","role":"assistant","model":"claude-opus-4-1","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":5000,"cache_creation_input_tokens":250}},"timestamp":"2026-05-08T00:58:00.000Z"}
+{"type":"assistant","message":{"id":"m2","role":"assistant","model":"claude-sonnet-4-5","content":[{"type":"text","text":"there"}],"usage":{"input_tokens":50,"output_tokens":10,"cache_read_input_tokens":3000,"cache_creation_input_tokens":0}},"timestamp":"2026-05-08T00:58:05.000Z"}
 "#;
         let s = summarize(jsonl).expect("must summarize");
         assert_eq!(s.skill, "implement_plan");
@@ -372,8 +389,26 @@ mod tests {
         assert_eq!(s.output_tokens, Some(30));
         assert_eq!(s.cache_read_tokens, Some(8000));
         assert_eq!(s.cache_creation_tokens, Some(250));
+        // Last assistant message's model wins (m2 over m1).
+        assert_eq!(s.model.as_deref(), Some("claude-sonnet-4-5"));
         assert_eq!(s.duration_ms, Some(5_000));
         assert_eq!(s.started_at.as_deref(), Some("2026-05-08T00:58:00.000Z"));
+    }
+
+    #[test]
+    fn summarize_turn_skips_synthetic_model_keeps_last_real() {
+        // Claude Code tags locally-generated assistant messages with model
+        // "<synthetic>" (no real API call). The captured model must be the
+        // last *real* model, never the trailing synthetic sentinel.
+        let jsonl = r#"
+{"type":"user","message":{"role":"user","content":"<command-message>commit</command-message>\n<command-name>/commit</command-name>"},"timestamp":"2026-05-08T00:57:57.000Z"}
+{"type":"assistant","message":{"model":"claude-sonnet-4-5","usage":{"input_tokens":10}},"timestamp":"2026-05-08T00:58:00.000Z"}
+{"type":"assistant","message":{"model":"<synthetic>","usage":{"input_tokens":0}},"timestamp":"2026-05-08T00:58:01.000Z"}
+"#;
+        let s = summarize(jsonl).expect("must summarize");
+        assert_eq!(s.skill, "commit");
+        // last real model wins; the trailing <synthetic> is ignored.
+        assert_eq!(s.model.as_deref(), Some("claude-sonnet-4-5"));
     }
 
     #[test]
@@ -467,6 +502,7 @@ mod tests {
         assert_eq!(s.output_tokens, Some(5));
         assert!(s.cache_read_tokens.is_none());
         assert!(s.cache_creation_tokens.is_none());
+        assert!(s.model.is_none());
     }
 
     #[test]
