@@ -64,7 +64,7 @@ Every thought carries the same 10 standardized properties regardless of backend.
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `title` | text | yes | Human-readable title |
-| `type` | `plan` \| `research` \| `handoff` \| `note` | yes | Primary category |
+| `type` | `plan` \| `research` \| `handoff` \| `note` \| `pr` | yes | Primary category |
 | `date` | date (YYYY-MM-DD) | yes | Creation date |
 | `status` | `draft` \| `active` \| `implemented` \| `superseded` \| `archived` | yes | Lifecycle state |
 | `ticket` | text | no | Optional external reference, e.g. `ENG-1234` |
