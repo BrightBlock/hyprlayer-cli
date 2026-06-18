@@ -14,8 +14,8 @@ Run `hyprlayer storage info --json` and read the `backend` field. Use the table 
 
 | Backend | Template | Record | Scratch file for `gh pr edit` |
 |---|---|---|---|
-| `git` | `thoughts/shared/pr_description.md` | `thoughts/shared/prs/{number}_description.md` (commit + `hyprlayer thoughts sync`) | same path as the record |
-| `obsidian` | `thoughts/shared/pr_description.md` (symlinked into the vault) | `thoughts/shared/prs/{number}_description.md` (no sync step) | same path as the record |
+| `git` | `thoughts/shared/pr_description.md` | `thoughts/shared/prs/{number}_description.md` (commit + `hyprlayer thoughts sync`) | `${TMPDIR:-${TEMP:-/tmp}}/hyprlayer_pr_{number}_description.md` (transient, body only — no frontmatter; delete after `gh pr edit`) |
+| `obsidian` | `thoughts/shared/pr_description.md` (symlinked into the vault) | `thoughts/shared/prs/{number}_description.md` (no sync step) | `${TMPDIR:-${TEMP:-/tmp}}/hyprlayer_pr_{number}_description.md` (transient, body only — no frontmatter; delete after `gh pr edit`) |
 | `notion` | Workspace page titled `PR Description Template` (locate via `mcp__claude_ai_Notion__notion-search`, read via `mcp__claude_ai_Notion__notion-fetch`) | Row in the data source under `settings.databaseId`, with `type=pr` and the required-metadata properties from `_thoughts/required-metadata.md`. Title: `PR #{number}: {pr_title}`. Create with `mcp__claude_ai_Notion__notion-create-pages`; on update use `mcp__claude_ai_Notion__notion-update-page`. | `${TMPDIR:-${TEMP:-/tmp}}/hyprlayer_pr_{number}_description.md` (transient; delete after `gh pr edit`) |
 | `anytype` | Object named `PR Description Template` in `settings.spaceId` (locate via `mcp__anytype__API-list-objects`, read via `mcp__anytype__API-get-object`) | Anytype object with `type_key=hyprlayer_thought` and `type` property set to `pr`. Title: `PR #{number}: {pr_title}`. Follow the create / update protocol in `_thoughts/storage-backend.md`. | `${TMPDIR:-${TEMP:-/tmp}}/hyprlayer_pr_{number}_description.md` (transient; delete after `gh pr edit`) |
 
@@ -43,10 +43,13 @@ Do not duplicate metadata as a body header block — it rides as typed propertie
    If found, treat it as the prior version and update rather than creating a duplicate.
 3. **Fill out the template** using the PR diff, commit history, and verification steps. Tick automatable checklist items as you run them.
 4. **Persist the description**:
-   - Always write the body to the scratch file (it is the input to `gh pr edit`).
-   - On `git`: the scratch file IS the record; run `hyprlayer thoughts sync`.
-   - On `obsidian`: the scratch file IS the record; skip the sync.
-   - On `notion`: also create or update the database row.
-   - On `anytype`: also create or update the object.
+   - Always write the body — template sections only, **never** YAML frontmatter or any metadata block — to the scratch file. It is the input to `gh pr edit`, and GitHub renders frontmatter as literal text, so the scratch file must stay metadata-free on every backend.
+   - On `git`: also write the record at `thoughts/shared/prs/{number}_description.md` as YAML frontmatter (per `_thoughts/required-metadata.md`) followed by the same body; commit it and run `hyprlayer thoughts sync`. The record carries the frontmatter; the scratch file does not.
+   - On `obsidian`: same as `git` — write the frontmatter+body record at `thoughts/shared/prs/{number}_description.md`; skip the sync.
+   - On `notion`: also create or update the database row (metadata rides as typed properties).
+   - On `anytype`: also create or update the object (metadata rides as typed properties).
 5. **Update the PR** with `gh pr edit {number} --body-file <scratch-file>`. Confirm the command exited 0 before proceeding; transient failures like TLS timeouts are common, so retry up to twice with a short delay if it errors. If `gh pr edit` ultimately fails, halt — do not run step 6.
-6. **Promote and clean up** on `notion`/`anytype`, **only after step 5 succeeded**: bump the record's `status` from `draft` to `active`, then delete the scratch file at the path resolved by `${TMPDIR:-${TEMP:-/tmp}}`. Doing this without step 5 confirmed leaves a `status: active` record advertising a synced PR while the body is still the placeholder.
+6. **Promote and clean up**, **only after step 5 succeeded**:
+   - On **every** backend: delete the transient scratch file at `${TMPDIR:-${TEMP:-/tmp}}/hyprlayer_pr_{number}_description.md`. It was only ever the input to `gh pr edit`, never the record, so nothing of value is lost.
+   - On `notion`/`anytype`: bump the record's `status` from `draft` to `active`.
+   Doing the status bump without step 5 confirmed leaves a `status: active` record advertising a synced PR while the body is still the placeholder.
