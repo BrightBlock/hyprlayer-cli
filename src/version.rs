@@ -172,10 +172,11 @@ pub struct UpdateInfo {
     pub install_method: InstallMethod,
 }
 
-/// Pre-release suffixes (e.g., "-beta.1") are stripped before comparison.
+/// Pre-release suffixes ("-beta.1") and build metadata ("+build.3") are
+/// stripped before comparison, so only the `major.minor.patch` core is compared.
 pub(crate) fn is_newer_version(a: &str, b: &str) -> bool {
     let parse = |v: &str| -> Vec<u64> {
-        let base = v.split('-').next().unwrap_or(v);
+        let base = v.split(['-', '+']).next().unwrap_or(v);
         base.split('.').filter_map(|s| s.parse().ok()).collect()
     };
     parse(a) > parse(b)
@@ -431,6 +432,15 @@ mod tests {
         assert!(!is_newer_version("1.5.0-beta.1", "1.5.0"));
         assert!(is_newer_version("1.6.0-rc.1", "1.5.0"));
         assert!(!is_newer_version("1.5.0-beta.1", "1.5.0-beta.2"));
+    }
+
+    #[test]
+    fn version_comparison_build_metadata() {
+        // Build metadata ("+...") must be stripped, like pre-release suffixes.
+        assert!(!is_newer_version("1.5.0+build.3", "1.5.0"));
+        assert!(!is_newer_version("1.5.0", "1.5.0+build.3"));
+        assert!(is_newer_version("1.6.0+build.1", "1.5.0"));
+        assert!(!is_newer_version("1.5.0-rc.1+build.7", "1.5.0"));
     }
 
     #[test]
