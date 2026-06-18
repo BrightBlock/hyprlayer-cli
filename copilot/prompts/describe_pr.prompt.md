@@ -55,28 +55,24 @@ Below, "the template", "the record", and "the scratch file" are placeholders for
    - On `anytype`: list objects in the space filtered by `type_key=hyprlayer_thought` and `type=pr` with matching title prefix. If found, treat it as the prior version.
    - If a prior version is found, inform the user you'll update it (not create a new one) and consider what has changed since.
 
-4. **Gather comprehensive PR information:**
-   - Get the full PR diff: `gh pr diff {number}`
-   - If you get an error about no default remote repository, instruct the user to run `gh repo set-default` and select the appropriate repository
-   - Get commit history: `gh pr view {number} --json commits`
-   - Review the base branch: `gh pr view {number} --json baseRefName`
-   - Get PR metadata: `gh pr view {number} --json url,title,number,state`
+4. **Gather PR information** in two calls (don't fan out into separate `gh pr view` invocations):
+   - `gh pr diff {number}` — full diff
+   - `gh pr view {number} --json url,number,title,state,baseRefName,commits` — all metadata in one shot
+   - If either errors with "no default remote repository", tell the user to run `gh repo set-default` and pick the right one
 
-5. **Analyze the changes thoroughly:** (ultrathink about the code changes, their architectural implications, and potential impacts)
-   - Read through the entire diff carefully
-   - For context, read any files that are referenced but not shown in the diff
-   - Understand the purpose and impact of each change
+5. **Analyze the changes:**
+   - Read through the diff
    - Identify user-facing changes vs internal implementation details
    - Look for breaking changes or migration requirements
+   - For non-trivial PRs (>10 files changed or >300 added+deleted lines), think hard about architectural implications. For small diffs, skip the extended reasoning — it's wasted time on typo fixes and one-liners.
+   - Only read adjacent files when the diff is genuinely ambiguous about a change. Don't pre-emptively load surrounding context.
 
 6. **Handle verification requirements:**
-   - Look for any checklist items in the "How to verify it" section of the template
-   - For each verification step:
-     - If it's a command you can run (like `make check test`, `npm test`, etc.), run it
-     - If it passes, mark the checkbox as checked: `- [x]`
-     - If it fails, keep it unchecked and note what failed: `- [ ]` with explanation
-     - If it requires manual testing (UI interactions, external services), leave unchecked and note for user
-   - Document any verification steps you couldn't complete
+   - Look for automatable checklist items in the "How to verify it" section of the template. If there are none, skip this step.
+   - Otherwise, **ask the user**: "Run the automatable verification commands now, or skip and leave them for you to verify?" Wait for an answer before proceeding.
+   - **If they say run:** execute each automatable command (e.g. `make check test`, `npm test`). Mark passing steps `- [x]`, failing steps `- [ ]` with a brief note of what failed.
+   - **If they say skip:** leave the automatable boxes unchecked and add a one-line note in the "How to verify it" section that verification was deferred to the user.
+   - Manual-only steps (UI interactions, external services) remain unchecked regardless.
 
 7. **Generate the description:**
    - Fill out each section from the template thoroughly:
@@ -107,5 +103,6 @@ Below, "the template", "the record", and "the scratch file" are placeholders for
 - Focus on the "why" as much as the "what".
 - Include any breaking changes or migration notes prominently.
 - If the PR touches multiple components, organize the description accordingly.
-- Always attempt to run verification commands when possible.
+- Ask before running verification commands; never auto-run them.
 - Clearly communicate which verification steps need manual testing.
+- **Never** `git add thoughts` or any path under it from this repo, and never include those paths in a commit. The `thoughts/` directory contains symlinks to a separate repo managed by `hyprlayer thoughts sync` — use that command for thoughts, not `git add`/`git commit`. If a commit elsewhere in this flow is required (e.g. the `git`-backend record write), stage explicit file paths only; never `git add .` or `git add -A`.

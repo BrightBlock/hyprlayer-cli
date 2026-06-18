@@ -8,3 +8,6 @@
 
 # Conductor preference texts
 docs/conductor-preferences/
+
+# hyprlayer thoughts — symlinks to a separate repo managed by `hyprlayer thoughts sync`.
+/thoughts/
