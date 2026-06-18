@@ -1,5 +1,0 @@
-{
-  "scripts": {
-    "setup": "sh conductor/setup-preferences.sh"
-  }
-}
