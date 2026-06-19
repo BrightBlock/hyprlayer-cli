@@ -28,28 +28,22 @@ The numbered steps below fold the dispatched read/write into the broader flow (t
 
 3. **Check for an existing record** for this PR number, per the dispatch's "locate any prior record" step. If a prior version is found, inform the user you'll update it (not create a new one) and consider what has changed since.
 
-4. **Gather comprehensive PR information:**
-   - Get the full PR diff: `gh pr diff {number}`
-   - If you get an error about no default remote repository, instruct the user to run `gh repo set-default` and select the appropriate repository
-   - Get commit history: `gh pr view {number} --json commits`
-   - Review the base branch: `gh pr view {number} --json baseRefName`
-   - Get PR metadata: `gh pr view {number} --json url,title,number,state`
+4. **Gather PR information** in two calls (don't fan out into separate `gh pr view` invocations):
+   - `gh pr diff {number}` — full diff
+   - `gh pr view {number} --json url,number,title,state,baseRefName,commits` — all metadata in one shot
+   - If either errors with "no default remote repository", fail the run with that message — CI mode cannot prompt for `gh repo set-default`.
 
-5. **Analyze the changes thoroughly:** (ultrathink about the code changes, their architectural implications, and potential impacts)
-   - Read through the entire diff carefully
-   - For context, read any files that are referenced but not shown in the diff
-   - Understand the purpose and impact of each change
+5. **Analyze the changes:**
+   - Read through the diff
    - Identify user-facing changes vs internal implementation details
    - Look for breaking changes or migration requirements
+   - For non-trivial PRs (>10 files changed or >300 added+deleted lines), think hard about architectural implications. For small diffs, skip the extended reasoning.
+   - Only read adjacent files when the diff is genuinely ambiguous about a change.
 
-6. **Handle verification requirements:**
-   - Look for any checklist items in the "How to verify it" section of the template
-   - For each verification step:
-     - If it's a command you can run (like `make check test`, `npm test`, etc.), run it
-     - If it passes, mark the checkbox as checked: `- [x]`
-     - If it fails, keep it unchecked and note what failed: `- [ ]` with explanation
-     - If it requires manual testing (UI interactions, external services), leave unchecked and note for user
-   - Document any verification steps you couldn't complete
+6. **Handle verification requirements** (CI mode runs them automatically — no interactive prompt available):
+   - Look for automatable checklist items in the "How to verify it" section of the template. If there are none, skip this step.
+   - For each automatable command (e.g. `make check test`, `npm test`), run it. Mark passing steps `- [x]`, failing steps `- [ ]` with a brief note of what failed.
+   - Manual-only steps (UI interactions, external services) remain unchecked.
 
 7. **Generate the description:**
    - Fill out each section from the template thoroughly:
@@ -74,5 +68,6 @@ The numbered steps below fold the dispatched read/write into the broader flow (t
 - Focus on the "why" as much as the "what".
 - Include any breaking changes or migration notes prominently.
 - If the PR touches multiple components, organize the description accordingly.
-- Always attempt to run verification commands when possible.
+- CI mode runs verification commands automatically (no interactive prompt available).
 - Clearly communicate which verification steps need manual testing.
+- **Never** `git add thoughts` or any path under it from this repo, and never include those paths in a commit. The `thoughts/` directory contains symlinks to a separate repo managed by `hyprlayer thoughts sync`. If a commit is required for the `git`-backend record, stage explicit file paths only; never `git add .` or `git add -A`.
