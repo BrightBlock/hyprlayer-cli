@@ -1,0 +1,45 @@
+name: "CLA Assistant"
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_target:
+    types: [opened, closed, synchronize]
+
+# Required by the action to comment on PRs, set commit statuses, and commit the
+# signatures file into this repository.
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+  statuses: write
+
+jobs:
+  CLAAssistant:
+    runs-on: ubuntu-latest
+    steps:
+      - name: "CLA Assistant"
+        if: >
+          github.event_name == 'pull_request_target' ||
+          github.event.comment.body == 'recheck' ||
+          github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA'
+        uses: contributor-assistant/github-action@v2.6.1
+        env:
+          # Built-in token; sufficient because signatures are stored in THIS repo.
+          # A PERSONAL_ACCESS_TOKEN is only needed to store them in a separate repo.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          path-to-signatures: 'signatures/version1/cla.json'
+          path-to-document: 'https://github.com/BrightBlock/hyprlayer-cli/blob/master/CLA.md'
+          # Branch where the signatures file is committed and the CLA doc lives.
+          branch: 'master'
+          # Accounts exempt from signing (bots).
+          allowlist: 'dependabot[bot],github-actions[bot],*[bot]'
+          custom-pr-sign-comment: 'I have read the CLA Document and I hereby sign the CLA'
+          custom-notsigned-prcomment: >
+            Thank you for your contribution to **Hyprlayer**! Before we can merge,
+            we need you to agree to our
+            [Contributor License Agreement](https://github.com/BrightBlock/hyprlayer-cli/blob/master/CLA.md).
+            Please read it, then post a comment on this PR with exactly:
+          custom-allsigned-prcomment: >
+            All contributors have signed the CLA. ✅ Thank you!

@@ -140,6 +140,13 @@ cargo build
 cargo test
 ```
 
+## Contributing
+
+Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) to get
+started. Note that Hyprlayer requires every contributor to sign a
+[Contributor License Agreement](CLA.md) before their first change can be merged —
+an automated bot walks you through it on your first pull request.
+
 ## Acknowledgements
 
 Inspired by [HumanLayer](https://humanlayer.dev).
