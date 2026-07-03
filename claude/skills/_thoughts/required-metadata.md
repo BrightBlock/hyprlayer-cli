@@ -9,7 +9,7 @@ Read the `schema` array from `hyprlayer storage info --json`. Populate **every f
 | `title` | Format depends on backend (see "Title format" below). |
 | `type` | Set to the artifact type the skill names (`plan`, `research`, `handoff`, etc.). |
 | `date` | Today's date in `YYYY-MM-DD`. |
-| `status` | `draft` for newly-created artifacts; `active` while research is ongoing; `implemented` once a plan is fully shipped. Skills that mutate an existing artifact promote `status` per their own rules. |
+| `status` | `draft` for newly-created artifacts; `active` while research is ongoing; `implemented` once a plan is fully shipped. Skills that mutate an existing artifact promote `status` per their own rules (`validate_plan` promotes plans; PR records follow the `draft`/`active`/`merged`/`closed` lifecycle in `pr-description.md`). |
 | `project` | `mappedName` from `storage info --json`. |
 | `scope` | `shared` unless the user's task clearly implies `user` or `global`. |
 | `author` | Pull from `hyprlayer thoughts config --json` (the `user` field) or derive from `git config user.name`. |

@@ -10,20 +10,33 @@ You are tasked with generating a comprehensive pull request description followin
 
 ## Storage backend dispatch
 
-Before step 1, run `hyprlayer storage info --json` and read the `backend` field. Use it to resolve the **template** (where the prompt lives), the **persistent record** (where the description is filed for posterity), and a **scratch file** (passed to `gh pr edit --body-file`). On all backends GitHub also receives the description, but it is not the only place it lives.
+Before step 1, run `hyprlayer storage info --json` and read the `backend` field. Use it to resolve the **template** (where the prompt lives), the **persistent record** (where the description is filed for posterity, including a `status` field), and a **scratch file** (transient, body-only — passed to `gh pr edit --body-file`). The record and the scratch file must stay separate files on every backend: GitHub renders YAML frontmatter as literal text, so the scratch file can never carry it.
 
 | Backend | Template | Persistent record | Scratch file for `gh pr edit` |
 |---|---|---|---|
-| `git` | `thoughts/shared/pr_description.md` | `thoughts/shared/prs/{number}_description.md` (commit + `hyprlayer thoughts sync`) | same path as the record |
-| `obsidian` | `thoughts/shared/pr_description.md` (symlinked into the vault) | `thoughts/shared/prs/{number}_description.md` (no sync step) | same path as the record |
-| `notion` | Workspace page titled `PR Description Template` (locate via `mcp__notion__search`, read via `mcp__notion__retrieve-page`) | Row in the data source under `settings.databaseId`, with `type=pr` and the required-metadata properties. Title format: `PR #{number}: {pr_title}`. Create with `mcp__notion__create-page`; on update use `mcp__notion__update-page`. | `/tmp/hyprlayer_pr_{number}_description.md` (transient; delete after `gh pr edit`) |
-| `anytype` | Object named `PR Description Template` in `settings.spaceId` (locate via `mcp__anytype__API-list-objects`, read via `mcp__anytype__API-get-object`) | Anytype object with `type_key=hyprlayer_thought` and `type` property set to `pr`. Title: `PR #{number}: {pr_title}`. Use `mcp__anytype__API-create-object` / `API-update-object`. | `/tmp/hyprlayer_pr_{number}_description.md` (transient; delete after `gh pr edit`) |
+| `git` | `thoughts/shared/pr_description.md` | `thoughts/shared/prs/{number}_description.md`, YAML frontmatter + body (commit + `hyprlayer thoughts sync`) | `${TMPDIR:-${TEMP:-/tmp}}/hyprlayer_pr_{number}_description.md` (transient, body only — no frontmatter; delete after `gh pr edit`) |
+| `obsidian` | `thoughts/shared/pr_description.md` (symlinked into the vault) | `thoughts/shared/prs/{number}_description.md`, YAML frontmatter + body (no sync step) | `${TMPDIR:-${TEMP:-/tmp}}/hyprlayer_pr_{number}_description.md` (transient, body only — no frontmatter; delete after `gh pr edit`) |
+| `notion` | Workspace page titled `PR Description Template` (locate via `mcp__notion__search`, read via `mcp__notion__retrieve-page`) | Row in the data source under `settings.databaseId`, with `type=pr` and the required-metadata properties. Title format: `PR #{number}: {pr_title}`. Create with `mcp__notion__create-page`; on update use `mcp__notion__update-page`. | `${TMPDIR:-${TEMP:-/tmp}}/hyprlayer_pr_{number}_description.md` (transient; delete after `gh pr edit`) |
+| `anytype` | Object named `PR Description Template` in `settings.spaceId` (locate via `mcp__anytype__API-list-objects`, read via `mcp__anytype__API-get-object`) | Anytype object with `type_key=hyprlayer_thought` and `type` property set to `pr`. Title: `PR #{number}: {pr_title}`. Use `mcp__anytype__API-create-object` / `API-update-object`. | `${TMPDIR:-${TEMP:-/tmp}}/hyprlayer_pr_{number}_description.md` (transient; delete after `gh pr edit`) |
 
 If the `hyprlayer` binary is unavailable or the project is not mapped, fall back to the `git` row.
 
 If the template cannot be located on `notion`/`anytype`, fail the run with a clear message instructing the user to create a workspace page/object named exactly `PR Description Template`. Do not silently fall back to a hardcoded template — `describe_pr_nt` is the command for that case.
 
-For `notion`/`anytype` records, populate the schema-required fields as typed properties. The artifact `type` is `pr`. `status` is `draft` on first save and `active` once `gh pr edit` succeeds. Do not duplicate metadata as a body header block.
+Populate every required field on the record — as YAML frontmatter on `git`/`obsidian`, as typed properties on `notion`/`anytype`. The artifact `type` is `pr`; `title` follows `PR #{number}: {pr_title}`. Do not duplicate metadata as a body header block on `notion`/`anytype` — it rides as typed properties only.
+
+### Status lifecycle
+
+The record's `status` tracks the PR's actual state, not just whether it's been saved once. `gh pr view --json ...state` (already fetched in step 4) is the source of truth:
+
+| PR state | Record `status` |
+|---|---|
+| Record just created, `gh pr edit` not yet confirmed | `draft` |
+| `state: OPEN`, `gh pr edit` succeeded | `active` |
+| `state: MERGED` | `merged` |
+| `state: CLOSED` (closed without merging) | `closed` |
+
+Reconcile `status` to this table **every time this command runs** — right after opening the PR, a re-check while CI is running, or a final pass after merge — even if the description body itself doesn't need to change; this is what keeps records from getting stuck on `draft`. For `notion`/`anytype`, only set `status` to `merged`/`closed` if that value is present in `schema.options`; otherwise leave `status` at `active` and add a one-line body note instead.
 
 Below, "the template", "the record", and "the scratch file" are placeholders for the values from this table.
 
@@ -75,17 +88,18 @@ Below, "the template", "the record", and "the scratch file" are placeholders for
    - Ensure all checklist items are addressed (checked or explained)
 
 8. **Persist the description:**
-   - Always write the body to the scratch file (it is the input to `gh pr edit`).
-   - On `git`: the scratch file IS the record. Run `hyprlayer thoughts sync` afterwards.
-   - On `obsidian`: the scratch file IS the record. Skip the sync.
+   - Always write the body — template sections only, never YAML frontmatter or any metadata block — to the scratch file (it is the input to `gh pr edit`).
+   - On `git`: also write the record at `thoughts/shared/prs/{number}_description.md` as YAML frontmatter (`status: draft` on first save) followed by the same body; commit it and run `hyprlayer thoughts sync`. The record carries the frontmatter; the scratch file does not.
+   - On `obsidian`: same as `git` — write the frontmatter+body record; skip the sync.
    - On `notion`: also create or update the database row per the dispatch table. Do not duplicate the schema-required fields inside the body — they ride as typed properties.
    - On `anytype`: also create or update the object per the dispatch table.
    - Show the user the generated description.
 
 9. **Update the PR:**
-   - `gh pr edit {number} --body-file <scratch-file>`
+   - `gh pr edit {number} --body-file <scratch-file>` — skip this if `state` is already `MERGED` or `CLOSED` (rewriting a merged/closed PR's body is unusual; just reconcile `status` below).
    - Confirm the update was successful.
-   - On `notion`/`anytype`: bump the record's `status` from `draft` to `active`, then delete the `/tmp` scratch file.
+   - Reconcile the record's `status` to the live PR `state` per the Status lifecycle table above, on **every** backend (not just `notion`/`anytype`): for `git`/`obsidian`, edit the record file's frontmatter directly, then — for `git` — run `hyprlayer thoughts sync` again.
+   - Delete the transient scratch file (every backend).
    - If any verification steps remain unchecked, remind the user to complete them before merging.
 
 ## Important notes:

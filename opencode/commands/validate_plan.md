@@ -18,7 +18,7 @@ Before you start, run `hyprlayer storage info --json` and parse the `backend` fi
 - **`notion`**: use `mcp__notion__retrieve-page` with the page ID the user provides, or query via `mcp__notion__query-database` filtered by `type = plan` + `project = <mappedName>`. Checkboxes in the plan body come back as Notion toggle/to-do blocks — enumerate block children to count done vs. pending.
 - **`anytype`**: use `mcp__anytype__API-get-object` with the object ID + `settings.spaceId`, or `mcp__anytype__API-list-objects` filtered by `type = plan`.
 
-The `status` property (legal values: `schema.options` for `status`) is the authoritative lifecycle marker. If the validation concludes the plan is fully implemented, surface that promoting `status` from `active` to `implemented` is the follow-up — but do not modify the artifact yourself in this command.
+The `status` property (legal values: `schema.options` for `status`) is the authoritative lifecycle marker. If — and only if — validation concludes the plan is fully implemented (every phase checked off, every automated check passing, no manual verification item still outstanding), promote `status` from `active` to `implemented` yourself as the final step of this command (see Step 4 below). Otherwise leave `status` untouched and say exactly what's blocking promotion.
 
 If `hyprlayer storage info` is not available or the project isn't mapped, proceed with `git` behavior using relative `thoughts/shared/plans/...` paths.
 
@@ -142,6 +142,21 @@ Create comprehensive validation summary:
 - Document new API endpoints
 ```
 
+### Step 4: Promote Plan Status (only when fully implemented)
+
+Check the report you just produced against this bar:
+- Every phase in the plan is checked off (`- [x]`) and the code backs that up.
+- Every automated verification command passed.
+- No manual verification item is still outstanding/unconfirmed.
+
+If **all** of those hold:
+- **`git`/`obsidian`**: edit the plan file's frontmatter `status` from `active` to `implemented` directly. For `git`, also run `hyprlayer thoughts sync` afterwards so the promoted status is pushed.
+- **`notion`**: update the `status` property via `mcp__notion__update-page`.
+- **`anytype`**: update the `status` property via `mcp__anytype__API-update-object`.
+- Call this out explicitly in the report summary, e.g. "Plan status promoted: `active` → `implemented`."
+
+If any of those don't hold, leave `status` exactly as it is — do not promote — and state plainly in the report what's blocking promotion (which check is failing, which manual item is unconfirmed) so a future run can pick it up once resolved.
+
 ## Working with Existing Context
 
 If you were part of the implementation:
@@ -168,14 +183,15 @@ Always verify:
 - [ ] Error handling is robust
 - [ ] Documentation updated if needed
 - [ ] Manual test steps are clear
+- [ ] Plan `status` frontmatter reflects the actual completion state (promoted to `implemented` only when fully done)
 
 ## Relationship to Other Commands
 
 Recommended workflow:
 1. `/implement_plan` - Execute the implementation
 2. `/commit` - Create atomic commits for changes
-3. `/validate_plan` - Verify implementation correctness
-4. `/describe_pr` - Generate PR description
+3. `/validate_plan` - Verify implementation correctness and promote plan `status` to `implemented`
+4. `/describe_pr` - Generate PR description (has its own `draft`/`active`/`merged`/`closed` status lifecycle)
 
 The validation works best after commits are made, as it can analyze the git history to understand what was implemented.
 

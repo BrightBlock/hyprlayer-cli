@@ -25,13 +25,28 @@ If the template cannot be located on `notion`/`anytype`, tell the user to create
 
 ## Required metadata for the record
 
-For `notion`/`anytype`, populate every required field from `_thoughts/required-metadata.md` as a typed property:
+Populate every required field from `_thoughts/required-metadata.md` — as YAML frontmatter on `git`/`obsidian`, as typed properties on `notion`/`anytype`:
 
 - `type` is `pr`.
-- `status` is `draft` on first save and `active` once `gh pr edit` succeeds.
 - `title` follows the `PR #{number}: {pr_title}` convention (overrides the generic title-format rule for this artifact).
+- `status` follows the lifecycle below **on every backend**, not just `notion`/`anytype`.
 
-Do not duplicate metadata as a body header block — it rides as typed properties only.
+On `notion`/`anytype`, do not duplicate metadata as a body header block — it rides as typed properties only. `git`/`obsidian` keep using YAML frontmatter as usual.
+
+## Status lifecycle
+
+The record's `status` tracks the PR's actual state, not just whether it's been saved once. `gh pr view --json ...state` (already fetched in workflow step 4) is the source of truth:
+
+| PR state | Record `status` |
+|---|---|
+| Record just created, `gh pr edit` not yet confirmed | `draft` |
+| `state: OPEN`, `gh pr edit` succeeded | `active` |
+| `state: MERGED` | `merged` |
+| `state: CLOSED` (closed without merging) | `closed` |
+
+This lookup happens **every time this skill runs**, not just the first time — whether that run is right after opening the PR, a re-check while CI is running, or a final pass after merge. Re-read `state` and reconcile `status` to match the table even if the description body itself doesn't need to change; this is what keeps records from getting stuck on `draft`.
+
+For `notion`/`anytype`, only set `status` to `merged`/`closed` if that value is present in `schema.options`; if it isn't, leave `status` at `active` and add a one-line body note instead of inventing an unsupported option.
 
 ## Workflow
 
@@ -48,8 +63,8 @@ Do not duplicate metadata as a body header block — it rides as typed propertie
    - On `obsidian`: same as `git` — write the frontmatter+body record at `thoughts/shared/prs/{number}_description.md`; skip the sync.
    - On `notion`: also create or update the database row (metadata rides as typed properties).
    - On `anytype`: also create or update the object (metadata rides as typed properties).
-5. **Update the PR** with `gh pr edit {number} --body-file <scratch-file>`. Confirm the command exited 0 before proceeding; transient failures like TLS timeouts are common, so retry up to twice with a short delay if it errors. If `gh pr edit` ultimately fails, halt — do not run step 6.
-6. **Promote and clean up**, **only after step 5 succeeded**:
+5. **Update the PR** with `gh pr edit {number} --body-file <scratch-file>` — **skip this** if `state` is already `MERGED` or `CLOSED` (rewriting a merged/closed PR's body is unusual; just reconcile `status` in step 6). Otherwise confirm the command exited 0 before proceeding; transient failures like TLS timeouts are common, so retry up to twice with a short delay if it errors. If `gh pr edit` ultimately fails, halt — do not run step 6.
+6. **Promote and clean up**, **only after step 5 succeeded (or was skipped because the PR is already merged/closed)**:
    - On **every** backend: delete the transient scratch file at `${TMPDIR:-${TEMP:-/tmp}}/hyprlayer_pr_{number}_description.md`. It was only ever the input to `gh pr edit`, never the record, so nothing of value is lost.
-   - On `notion`/`anytype`: bump the record's `status` from `draft` to `active`.
-   Doing the status bump without step 5 confirmed leaves a `status: active` record advertising a synced PR while the body is still the placeholder.
+   - On **every** backend: set the record's `status` to match the live PR `state` per the Status lifecycle table above (`draft` → `active` on a successful edit of an open PR; `merged`/`closed` when the PR has already resolved). For `git`/`obsidian` this means editing the YAML frontmatter of the record file directly, then — for `git` — running `hyprlayer thoughts sync` again so the promoted status is pushed.
+   Doing the status update without step 5 having succeeded (for an open PR) leaves a `status: active` record advertising a synced PR while the body is still the placeholder.
