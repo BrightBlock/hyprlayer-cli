@@ -57,9 +57,9 @@ The numbered steps below fold the dispatched read/write into the broader flow (t
 8. **Persist the description** per the dispatch's "persist the description" step (scratch file always; record per backend; sync on `git`; create/update database row or object on `notion`/`anytype`). Show the user the generated description.
 
 9. **Update the PR:**
-   - `gh pr edit {number} --body-file <scratch-file>`
+   - `gh pr edit {number} --body-file <scratch-file>` (skip if the PR is already merged/closed — see the dispatch's status lifecycle table)
    - Confirm the update was successful.
-   - Promote and clean up per the dispatch (delete the transient scratch file at `${TMPDIR:-${TEMP:-/tmp}}` on every backend; on `notion`/`anytype` also bump `status` from `draft` to `active`).
+   - Promote and clean up per the dispatch (delete the transient scratch file at `${TMPDIR:-${TEMP:-/tmp}}` on every backend; reconcile `status` to the live PR state — `draft`→`active`, or `merged`/`closed` — on **every** backend, not just `notion`/`anytype`).
    - If any verification steps remain unchecked, remind the user to complete them before merging.
 
 ## Important notes:

@@ -1,7 +1,7 @@
 ---
 name: validate_plan
-description: Validate that an implementation plan was correctly executed, run its automated success criteria, and report deviations and remaining manual steps. Read-only on the plan artifact. Use when the user asks to validate or audit an implementation against an existing plan.
-allowed-tools: Bash, Read, Grep, Glob, Agent
+description: Validate that an implementation plan was correctly executed, run its automated success criteria, report deviations and remaining manual steps, and promote the plan's status frontmatter to `implemented` once fully verified. Use when the user asks to validate or audit an implementation against an existing plan.
+allowed-tools: Bash, Read, Edit, Grep, Glob, Agent
 ---
 
 # Validate Plan
@@ -10,7 +10,7 @@ You are tasked with validating that an implementation plan was correctly execute
 
 ## Storage backend dispatch
 
-Read `~/.claude/skills/_thoughts/storage-backend.md` for the per-backend mechanics — see the "How to read existing artifacts" section. Read `~/.claude/skills/_thoughts/required-metadata.md` for legal `select` values (in particular for `status`). For this command: artifact type is `plan`; this is read-only — you do not modify the artifact. If your validation concludes the plan is fully implemented, surface that promoting `status` from `active` to `implemented` is the follow-up, but do not perform the mutation here.
+Read `~/.claude/skills/_thoughts/storage-backend.md` for the per-backend mechanics — see both the "How to read existing artifacts" and "How to update existing artifacts" sections. Read `~/.claude/skills/_thoughts/required-metadata.md` for legal `select` values (in particular for `status`). For this command: artifact type is `plan`. Reading and analysis are read-only, but the status promotion described in Step 4 below is an explicit, narrow exception: if validation concludes the plan is fully implemented — every phase checked off, every automated check passing, and no manual verification items still outstanding — promote `status` from `active` to `implemented` as the final step of this command, per the update rules in `storage-backend.md`. If any manual item is unconfirmed or any automated check fails, leave `status` untouched and say exactly what is blocking promotion.
 
 For `notion`/`anytype`, checkboxes inside the plan body come back as toggle/to-do block children (Notion) or the body markdown (Anytype) — enumerate them to count done vs. pending.
 
@@ -91,6 +91,21 @@ For each phase in the plan:
 
 Read `~/.claude/skills/_thoughts/templates/validation-report.md` for the report structure. Populate every section with concrete findings from steps 1 and 2.
 
+### Step 4: Promote Plan Status (only when fully implemented)
+
+Check the report you just produced against this bar:
+- Every phase in the plan is checked off (`- [x]`) and the code backs that up.
+- Every automated verification command passed.
+- No manual verification item is still outstanding/unconfirmed.
+
+If **all** of those hold:
+1. Edit the plan artifact's `status` field from `active` to `implemented`, following the "How to update existing artifacts" rules in `storage-backend.md` for the active backend.
+2. For `git`/`obsidian`, also bump `last_updated` (today's date) if the artifact already tracks that field — don't add it if the plan never had it.
+3. For `git`, run `hyprlayer thoughts sync` so the promoted status is pushed.
+4. Call this out explicitly in the report summary, e.g. "Plan status promoted: `active` → `implemented`."
+
+If any of those don't hold, leave `status` exactly as it is — do not promote — and state plainly in the report what's blocking promotion (which check is failing, which manual item is unconfirmed) so a future run can pick it up once resolved.
+
 ## Working with Existing Context
 
 If you were part of the implementation:
@@ -117,14 +132,15 @@ Always verify:
 - [ ] Error handling is robust
 - [ ] Documentation updated if needed
 - [ ] Manual test steps are clear
+- [ ] Plan `status` frontmatter reflects the actual completion state (promoted to `implemented` only when fully done)
 
 ## Relationship to Other Commands
 
 Recommended workflow:
 1. `/implement_plan` - Execute the implementation
 2. `/commit` - Create atomic commits for changes
-3. `/validate_plan` - Verify implementation correctness
-4. `/describe_pr` - Generate PR description
+3. `/validate_plan` - Verify implementation correctness and promote plan `status` to `implemented`
+4. `/describe_pr` - Generate PR description (see its own status lifecycle in `_thoughts/pr-description.md`)
 
 The validation works best after commits are made, as it can analyze the git history to understand what was implemented.
 
