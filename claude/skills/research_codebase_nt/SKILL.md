@@ -3,6 +3,8 @@ name: research_codebase_nt
 description: Document codebase as-is without evaluation or recommendations, no-thoughts variant (omits thoughts-locator/thoughts-analyzer agents). Use when the user asks to map a codebase that does not use the standard thoughts directory. Read-only; produces a research artifact via the active storage backend.
 model: opus
 allowed-tools: Bash, Read, Grep, Glob, Agent
+allowed-agents: cartographer, codebase-locator, codebase-analyzer, codebase-pattern-finder, web-search-researcher, jira-ticket-reader, jira-searcher
+allowed-skills: hyprlayer_doctor
 ---
 
 # Research Codebase

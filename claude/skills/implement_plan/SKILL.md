@@ -3,6 +3,8 @@ name: implement_plan
 description: Implement an existing technical plan, checking off items and verifying success criteria as work progresses. Side-effecting; user-only — never auto-invoke. Use when the user asks to implement a previously approved plan.
 model: sonnet
 allowed-tools: Bash, Read, Edit, Write, Grep, Glob, Agent
+allowed-agents: foreman, cartographer, codebase-locator, codebase-analyzer, codebase-pattern-finder
+allowed-skills: hyprlayer_doctor
 disable-model-invocation: true
 ---
 

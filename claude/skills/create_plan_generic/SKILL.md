@@ -3,6 +3,8 @@ name: create_plan_generic
 description: Create detailed implementation plans through interactive research and iteration (generic variant — no thoughts directory conventions). Use when the user asks for a plan in a project that does not assume the standard thoughts repo. Produces a thoughts artifact (a plan).
 model: opus
 allowed-tools: Bash, Read, Grep, Glob, Agent, Write, Edit
+allowed-agents: cartographer, archivist, draughtsman, adjudicator
+allowed-skills: none
 ---
 
 # Implementation Plan

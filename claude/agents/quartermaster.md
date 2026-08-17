@@ -2,6 +2,8 @@
 name: quartermaster
 description: Splits a working tree into atomic commits with drafted messages. Decides which files belong together and in what order, and flags secrets, stray debug output, and stale generated files. Spawn during the Commit stage when the diff is large or mixed. Read-only — the caller gets approval and runs `git commit`. Never adds AI attribution. Reach for it directly when the user asks how to break up a messy working tree.
 tools: Bash, Read, Grep, Glob
+allowed-agents: none
+allowed-skills: none
 model: sonnet
 color: yellow
 ---

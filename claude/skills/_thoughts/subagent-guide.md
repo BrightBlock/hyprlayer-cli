@@ -48,6 +48,19 @@ Use these only on skills whose backend is `git`/`obsidian` and which assume the 
 - **jira-ticket-reader** — full details of a specific ticket.
 - **jira-searcher** — related tickets or historical context.
 
+## Delegation allowlists
+
+Every agent and skill declares what it may reach for, in frontmatter:
+
+- `allowed-agents` — sub-agents it may spawn.
+- `allowed-skills` — skills it may invoke.
+
+Both are comma-separated, or the literal `none`. **Absent means deny**, so a file that omits the key can spawn nothing — add the key when you add a file. hyprlayer-desktop reads these to enforce the graph.
+
+All agents are leaves: `allowed-agents: none` on every one of them. Fan-out belongs to the skill, which holds the user's context and owns persistence. If a stage agent starts needing sub-agents, that is a sign the stage should be split, not that the leaf rule should bend.
+
+`allowed-agents` must be a subset of what the skill's body actually sanctions, and a skill listing any agent needs `Agent` in `allowed-tools`.
+
 ## Spawning rules
 
 - Run multiple agents in parallel when they work on different things — several cartographers over different areas, several foremen only when the phases are genuinely independent.

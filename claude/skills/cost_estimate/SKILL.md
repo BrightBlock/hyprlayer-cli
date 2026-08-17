@@ -2,6 +2,8 @@
 name: cost_estimate
 description: Estimate development cost of a codebase based on lines of code, complexity, and full-team overhead. Use when the user asks for a cost estimate, hours/dollar valuation, or AI-vs-human ROI analysis of the project.
 allowed-tools: Bash, Read, Glob
+allowed-agents: none
+allowed-skills: none
 ---
 
 # Cost Estimate Command

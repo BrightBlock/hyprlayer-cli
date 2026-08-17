@@ -2,6 +2,8 @@
 name: jira-ticket-reader
 description: Reads full details of a JIRA ticket using the JIRA MCP server. Provide a ticket key (e.g., ENG-1234) and it will return the complete ticket details including summary, description, status, assignee, comments, and linked issues.
 tools: Read, Grep, Glob, LS
+allowed-agents: none
+allowed-skills: none
 model: sonnet
 ---
 

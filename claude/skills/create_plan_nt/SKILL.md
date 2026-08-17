@@ -3,6 +3,8 @@ name: create_plan_nt
 description: Create implementation plans with thorough research, no-thoughts variant (omits Notion/Obsidian/thoughts-locator agents and follow-up sync prompts). Use when the user asks for a plan in a project that does not use the standard thoughts directory. Produces a plan artifact via the active storage backend.
 model: opus
 allowed-tools: Bash, Read, Grep, Glob, Agent, Write, Edit
+allowed-agents: cartographer, draughtsman, adjudicator, codebase-locator, codebase-analyzer, codebase-pattern-finder, jira-ticket-reader, jira-searcher
+allowed-skills: hyprlayer_doctor
 ---
 
 # Implementation Plan

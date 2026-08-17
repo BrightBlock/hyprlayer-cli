@@ -2,6 +2,8 @@
 name: code_review
 description: Adversarial code review of the current branch. Uses OpenAI Codex CLI when available for a true cross-model second opinion; falls back to a Claude adversarial subagent when codex is absent. Read-only; user-only — never auto-invoke.
 allowed-tools: Bash, Read, Agent
+allowed-agents: adversarial-reviewer, marshal
+allowed-skills: none
 disable-model-invocation: true
 ---
 

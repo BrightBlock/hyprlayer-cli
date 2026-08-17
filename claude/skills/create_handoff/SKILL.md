@@ -2,6 +2,8 @@
 name: create_handoff
 description: Create a handoff document for transferring work to another session. Use when the user asks to create a handoff, summarize the session for a future agent, or capture context for a clean restart. Produces a thoughts artifact (a handoff).
 allowed-tools: Bash, Read, Write, Edit, Agent, mcp__claude_ai_Notion__*, mcp__anytype__*
+allowed-agents: archivist
+allowed-skills: hyprlayer_doctor
 ---
 
 # Create Handoff

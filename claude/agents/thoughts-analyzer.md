@@ -1,6 +1,9 @@
 ---
 name: thoughts-analyzer
 description: The research equivalent of codebase-analyzer. Use this subagent_type when wanting to deep dive on a research topic. Not commonly needed otherwise.
+tools: Read, Grep, Glob, LS, Bash, mcp__claude_ai_Notion__*, mcp__notion__*, mcp__anytype__*
+allowed-agents: none
+allowed-skills: none
 model: sonnet
 ---
 

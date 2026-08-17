@@ -3,6 +3,8 @@ name: iterate_plan
 description: Iterate on an existing implementation plan with thorough research and surgical updates. Use when the user asks to update, refine, or rewrite parts of an existing plan. Mutates an existing thoughts artifact (a plan).
 model: opus
 allowed-tools: Bash, Read, Grep, Glob, Agent, Write, Edit, mcp__claude_ai_Notion__*, mcp__anytype__*
+allowed-agents: cartographer, archivist, draughtsman, adjudicator, thoughts-locator, thoughts-analyzer
+allowed-skills: hyprlayer_doctor
 ---
 
 # Iterate Implementation Plan

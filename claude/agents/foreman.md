@@ -2,6 +2,8 @@
 name: foreman
 description: Executes exactly one phase of an approved plan in a fresh context. Writes the code, runs that phase's automated verification, and reports what changed and what it could not do. Spawn during the Implement stage, one agent per phase. Stops and reports rather than improvising when the plan and the code disagree. Requires an approved plan and a phase number — for ad-hoc coding requests just do the work yourself; do not spawn a foreman without a phase to build.
 tools: Read, Write, Edit, Bash, Grep, Glob, LS, TodoWrite
+allowed-agents: none
+allowed-skills: none
 model: inherit
 color: cyan
 ---
