@@ -2,7 +2,7 @@
 name: ci_describe_pr
 description: Generate comprehensive PR descriptions following the repository's pr_description.md template, syncing the result back to the PR. Use when the user asks to describe a PR in CI/non-interactive mode (assumes a PR description template exists in the configured thoughts backend).
 model: sonnet
-allowed-tools: Bash, Read, Write, mcp__claude_ai_Notion__*, mcp__anytype__*
+allowed-tools: Bash, Read, Write, Agent, mcp__claude_ai_Notion__*, mcp__anytype__*
 ---
 
 # Generate PR Description
@@ -46,6 +46,7 @@ The numbered steps below fold the dispatched read/write into the broader flow (t
    - Manual-only steps (UI interactions, external services) remain unchecked.
 
 7. **Generate the description:**
+   - **Delegate the write-up to the `herald` agent** (see `~/.claude/skills/_thoughts/subagent-guide.md`). Hand it the PR number, the template (path or body), the repo root, and which verification commands were run with their results. It returns the finished body. If the Agent tool is unavailable in this CI environment, write the description inline — do not fail the run over it.
    - Fill out each section from the template thoroughly:
      - Answer each question/section based on your analysis
      - Be specific about problems solved and changes made

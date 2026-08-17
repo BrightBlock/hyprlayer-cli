@@ -26,6 +26,19 @@ When given a plan path:
 
 If no plan path provided, ask for one.
 
+## Delegating a phase to the `foreman`
+
+Read `~/.claude/skills/_thoughts/subagent-guide.md` for the catalog. The default for a substantial phase is to delegate it: spawn a `foreman` with the plan path (or body), **which phase number is theirs**, and the repo root. It implements that phase in a fresh context, runs the phase's automated verification, and reports what changed, what passed, and what it could not do.
+
+Delegate when the phase touches several files, spans a subsystem you'd otherwise have to load into this context, or is one of many phases you're working through in sequence. Implement inline when the phase is a handful of lines, when you already hold all the context the phase needs, or when the user is iterating with you interactively on that specific code.
+
+Spawn foremen in parallel only when the phases are genuinely independent — no shared files, no ordering dependency. Plans are usually written so they aren't.
+
+When a foreman returns:
+- Read its report against the plan. Do not trust "phase complete" without the verification results to back it.
+- A `MISMATCH` block is yours to resolve, not the foreman's — apply the "If you encounter a mismatch" flow below.
+- You own the plan artifact: check off items (`- [x]`), keep the todos current, and promote `status` per the dispatch. The foreman never touches the plan file.
+
 ## Implementation Philosophy
 
 Plans are carefully designed, but reality can be messy. Your job is to:
@@ -80,7 +93,7 @@ When something isn't working as expected:
 - Consider if the codebase has evolved since the plan was written
 - Present the mismatch clearly and ask for guidance
 
-Use sub-tasks sparingly - mainly for targeted debugging or exploring unfamiliar territory.
+Use sub-tasks sparingly for debugging — a `cartographer` when the territory is genuinely unfamiliar, the narrow `codebase-*` agents for a single targeted question. Do not re-spawn a `foreman` on a phase that already failed the same way; work out why first.
 
 ## Resuming Work
 
