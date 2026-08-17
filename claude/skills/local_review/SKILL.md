@@ -2,8 +2,6 @@
 name: local_review
 description: Set up a git worktree for reviewing a colleague's branch, with dependency setup and thoughts init. Side-effecting; user-only — never auto-invoke. Use when the user asks to review a branch or PR locally in a fresh worktree.
 allowed-tools: Bash
-allowed-agents: none
-allowed-skills: none
 disable-model-invocation: true
 ---
 

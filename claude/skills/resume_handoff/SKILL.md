@@ -1,9 +1,7 @@
 ---
 name: resume_handoff
 description: Resume work from a handoff document with context analysis, validation against current state, and a generated action plan. Side-effecting; user-only — never auto-invoke. Use when the user asks to resume from a prior handoff (by path or by ticket number).
-allowed-tools: Bash, Read, Edit, Write, Grep, Glob, Agent, mcp__claude_ai_Notion__*, mcp__anytype__*
-allowed-agents: archivist, cartographer
-allowed-skills: hyprlayer_doctor
+allowed-tools: Bash, Read, Edit, Write, Grep, Glob, Agent, Skill, mcp__claude_ai_Notion__*, mcp__anytype__*
 disable-model-invocation: true
 ---
 

@@ -48,18 +48,18 @@ Use these only on skills whose backend is `git`/`obsidian` and which assume the 
 - **jira-ticket-reader** — full details of a specific ticket.
 - **jira-searcher** — related tickets or historical context.
 
-## Delegation allowlists
+## Delegation limits
 
-Every agent and skill declares what it may reach for, in frontmatter:
+The `tools:` list IS the restriction — there is no separate allowlist key. Claude drops unknown frontmatter keys silently, so a made-up key restricts nothing.
 
-- `allowed-agents` — sub-agents it may spawn.
-- `allowed-skills` — skills it may invoke.
+- No `Agent` entry — cannot delegate. (`Task` is a legacy alias that still resolves.)
+- No `Skill` entry — cannot invoke skills.
+- `Agent(cartographer, foreman)` narrows delegation to the named agents. Names are agent `name`s, not paths.
+- `skills: name-a, name-b` preloads skills into an agent.
 
-Both are comma-separated, or the literal `none`. **Absent means deny**, so a file that omits the key can spawn nothing — add the key when you add a file. hyprlayer-desktop reads these to enforce the graph.
+All agents are leaves: none carry `Agent` or `Skill`. Fan-out belongs to the skill, which holds the user's context and owns persistence. If a stage agent starts needing sub-agents, that is a sign the stage should be split, not that the leaf rule should bend.
 
-All agents are leaves: `allowed-agents: none` on every one of them. Fan-out belongs to the skill, which holds the user's context and owns persistence. If a stage agent starts needing sub-agents, that is a sign the stage should be split, not that the leaf rule should bend.
-
-`allowed-agents` must be a subset of what the skill's body actually sanctions, and a skill listing any agent needs `Agent` in `allowed-tools`.
+Because a skill's `allowed-tools` takes a bare `Skill` entry, a skill that can invoke one skill can invoke any of them. Keep the intended set named in the body prose — that is what actually gets read.
 
 ## Spawning rules
 

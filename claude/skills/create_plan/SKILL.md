@@ -2,9 +2,7 @@
 name: create_plan
 description: Create detailed implementation plans through interactive research and iteration. Use when the user asks to plan, design, or scope a non-trivial change. Produces a thoughts artifact (a plan).
 model: opus
-allowed-tools: Bash, Read, Grep, Glob, Agent, Write, Edit, mcp__claude_ai_Notion__*, mcp__anytype__*
-allowed-agents: cartographer, archivist, draughtsman, adjudicator, jira-ticket-reader, jira-searcher
-allowed-skills: hyprlayer_doctor
+allowed-tools: Bash, Read, Grep, Glob, Agent, Write, Edit, Skill, mcp__claude_ai_Notion__*, mcp__anytype__*
 ---
 
 # Implementation Plan

@@ -2,8 +2,6 @@
 name: adjudicator
 description: Tears a draft implementation plan apart before anyone builds it. Hunts phantom file paths, unverifiable success criteria, phases that cannot land in the stated order, missing migrations, and unstated open questions. Spawn during the Plan stage, after drafting and before the user reviews. Read-only; verdict is `ship`, `revise`, or `reject`. Reach for it directly when the user asks whether a plan holds up, or to poke holes in one.
 tools: Read, Grep, Glob, LS, Bash
-allowed-agents: none
-allowed-skills: none
 model: opus
 color: red
 ---

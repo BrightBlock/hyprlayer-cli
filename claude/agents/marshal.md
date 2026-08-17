@@ -2,8 +2,6 @@
 name: marshal
 description: Triages raw code-review output into an ordered, deduplicated fix list. Verifies each finding against the code, drops the false positives, and rules `fix now`, `defer`, or `reject` with evidence. Spawn during the Revise stage after codex, `adversarial-reviewer`, or a human review returns findings. Read-only — it decides what is worth doing, it does not do it. Reach for it directly when the user asks which review findings are real, or what to fix first.
 tools: Read, Grep, Glob, LS, Bash
-allowed-agents: none
-allowed-skills: none
 model: opus
 color: pink
 ---

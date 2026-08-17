@@ -2,8 +2,6 @@
 name: inspector
 description: Audits a finished implementation against its plan. Runs every automated success criterion, checks each claimed-complete phase against the actual diff, and returns a validation report ending in `verdict: promote` or `verdict: block`. Spawn during the Validate stage. Read-only — it never edits code or promotes the plan's status itself. Reach for it directly when the user asks whether the implementation actually matches the plan.
 tools: Read, Grep, Glob, LS, Bash
-allowed-agents: none
-allowed-skills: none
 model: sonnet
 color: purple
 ---

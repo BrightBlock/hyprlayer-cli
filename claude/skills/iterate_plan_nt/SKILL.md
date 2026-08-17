@@ -2,9 +2,7 @@
 name: iterate_plan_nt
 description: Iterate on an existing implementation plan, no-thoughts variant (omits thoughts-locator/thoughts-analyzer agents). Use when the user asks to update a plan in a project that does not use the standard thoughts directory.
 model: opus
-allowed-tools: Bash, Read, Grep, Glob, Agent, Write, Edit
-allowed-agents: cartographer, codebase-locator, codebase-analyzer, codebase-pattern-finder
-allowed-skills: hyprlayer_doctor
+allowed-tools: Bash, Read, Grep, Glob, Agent, Write, Edit, Skill
 ---
 
 # Iterate Implementation Plan

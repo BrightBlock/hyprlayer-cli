@@ -2,8 +2,6 @@
 name: hyprlayer_doctor
 description: Verify the configured hyprlayer backend (git, obsidian, notion, or anytype) is ready before operations run against it. Use on first backend-touching call per session, on user request ("verify hyprlayer setup", "/hyprlayer_doctor"), and after any auth/404/schema error from a backend. Cheap (~1–15s depending on backend) and cached against the config-file content (auto-invalidates on any config change).
 allowed-tools: Bash, Read, Write, mcp__claude_ai_Notion__*, mcp__anytype__*
-allowed-agents: none
-allowed-skills: none
 ---
 
 # hyprlayer_doctor

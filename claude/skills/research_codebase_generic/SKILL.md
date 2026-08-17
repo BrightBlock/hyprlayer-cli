@@ -3,8 +3,6 @@ name: research_codebase_generic
 description: Research a codebase comprehensively using parallel sub-agents (generic variant — minimal opinions about thoughts directory structure or sub-agent specialization). Use when the user asks for code research in a project that does not assume the standard thoughts directory. Read-only; produces a thoughts artifact (research).
 model: opus
 allowed-tools: Bash, Read, Grep, Glob, Agent
-allowed-agents: cartographer
-allowed-skills: none
 ---
 
 # Research Codebase

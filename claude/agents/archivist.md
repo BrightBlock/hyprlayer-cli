@@ -2,8 +2,6 @@
 name: archivist
 description: The thoughts librarian. Finds every prior artifact about a topic or ticket — research, plans, handoffs, PR records — and returns the paper trail: what was decided, what shipped, what is still open, what superseded what. Also drafts handoff bodies at the end of a session. Read-only over the store; the caller persists anything new. Reach for it directly when the user asks what we already know, decided, or tried about something.
 tools: Read, Grep, Glob, LS, Bash, mcp__claude_ai_Notion__*, mcp__anytype__*
-allowed-agents: none
-allowed-skills: none
 model: sonnet
 color: blue
 ---

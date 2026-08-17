@@ -2,8 +2,6 @@
 name: jira-searcher
 description: Searches JIRA for tickets using JQL or text queries via the JIRA MCP server. Use this to find similar issues, past implementations, related bugs, or historical context across the project.
 tools: Read, Grep, Glob, LS
-allowed-agents: none
-allowed-skills: none
 model: sonnet
 ---
 

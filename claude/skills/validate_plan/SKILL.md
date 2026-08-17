@@ -1,9 +1,7 @@
 ---
 name: validate_plan
 description: Validate that an implementation plan was correctly executed, run its automated success criteria, report deviations and remaining manual steps, and promote the plan's status frontmatter to `implemented` once fully verified. Use when the user asks to validate or audit an implementation against an existing plan.
-allowed-tools: Bash, Read, Edit, Grep, Glob, Agent
-allowed-agents: inspector
-allowed-skills: hyprlayer_doctor
+allowed-tools: Bash, Read, Edit, Grep, Glob, Agent, Skill
 ---
 
 # Validate Plan
