@@ -2,7 +2,7 @@
 name: research_codebase
 description: Document codebase as-is with thoughts directory for historical context. Use when the user asks to research, document, or map an existing codebase area. Read-only; produces a thoughts artifact.
 model: sonnet
-allowed-tools: Bash, Read, Grep, Glob, Agent, Skill, mcp__claude_ai_Notion__*, mcp__anytype__*
+allowed-tools: Bash, Read, Grep, Glob, Agent, Write, Edit, Skill, mcp__claude_ai_Notion__*, mcp__anytype__*
 ---
 
 # Research Codebase
