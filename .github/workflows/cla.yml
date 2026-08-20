@@ -31,8 +31,13 @@ jobs:
         with:
           path-to-signatures: 'signatures/version1/cla.json'
           path-to-document: 'https://github.com/BrightBlock/hyprlayer-cli/blob/master/CLA.md'
-          # Branch where the signatures file is committed and the CLA doc lives.
-          branch: 'master'
+          # Branch where the signatures file is committed. This must NOT be a
+          # protected branch (master requires the "Greptile Review" status
+          # check and PR-only pushes), or the action's direct commit of the
+          # signatures file fails with a repository rule violation. The CLA
+          # document itself still lives on master; only the signatures
+          # storage branch differs.
+          branch: 'cla-signatures'
           # Accounts exempt from signing (bots and maintainers).
           allowlist: 'jtsiros,dependabot[bot],github-actions[bot],*[bot]'
           custom-pr-sign-comment: 'I have read the CLA Document and I hereby sign the CLA'
