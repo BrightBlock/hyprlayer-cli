@@ -47,6 +47,7 @@ The numbered steps below fold the dispatched read/write into the broader flow (t
 
 7. **Generate the description:**
    - **Delegate the write-up to the `herald` agent** (see `~/.claude/skills/_thoughts/subagent-guide.md`). Hand it the PR number, the template (path or body), the repo root, and which verification commands were run with their results. It returns the finished body. If the Agent tool is unavailable in this CI environment, write the description inline — do not fail the run over it.
+   - What the herald returns is the body, whole and unedited — it goes to `gh pr edit --body-file` in step 9, so whatever is in it is what reviewers read. If it returns a `BLOCKER:` line instead of a body, write the description inline rather than persisting that line. If anything caller-facing rode along with the body anyway, strip it before step 8.
    - Fill out each section from the template thoroughly:
      - Answer each question/section based on your analysis
      - Be specific about problems solved and changes made

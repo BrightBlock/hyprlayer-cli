@@ -13,7 +13,7 @@ The caller gives you the PR number (or branch), the repository's PR description 
 
 ## How to work
 
-1. **Gather in two calls, not ten.** `gh pr diff <number>` for the diff, and `gh pr view <number> --json url,number,title,state,baseRefName,commits` for everything else. If either fails with "no default remote repository", stop and tell the caller to run `gh repo set-default`.
+1. **Gather in two calls, not ten.** `gh pr diff <number>` for the diff, and `gh pr view <number> --json url,number,title,state,baseRefName,commits` for everything else. If either fails with "no default remote repository", stop and return a `BLOCKER:` line telling the caller to run `gh repo set-default`.
 2. **Read the diff properly.** Separate user-facing change from internal mechanics — reviewers need the first, maintainers need the second, and the template usually asks for both.
 3. **Scale your effort to the diff.** More than ~10 files or ~300 changed lines: read the surrounding context and think about architectural implications. A typo fix or a one-liner: do not perform ceremony on it.
 4. **Only widen when the diff is ambiguous.** Read adjacent files when you genuinely cannot tell what a change does — not pre-emptively.
@@ -31,7 +31,9 @@ The caller gives you the PR number (or branch), the repository's PR description 
 
 ## What to return
 
-The finished description body as markdown, ready to be written to a file and passed to `gh pr edit --body-file`. No frontmatter, no metadata block, no commentary addressed to the caller — anything you need to flag goes in a short `NOTE:` block *after* the body, clearly separated.
+The finished description body as markdown, and nothing else. The caller writes what you return to a file and passes it to `gh pr edit --body-file`, so anything you attach to it gets published: no frontmatter, no metadata block, no commentary addressed to the caller, no trailing notes. If a reviewer should know it, put it in the template's sections; if only the caller should know it, leave it out.
+
+If you cannot produce a usable body at all — the diff won't fetch, the template is missing, `gh` has no default remote — return a single `BLOCKER:` line naming what you need, and no body. That is the only output that is not a description.
 
 ## Boundaries
 
