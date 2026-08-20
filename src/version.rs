@@ -379,16 +379,24 @@ fn try_refresh_agents(
     tool: agents::AgentTool,
     opencode_provider: Option<&agents::OpenCodeProvider>,
 ) {
-    let Ok(latest_sha) = agents::fetch_repo_dir_sha(tool.repo_dir()) else {
+    let Ok(latest_sha) = agents::fetch_master_sha() else {
         return;
     };
     if !should_reinstall(cfg.agents_installed_sha.as_deref(), &latest_sha) {
         return;
     }
-    eprintln!("Updating agent files for {}…", tool);
     match tool.install(opencode_provider, true) {
-        Ok(Some(sha)) => cfg.agents_installed_sha = Some(sha),
-        Ok(None) => {}
+        Ok(outcome) => {
+            if outcome.changed > 0 {
+                eprintln!(
+                    "Updated agent files for {} ({} files).",
+                    tool, outcome.changed
+                );
+            }
+            if let Some(sha) = outcome.sha {
+                cfg.agents_installed_sha = Some(sha);
+            }
+        }
         Err(e) => eprintln!(
             "Failed to update agent files: {}. Run 'hyprlayer ai reinstall' to retry.",
             e

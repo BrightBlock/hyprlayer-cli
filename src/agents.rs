@@ -1,13 +1,23 @@
+pub(crate) mod archive;
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fs;
 use std::io::Write;
 use std::path::{MAIN_SEPARATOR_STR as SEP, Path, PathBuf};
-use std::process::Command;
+use std::time::Duration;
+
+use crate::http;
 
 pub(crate) const REPO: &str = "BrightBlock/hyprlayer-cli";
 const BRANCH: &str = "master";
+
+/// GitHub Contents/commits API responses for a single directory listing run
+/// a few KB. 1 MiB is two orders of magnitude of headroom and stops a
+/// hostile or misconfigured source from buffering an unbounded `String`.
+/// Mirrors `MAX_RELEASE_API_BYTES` in `src/commands/self_update.rs`.
+const MAX_API_RESPONSE_BYTES: u64 = 1024 * 1024;
 
 pub(crate) fn github_api_repo_url() -> String {
     format!("https://api.github.com/repos/{REPO}")
@@ -267,37 +277,54 @@ impl AgentTool {
 
     /// Download agent files from GitHub and install to the destination.
     ///
-    /// Returns `Some(sha)` when we successfully captured the per-tool
-    /// `master` commit SHA *before* the download (the next 24h auto-check
-    /// uses this as the freshness baseline). Returns `None` when the
-    /// commits API was unreachable but the downloads succeeded — the
-    /// install is still good, but we have no SHA to cache, so the next
-    /// auto-check will treat the bundle as stale and refresh again. We
-    /// don't fail the whole install on commits-API rate-limits because
-    /// `hyprlayer ai configure` / `ai reinstall` must continue to work
-    /// even when only the commits endpoint is throttled.
+    /// Downloads into a temporary staging directory first, refuses to
+    /// touch `dest` at all unless the staged bundle looks complete (see
+    /// `is_installed_at`), and then copies only the files that actually
+    /// changed. A mid-download failure — network drop, rate limit,
+    /// truncated archive — therefore can never leave `dest` half-written:
+    /// either staging fails and `dest` is untouched, or staging succeeds
+    /// and the sync is a pure content diff.
+    ///
+    /// `InstallOutcome::sha` is `Some` when we successfully captured the
+    /// repo's `master` HEAD SHA *before* the download (the next 24h
+    /// auto-check uses this as the freshness baseline), and `None` when
+    /// the ref advertisement was unreachable but the download still
+    /// succeeded — the install is still good, but we have no SHA to
+    /// cache, so the next auto-check will treat the bundle as stale and
+    /// refresh again. We don't fail the whole install when only ref
+    /// resolution is unreachable because `hyprlayer ai configure` /
+    /// `ai reinstall` must continue to work by falling back to the
+    /// `master` branch name.
     pub fn install(
         &self,
         opencode_provider: Option<&OpenCodeProvider>,
         quiet: bool,
-    ) -> Result<Option<String>> {
+    ) -> Result<InstallOutcome> {
         let dest = self.dest_dir()?;
-        fs::create_dir_all(&dest)?;
 
         // Recording a post-download SHA could mask `master`-advances that
         // happen mid-install — next-day's check would then compare against
         // an at-or-newer cache and skip the necessary re-sync.
-        let sha = fetch_repo_dir_sha(self.repo_dir()).ok();
+        let sha = fetch_master_sha().ok();
         let git_ref = sha.as_deref().unwrap_or(BRANCH);
 
-        if !quiet {
-            println!("Downloading {} agent files...", self);
+        let staging = tempfile::tempdir().context("Failed to create a staging directory")?;
+        let staged = staging.path().join(self.repo_dir());
+        self.fetch_into(&staged, git_ref, quiet)?;
+
+        // Refuse to touch the destination unless the staged bundle looks
+        // complete. Without this, a truncated download could overwrite a
+        // good install with a torn one.
+        if !self.is_installed_at(&staged) {
+            anyhow::bail!(
+                "Downloaded {} bundle is incomplete — refusing to install. \
+                 Run 'hyprlayer ai reinstall' to retry.",
+                self
+            );
         }
-        let mut count = 0;
-        download_directory(self.repo_dir(), git_ref, &dest, &mut count, quiet)?;
-        if !quiet {
-            println!("  {:<60}", format!("Downloaded {} files", count));
-        }
+
+        fs::create_dir_all(&dest)?;
+        let changed = sync_tree(&staged, &dest)?;
 
         if matches!(self, AgentTool::OpenCode)
             && let Some(provider) = opencode_provider
@@ -311,41 +338,149 @@ impl AgentTool {
             }
         }
 
-        Ok(sha)
+        Ok(InstallOutcome { sha, changed })
+    }
+
+    /// Populate `staged` with this tool's bundle pinned to `git_ref`.
+    ///
+    /// Tries the single-request archive download first (zero REST API
+    /// requests, see `archive::fetch_and_extract`); on any failure — a
+    /// network hiccup, a codeload outage — falls back to the old
+    /// Contents-API walk so an archive-side outage doesn't block installs.
+    /// Both paths write into `staged`, so the Phase 4 completeness check
+    /// and rollback guarantee cover the fallback too: a rate-limited
+    /// fallback aborts cleanly instead of leaving a partial `dest`.
+    fn fetch_into(&self, staged: &Path, git_ref: &str, quiet: bool) -> Result<()> {
+        if !quiet {
+            println!("Downloading {} agent files...", self);
+        }
+        match archive::fetch_and_extract(self.repo_dir(), git_ref, staged) {
+            Ok(count) => {
+                if !quiet {
+                    println!("  {:<60}", format!("Downloaded {count} files"));
+                }
+                return Ok(());
+            }
+            Err(e) => {
+                if !quiet {
+                    eprintln!("  Archive download failed ({e}); falling back to the GitHub API.");
+                }
+            }
+        }
+
+        let mut count = 0;
+        download_directory(self.repo_dir(), git_ref, staged, &mut count, quiet)?;
+        if !quiet {
+            println!("  {:<60}", format!("Downloaded {count} files"));
+        }
+        Ok(())
     }
 }
 
-/// Fetch the latest `master` commit SHA that touched `repo_path`.
-pub(crate) fn fetch_repo_dir_sha(repo_path: &str) -> Result<String> {
-    let url = format!(
-        "{}/commits?path={repo_path}&sha={BRANCH}&per_page=1",
-        github_api_repo_url()
-    );
-    let json = curl_get_json(&url, Some(5))?;
-    parse_repo_dir_sha(&json, repo_path)
+/// Result of a successful `AgentTool::install`.
+#[derive(Debug)]
+pub struct InstallOutcome {
+    /// The repo's `master` HEAD SHA captured before the download, if ref
+    /// resolution succeeded. `None` means the install still succeeded but
+    /// there's no fresh SHA to cache.
+    pub sha: Option<String>,
+    /// Number of files actually written to the destination. `0` means the
+    /// staged bundle was byte-identical to what's already installed.
+    pub changed: usize,
 }
 
-fn parse_repo_dir_sha(json: &str, repo_path: &str) -> Result<String> {
-    // GitHub returns an object with `message` on errors (e.g. 403
-    // rate-limited); detect that before assuming the array shape.
-    if let Ok(err) = serde_json::from_str::<GitHubError>(json)
-        && let Some(message) = err.message
-    {
-        return Err(anyhow::anyhow!(
-            "GitHub commits API error for '{}': {}",
-            repo_path,
-            message
-        ));
-    }
+/// Copy every file from `src` into `dest`, creating parent directories as
+/// needed, but writing a file only when it's missing from `dest` or its
+/// bytes differ from what's already there. Never deletes anything from
+/// `dest` that isn't present in `src` — `dest` (e.g. `~/.claude`) holds the
+/// user's own files alongside ours, so install stays additive-and-overwrite
+/// rather than a mirror. Returns the number of files actually written.
+fn sync_tree(src: &Path, dest: &Path) -> Result<usize> {
+    let mut changed = 0;
+    for path in walk_files(src)? {
+        let relative = path
+            .strip_prefix(src)
+            .expect("walk_files only yields paths under src");
+        let dest_path = dest.join(relative);
 
-    let entries: Vec<serde_json::Value> =
-        serde_json::from_str(json).context("Failed to parse GitHub commits API response")?;
-    entries
-        .first()
-        .and_then(|e| e.get("sha"))
-        .and_then(|s| s.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| anyhow::anyhow!("GitHub returned no commits for '{}'", repo_path))
+        let new_bytes =
+            fs::read(&path).with_context(|| format!("Failed to read {}", path.display()))?;
+        let unchanged = fs::read(&dest_path).is_ok_and(|existing| existing == new_bytes);
+        if unchanged {
+            continue;
+        }
+
+        if let Some(parent) = dest_path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create {}", parent.display()))?;
+        }
+        fs::write(&dest_path, &new_bytes)
+            .with_context(|| format!("Failed to write {}", dest_path.display()))?;
+        changed += 1;
+    }
+    Ok(changed)
+}
+
+/// Recursively list every regular file under `dir`. Returns an empty list
+/// (not an error) when `dir` doesn't exist, so `sync_tree` on an empty
+/// staged bundle is a well-defined no-op.
+fn walk_files(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    if !dir.is_dir() {
+        return Ok(out);
+    }
+    for entry in fs::read_dir(dir).with_context(|| format!("Failed to read {}", dir.display()))? {
+        let path = entry
+            .with_context(|| format!("Failed to read an entry in {}", dir.display()))?
+            .path();
+        if path.is_dir() {
+            out.extend(walk_files(&path)?);
+        } else {
+            out.push(path);
+        }
+    }
+    Ok(out)
+}
+
+/// Ref advertisements run a few KB. 1 MiB is two orders of magnitude of
+/// headroom and stops a hostile or misconfigured source from streaming
+/// gigabytes into a `String`.
+const MAX_REFS_BYTES: u64 = 1024 * 1024;
+
+/// Resolve `master`'s HEAD SHA via git's smart-HTTP ref advertisement.
+/// This is the same data `git ls-remote` prints, over plain HTTPS, and
+/// costs zero REST API requests — unlike the commits endpoint it
+/// replaces, which shares the 60/hr unauthenticated bucket with
+/// everything else.
+pub(crate) fn fetch_master_sha() -> Result<String> {
+    let url = format!("https://github.com/{REPO}.git/info/refs?service=git-upload-pack");
+    let body = http::get_text_capped(&url, Duration::from_secs(10), MAX_REFS_BYTES)
+        .map_err(|e| anyhow::anyhow!("Failed to resolve {BRANCH}: {e}"))?;
+    parse_ref_sha(&body, &format!("refs/heads/{BRANCH}"))
+}
+
+/// Scan pkt-lines for `<40-hex-sha> <refname>`. Each line is prefixed by a
+/// 4-hex length header which we skip past rather than parse — we only need
+/// to locate one ref, and the SHA is fixed-width.
+///
+/// The match requires an exact refname at the line's end (or immediately
+/// before a NUL-separated capabilities list), so `refs/heads/master` can't
+/// be fooled by a line advertising `refs/heads/master-old`.
+fn parse_ref_sha(body: &str, refname: &str) -> Result<String> {
+    body.lines()
+        .find_map(|line| {
+            // Capabilities (if any) trail the refname after a NUL on the
+            // first advertised ref; strip them before comparing tails.
+            let line = line.split('\0').next().unwrap_or(line).trim_end();
+            if !line.ends_with(refname) {
+                return None;
+            }
+            // The SHA ends immediately before the space preceding refname.
+            let idx = line.len() - refname.len();
+            let sha = line.get(idx.checked_sub(41)?..idx.checked_sub(1)?)?;
+            (sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit())).then(|| sha.to_string())
+        })
+        .ok_or_else(|| anyhow::anyhow!("No {refname} in ref advertisement"))
 }
 
 /// Download a directory from the repo using the GitHub Contents API.
@@ -367,17 +502,11 @@ fn download_directory(
         github_api_repo_url()
     );
 
-    let json = curl_get_json(&api_url, Some(15))?;
+    let json = github_get_json(&api_url, Some(15))?;
 
-    // The API returns a JSON object with a "message" field on errors (e.g. 404)
-    if let Ok(err) = serde_json::from_str::<GitHubError>(&json)
-        && let Some(message) = err.message
-    {
-        return Err(anyhow::anyhow!(
-            "Agent files for '{}' are not available on GitHub ({})",
-            repo_path,
-            message
-        ));
+    // The API returns a JSON object with a "message" field on errors (e.g. 404).
+    if let Some(err) = classify_github_error(&json, repo_path) {
+        return Err(err);
     }
 
     let entries: Vec<GitHubEntry> =
@@ -397,11 +526,11 @@ fn download_directory(
                     print!("  {:<60}\r", entry.path);
                     std::io::stdout().flush().ok();
                 }
-                curl_download_file(&url, &dest_path)?;
+                download_file_to(&url, &dest_path)?;
                 *count += 1;
             }
             "dir" => {
-                // No explicit `create_dir_all` here — `curl_download_file`
+                // No explicit `create_dir_all` here — `download_file_to`
                 // creates each file's parent on demand, which covers this
                 // subdir as soon as we download anything into it.
                 download_directory(&entry.path, git_ref, &dest_path, count, quiet)?;
@@ -411,6 +540,27 @@ fn download_directory(
     }
 
     Ok(())
+}
+
+/// Inspect a Contents API response body for GitHub's error-object shape
+/// (`{"message": "..."}`, e.g. on a 403 rate limit or a 404) and turn it
+/// into a user-facing error. Returns `None` for a normal entry-array
+/// response, so the caller can fall through to parsing it. Pure — no I/O —
+/// so the rate-limit-vs-not-found distinction is directly unit-testable.
+fn classify_github_error(json: &str, repo_path: &str) -> Option<anyhow::Error> {
+    let err: GitHubError = serde_json::from_str(json).ok()?;
+    let message = err.message?;
+    if message.contains("rate limit") {
+        return Some(anyhow::anyhow!(
+            "GitHub API rate limit exceeded (60 requests/hour for unauthenticated \
+             clients, shared across your whole network). The archive download that \
+             normally avoids this was unavailable. Retry in an hour, or run \
+             'hyprlayer ai reinstall' once codeload.github.com is reachable."
+        ));
+    }
+    Some(anyhow::anyhow!(
+        "Agent files for '{repo_path}' are not available on GitHub ({message})"
+    ))
 }
 
 #[derive(Deserialize)]
@@ -427,36 +577,21 @@ struct GitHubEntry {
     download_url: Option<String>,
 }
 
-/// GET a URL and return the response body as a string.
-/// Optionally applies a timeout (in seconds) via curl's `--max-time`.
-pub(crate) fn curl_get_json(url: &str, timeout_secs: Option<u32>) -> Result<String> {
-    let timeout_str = timeout_secs.map(|s| s.to_string());
-    let mut args = vec![
-        "-sL",
-        "-H",
-        "Accept: application/vnd.github.v3+json",
-        "-H",
-        "User-Agent: hyprlayer-cli",
-    ];
-    if let Some(ref t) = timeout_str {
-        args.extend(["--max-time", t]);
-    }
-    args.push(url);
-
-    let output = Command::new("curl")
-        .args(&args)
-        .output()
-        .context("curl not found — install curl to download agent files")?;
-
-    if !output.status.success() {
-        anyhow::bail!("GitHub API request failed");
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+/// GET a URL and return the response body as a string, with the GitHub API
+/// `Accept` header set. `timeout_secs` defaults to 30s.
+pub(crate) fn github_get_json(url: &str, timeout_secs: Option<u32>) -> Result<String> {
+    let timeout = Duration::from_secs(timeout_secs.unwrap_or(30) as u64);
+    http::get_text_capped_with_headers(
+        url,
+        timeout,
+        MAX_API_RESPONSE_BYTES,
+        &[("Accept", "application/vnd.github.v3+json")],
+    )
+    .map_err(|e| anyhow::anyhow!("GitHub API request failed: {e}"))
 }
 
-/// Download a single file from the repo to `dest`. Pinned to the latest
-/// commit on `repo_path` (or to `BRANCH` if the SHA fetch fails).
+/// Download a single file from the repo to `dest`. Pinned to `master`'s
+/// HEAD SHA (or to `BRANCH` if ref resolution fails).
 ///
 /// Used by the opencode plugin install path to restore the plugin file
 /// after `telemetry off → on` without re-pulling the entire opencode/
@@ -468,10 +603,10 @@ pub(crate) fn download_repo_file(repo_path: &str, dest: &Path) -> Result<()> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)?;
     }
-    let sha = fetch_repo_dir_sha(repo_path).ok();
+    let sha = fetch_master_sha().ok();
     let git_ref = sha.as_deref().unwrap_or(BRANCH);
     let url = raw_github_url(repo_path, git_ref);
-    curl_download_file(&url, dest)
+    download_file_to(&url, dest)
 }
 
 /// Factored out so URL construction is unit-testable without touching the network.
@@ -481,36 +616,15 @@ fn raw_github_url(repo_path: &str, git_ref: &str) -> String {
 
 /// Download a single file to disk.
 ///
-/// `--fail-with-body` makes curl exit non-zero on HTTP 4xx/5xx so a 404
-/// HTML page or rate-limit JSON envelope can never be persisted as a
-/// fake "agent file." `--max-time` caps the per-file fetch so a stalled
-/// connection on the startup auto-reinstall path can't hang the user's
-/// command indefinitely.
-fn curl_download_file(url: &str, dest: &Path) -> Result<()> {
-    if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    let dest_str = dest.display().to_string();
-    let status = Command::new("curl")
-        .args([
-            "-sSL",
-            "--fail-with-body",
-            "--max-time",
-            "30",
-            "-o",
-            &dest_str,
-            url,
-        ])
-        .status()
-        .context("curl not found")?;
-
-    if !status.success() {
-        // Don't leave a partial / error-page body on disk.
-        let _ = fs::remove_file(dest);
-        return Err(anyhow::anyhow!("Failed to download {}", dest.display()));
-    }
-    Ok(())
+/// `ureq` returns `Err` on HTTP 4xx/5xx by default, so a 404 HTML page or
+/// rate-limit JSON envelope can never be persisted as a fake "agent file" —
+/// matching what `--fail-with-body` bought us. The 30s timeout caps the
+/// per-file fetch so a stalled connection on the startup auto-reinstall
+/// path can't hang the user's command indefinitely. `download_file_capped`
+/// already removes a partial file on failure.
+fn download_file_to(url: &str, dest: &Path) -> Result<()> {
+    http::download_file_capped(url, dest, Duration::from_secs(30), None)
+        .map_err(|e| anyhow::anyhow!("Failed to download {}: {e}", dest.display()))
 }
 
 /// Template placeholders used in OpenCode agent/command files
@@ -569,71 +683,186 @@ mod tests {
     }
 
     #[test]
-    fn parse_repo_dir_sha_happy_path() {
-        let json = r#"[{"sha":"abc123def456","commit":{"message":"x"}}]"#;
-        let sha = parse_repo_dir_sha(json, "claude").unwrap();
-        assert_eq!(sha, "abc123def456");
+    fn sync_tree_no_op_on_identical_trees() {
+        let temp = tempfile::tempdir().unwrap();
+        let src = temp.path().join("src");
+        let dest = temp.path().join("dest");
+        touch(&src.join("a.md"));
+        touch(&dest.join("a.md"));
+        assert_eq!(sync_tree(&src, &dest).unwrap(), 0);
+        assert_eq!(
+            fs::read_to_string(dest.join("a.md")).unwrap(),
+            fs::read_to_string(src.join("a.md")).unwrap()
+        );
     }
 
     #[test]
-    fn parse_repo_dir_sha_picks_first_entry() {
-        let json = r#"[
-            {"sha":"first","commit":{"message":"a"}},
-            {"sha":"second","commit":{"message":"b"}}
-        ]"#;
-        let sha = parse_repo_dir_sha(json, "claude").unwrap();
-        assert_eq!(sha, "first");
+    fn sync_tree_writes_missing_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let src = temp.path().join("src");
+        let dest = temp.path().join("dest");
+        touch(&src.join("a.md"));
+        fs::create_dir_all(&dest).unwrap();
+        assert_eq!(sync_tree(&src, &dest).unwrap(), 1);
+        assert!(dest.join("a.md").is_file());
     }
 
     #[test]
-    fn parse_repo_dir_sha_empty_array_errors() {
-        let err = parse_repo_dir_sha("[]", "claude").unwrap_err();
+    fn sync_tree_overwrites_a_differing_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let src = temp.path().join("src");
+        let dest = temp.path().join("dest");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&dest).unwrap();
+        fs::write(src.join("a.md"), "new content").unwrap();
+        fs::write(dest.join("a.md"), "old content").unwrap();
+        assert_eq!(sync_tree(&src, &dest).unwrap(), 1);
+        assert_eq!(
+            fs::read_to_string(dest.join("a.md")).unwrap(),
+            "new content"
+        );
+    }
+
+    #[test]
+    fn sync_tree_preserves_a_dest_only_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let src = temp.path().join("src");
+        let dest = temp.path().join("dest");
+        touch(&src.join("a.md"));
+        touch(&dest.join("personal.md"));
+        assert_eq!(sync_tree(&src, &dest).unwrap(), 1);
+        assert!(dest.join("a.md").is_file());
         assert!(
-            err.to_string().contains("no commits"),
+            dest.join("personal.md").is_file(),
+            "dest-only file must survive an install"
+        );
+    }
+
+    #[test]
+    fn sync_tree_creates_nested_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let src = temp.path().join("src");
+        let dest = temp.path().join("dest");
+        touch(&src.join("skills/foo/bar/SKILL.md"));
+        assert_eq!(sync_tree(&src, &dest).unwrap(), 1);
+        assert!(dest.join("skills/foo/bar/SKILL.md").is_file());
+    }
+
+    #[test]
+    fn sync_tree_empty_source_is_a_no_op() {
+        let temp = tempfile::tempdir().unwrap();
+        let src = temp.path().join("src");
+        let dest = temp.path().join("dest");
+        fs::create_dir_all(&src).unwrap();
+        touch(&dest.join("personal.md"));
+        assert_eq!(sync_tree(&src, &dest).unwrap(), 0);
+        assert!(dest.join("personal.md").is_file());
+    }
+
+    #[test]
+    fn sync_tree_missing_source_is_a_no_op() {
+        let temp = tempfile::tempdir().unwrap();
+        let src = temp.path().join("does-not-exist");
+        let dest = temp.path().join("dest");
+        fs::create_dir_all(&dest).unwrap();
+        assert_eq!(sync_tree(&src, &dest).unwrap(), 0);
+    }
+
+    #[test]
+    fn classify_github_error_rate_limit_names_the_rate_limit() {
+        let json =
+            r#"{"message":"API rate limit exceeded for 1.2.3.4.","documentation_url":"..."}"#;
+        let err = classify_github_error(json, "claude").expect("should classify as an error");
+        assert!(
+            err.to_string().contains("rate limit"),
             "unexpected error: {err}"
         );
     }
 
     #[test]
-    fn parse_repo_dir_sha_missing_sha_field_errors() {
-        let json = r#"[{"commit":{"message":"x"}}]"#;
-        let err = parse_repo_dir_sha(json, "claude").unwrap_err();
+    fn classify_github_error_not_found_names_the_path() {
+        let json = r#"{"message":"Not Found","documentation_url":"..."}"#;
+        let err = classify_github_error(json, "claude/skills/foo").expect("should classify");
+        let text = err.to_string();
         assert!(
-            err.to_string().contains("no commits"),
-            "unexpected error: {err}"
+            text.contains("claude/skills/foo"),
+            "unexpected error: {text}"
+        );
+        assert!(text.contains("Not Found"), "unexpected error: {text}");
+        assert!(!text.contains("rate limit"), "unexpected error: {text}");
+    }
+
+    #[test]
+    fn classify_github_error_valid_entries_is_none() {
+        let json = r#"[{"name":"a.md","path":"claude/a.md","type":"file","download_url":"https://example.com/a.md"}]"#;
+        assert!(classify_github_error(json, "claude").is_none());
+    }
+
+    #[test]
+    fn classify_github_error_malformed_json_is_none() {
+        // Not our job to diagnose a malformed body — the caller's own JSON
+        // parse of the entry array will surface that error.
+        assert!(classify_github_error("not json", "claude").is_none());
+    }
+
+    #[test]
+    fn parse_ref_sha_happy_path() {
+        // Captured shape of a real `info/refs?service=git-upload-pack`
+        // advertisement (length-prefix headers included but not parsed).
+        let body = "001e# service=git-upload-pack\n\
+                     0000\
+                     0032aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa HEAD\0multi_ack thin-pack\n\
+                     003f1f7370976053d293da0718c00aab5faa78396e6a refs/heads/master\n\
+                     0000";
+        assert_eq!(
+            parse_ref_sha(body, "refs/heads/master").unwrap(),
+            "1f7370976053d293da0718c00aab5faa78396e6a"
         );
     }
 
     #[test]
-    fn parse_repo_dir_sha_non_string_sha_errors() {
-        let json = r#"[{"sha":42}]"#;
-        let err = parse_repo_dir_sha(json, "claude").unwrap_err();
-        assert!(
-            err.to_string().contains("no commits"),
-            "unexpected error: {err}"
+    fn parse_ref_sha_ignores_similarly_named_refs() {
+        let body = "001e# service=git-upload-pack\n\
+                     003faaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa refs/heads/master-old\n\
+                     003fbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb refs/heads/master\n";
+        assert_eq!(
+            parse_ref_sha(body, "refs/heads/master").unwrap(),
+            "b".repeat(40)
         );
     }
 
     #[test]
-    fn parse_repo_dir_sha_malformed_json_errors() {
-        let err = parse_repo_dir_sha("not json", "claude").unwrap_err();
-        assert!(
-            err.to_string().contains("Failed to parse"),
-            "unexpected error: {err}"
-        );
+    fn parse_ref_sha_head_only_advertisement_has_no_master() {
+        let body = "001e# service=git-upload-pack\n\
+                     0032aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa HEAD\0multi_ack\n\
+                     0000";
+        let err = parse_ref_sha(body, "refs/heads/master").unwrap_err();
+        assert!(err.to_string().contains("refs/heads/master"), "{err}");
     }
 
     #[test]
-    fn parse_repo_dir_sha_propagates_github_error_message() {
-        // GitHub returns an object with a `message` field on errors (e.g.
-        // 403 rate-limited). The parser must surface the message rather
-        // than emit a generic "failed to parse" error.
-        let json = r#"{"message":"API rate limit exceeded","documentation_url":"..."}"#;
-        let err = parse_repo_dir_sha(json, "claude").unwrap_err();
-        assert!(
-            err.to_string().contains("API rate limit exceeded"),
-            "unexpected error: {err}"
-        );
+    fn parse_ref_sha_malformed_body_errors() {
+        let err = parse_ref_sha("not a ref advertisement", "refs/heads/master").unwrap_err();
+        assert!(err.to_string().contains("refs/heads/master"), "{err}");
+    }
+
+    #[test]
+    fn parse_ref_sha_empty_body_errors() {
+        assert!(parse_ref_sha("", "refs/heads/master").is_err());
+    }
+
+    #[test]
+    fn parse_ref_sha_rejects_short_sha_field() {
+        // Line ends with the refname but has too little text before it to
+        // contain a 40-hex SHA.
+        let body = "master refs/heads/master\n";
+        assert!(parse_ref_sha(body, "refs/heads/master").is_err());
+    }
+
+    #[test]
+    fn parse_ref_sha_rejects_non_hex_sha_field() {
+        let body = format!("{} refs/heads/master\n", "z".repeat(40));
+        assert!(parse_ref_sha(&body, "refs/heads/master").is_err());
     }
 
     #[test]

@@ -26,6 +26,10 @@ self-replace = "1.5"
 tempfile = "3"
 # Bounded `Child::wait_timeout` so package-manager probes can't hang CLI startup.
 wait-timeout = "0.2"
+# Single-request bundle download: one gzipped repo archive from codeload
+# replaces ~30 rate-limited Contents API calls per install.
+tar = "0.4"
+flate2 = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
