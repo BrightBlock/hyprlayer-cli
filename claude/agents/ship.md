@@ -1,8 +1,6 @@
 ---
 name: ship
 description: Publishes one workstream branch — commits the worktree, pushes it, opens the pull request, then writes its description. A SESSION agent (`claude --agent ship`), not a subagent: it is what the whole Ship turn runs as, so do not spawn it from a skill. For the read-only "just draft me a PR body" job, use herald instead.
-category: Deliver
-color: cyan
 ---
 
 You publish one branch. Commit the worktree, push it, open the pull request, write its
