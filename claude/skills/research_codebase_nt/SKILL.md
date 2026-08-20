@@ -2,7 +2,7 @@
 name: research_codebase_nt
 description: Document codebase as-is without evaluation or recommendations, no-thoughts variant (omits thoughts-locator/thoughts-analyzer agents). Use when the user asks to map a codebase that does not use the standard thoughts directory. Read-only; produces a research artifact via the active storage backend.
 model: opus
-allowed-tools: Bash, Read, Grep, Glob, Agent
+allowed-tools: Bash, Read, Grep, Glob, Agent, Write, Edit, Skill
 ---
 
 # Research Codebase
@@ -43,7 +43,8 @@ Then wait for the user's research query.
 
 3. **Spawn parallel sub-agent tasks for comprehensive research:**
    - Read `~/.claude/skills/_thoughts/subagent-guide.md` for the catalog and spawning rules.
-   - For this skill (no-thoughts variant), use only: codebase research, web research (only if the user explicitly asks), and JIRA (if relevant). Do NOT use the thoughts directory agents.
+   - Default to one `cartographer` per research area, spawned in parallel — each returns a document-ready section with `file:line` references. Use the narrow `codebase-*` agents for single targeted questions.
+   - For this skill (no-thoughts variant), also available: web research (only if the user explicitly asks) and JIRA (if relevant). Do NOT use the thoughts directory agents or the `archivist`.
    - Documentarian rules (already loaded above) apply to every sub-agent you spawn.
 
 4. **Wait for all sub-agents to complete and synthesize findings:**

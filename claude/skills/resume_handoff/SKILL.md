@@ -1,7 +1,7 @@
 ---
 name: resume_handoff
 description: Resume work from a handoff document with context analysis, validation against current state, and a generated action plan. Side-effecting; user-only — never auto-invoke. Use when the user asks to resume from a prior handoff (by path or by ticket number).
-allowed-tools: Bash, Read, Edit, Write, Grep, Glob, Agent, mcp__claude_ai_Notion__*, mcp__anytype__*
+allowed-tools: Bash, Read, Edit, Write, Grep, Glob, Agent, Skill, mcp__claude_ai_Notion__*, mcp__anytype__*
 disable-model-invocation: true
 ---
 
@@ -69,7 +69,7 @@ If the referenced handoff points to related artifacts (plan, research docs), app
      - Other notes
 
 2. **Spawn focused research tasks**:
-   Based on the handoff content, spawn parallel research tasks to verify current state:
+   Based on the handoff content, spawn parallel research tasks to verify current state. Read `~/.claude/skills/_thoughts/subagent-guide.md` for the catalog: use the `archivist` for the paper trail around this ticket (what else exists, what superseded what, which plans are still `active`) and a `cartographer` per code area the handoff says was in flight — the tree has moved since the handoff was written, and the handoff is history, not truth. Note that you must still read the handoff and its linked plan/research documents yourself, in the main context, before delegating anything.
 
    ```
    Task 1 - Gather artifact context:

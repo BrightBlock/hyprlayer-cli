@@ -2,7 +2,7 @@
 name: research_codebase
 description: Document codebase as-is with thoughts directory for historical context. Use when the user asks to research, document, or map an existing codebase area. Read-only; produces a thoughts artifact.
 model: sonnet
-allowed-tools: Bash, Read, Grep, Glob, Agent, mcp__claude_ai_Notion__*, mcp__anytype__*
+allowed-tools: Bash, Read, Grep, Glob, Agent, Write, Edit, Skill, mcp__claude_ai_Notion__*, mcp__anytype__*
 ---
 
 # Research Codebase
@@ -43,8 +43,11 @@ Then wait for the user's research query.
 
 3. **Spawn parallel sub-agent tasks for comprehensive research:**
    - Read `~/.claude/skills/_thoughts/subagent-guide.md` for the catalog and spawning rules.
-   - For this skill, the relevant sections are: codebase research, thoughts directory, web research (only if the user explicitly asks), and JIRA (if relevant).
-   - Documentarian rules (already loaded above) apply to every sub-agent you spawn.
+   - **Default to one `cartographer` per research area, spawned in parallel.** Each returns a document-ready section for its area (where the code lives, how it works, what it connects to, conventions, gaps) with `file:line` references — that is the body of step 6, so you are synthesizing maps rather than raw search output. Give each one its area and the exact directories it covers; never a generic term like "the backend".
+   - Reach for `codebase-locator` / `codebase-analyzer` / `codebase-pattern-finder` directly only for a single targeted question that doesn't warrant a whole section.
+   - Use `archivist` for the prior paper trail on the topic (it covers every backend and returns a synthesized briefing); `thoughts-locator` / `thoughts-analyzer` remain available for narrow `git`/`obsidian` lookups.
+   - Also relevant when applicable: web research (only if the user explicitly asks) and JIRA.
+   - Documentarian rules (already loaded above) apply to every sub-agent you spawn. The `cartographer` and `archivist` already enforce them; say it anyway to the general-purpose agents.
 
 4. **Wait for all sub-agents to complete and synthesize findings:**
    - IMPORTANT: Wait for ALL sub-agent tasks to complete before proceeding

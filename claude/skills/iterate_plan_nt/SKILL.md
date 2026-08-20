@@ -2,7 +2,7 @@
 name: iterate_plan_nt
 description: Iterate on an existing implementation plan, no-thoughts variant (omits thoughts-locator/thoughts-analyzer agents). Use when the user asks to update a plan in a project that does not use the standard thoughts directory.
 model: opus
-allowed-tools: Bash, Read, Grep, Glob, Agent, Write, Edit
+allowed-tools: Bash, Read, Grep, Glob, Agent, Write, Edit, Skill
 ---
 
 # Iterate Implementation Plan
@@ -72,7 +72,7 @@ If the user's feedback requires understanding new code patterns or validating as
 1. **Create a research todo list** using TodoWrite
 
 2. **Spawn parallel sub-tasks for research**:
-   Read `~/.claude/skills/_thoughts/subagent-guide.md` for the catalog and spawning rules. Use the codebase-research section. Skip the thoughts directory agents — this is the no-thoughts variant.
+   Read `~/.claude/skills/_thoughts/subagent-guide.md` for the catalog and spawning rules. Spawn a `cartographer` per area the feedback opens up, and the narrow `codebase-*` agents for single targeted questions. Skip the thoughts directory agents and the `archivist` — this is the no-thoughts variant.
 
 3. **Read any new files identified by research**:
    - Read them FULLY into the main context

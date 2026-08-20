@@ -53,7 +53,7 @@ Read `~/.claude/skills/_thoughts/storage-backend.md` and follow it for where to 
    - **NEVER** read files partially - if a file is mentioned, read it completely
 
 2. **Spawn initial research tasks to gather context**:
-   Before asking the user any questions, use specialized agents to research in parallel. Read `~/.claude/skills/_thoughts/subagent-guide.md` for the catalog and spawning rules.
+   Before asking the user any questions, use specialized agents to research in parallel. Read `~/.claude/skills/_thoughts/subagent-guide.md` for the catalog and spawning rules. For initial context, spawn one `cartographer` per area of the codebase the task touches, each with its exact directories.
 
 3. **Read all files identified by research tasks**:
    - After research tasks complete, read ALL files they identified as relevant
@@ -144,10 +144,14 @@ Once aligned on approach:
 
 After structure approval:
 
-1. **Save the plan** following the storage backend dispatch from the top of this command. The title format follows the backend-specific rule in `~/.claude/skills/_thoughts/required-metadata.md`:
+1. **Delegate the draft to the `draughtsman` agent** (see `~/.claude/skills/_thoughts/subagent-guide.md`). Hand it the task, the approved phase outline, your research findings, the repo root, and the template path `~/.claude/skills/_thoughts/templates/plan.md`. It returns the plan body as markdown; persistence stays with you. Draft inline only when the plan is small enough that delegation costs more than it saves. Resolve any `BLOCKER:` line it returns before moving on.
+
+2. **Review the draft with the `adjudicator` agent** before the user sees it — it checks the plan against the actual tree for phantom paths, unverifiable criteria, phase ordering that can't hold, and unstated open questions. On `verdict: revise`, fix the blocker/major findings and re-run it once; on `verdict: reject`, take the finding back to the user rather than saving the plan. You are the arbiter: if a finding is wrong, say why and move on.
+
+3. **Save the plan** following the storage backend dispatch from the top of this command. The title format follows the backend-specific rule in `~/.claude/skills/_thoughts/required-metadata.md`:
    - For `git`/`obsidian`: kebab-case dated slug (e.g. `2025-01-08-ENG-1478-parent-child-tracking`); write to `thoughts/shared/plans/<title>.md` with YAML frontmatter containing every required schema field.
    - For `notion`/`anytype`: normal human-readable heading; create the database row / object with every required property populated; the narrative content below becomes the body.
-2. **Use the template at `~/.claude/skills/_thoughts/templates/plan.md`** — read it, populate every placeholder, and save the result to the destination from step 1.
+4. **Use the template at `~/.claude/skills/_thoughts/templates/plan.md`** — every placeholder populated, saved to the destination from step 3.
 
 ### Step 5: Sync and Review
 
@@ -288,15 +292,13 @@ When spawning research sub-tasks:
    - Cross-check findings against the actual codebase
    - Don't accept results that seem incorrect
 
-Example of spawning multiple tasks:
-```python
-# Spawn these tasks concurrently:
-tasks = [
-    Task("Research database schema", db_research_prompt),
-    Task("Find API patterns", api_research_prompt),
-    Task("Investigate UI components", ui_research_prompt),
-    Task("Check test patterns", test_research_prompt)
-]
+Example of spawning multiple tasks concurrently — one agent per area, each told exactly where to look:
+
+```
+cartographer  "Map how sessions are persisted — crates/hyprlayer-core/src/store/"
+cartographer  "Map the IPC command surface for sessions — src-tauri/src/commands/"
+cartographer  "Map how the session list renders — src/features/session/"
+archivist     "Prior plans, research, and handoffs about session persistence"
 ```
 
 ## Example Interaction Flow

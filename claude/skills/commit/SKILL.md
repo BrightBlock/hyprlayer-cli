@@ -2,7 +2,7 @@
 name: commit
 description: Create git commits with user approval and no Claude attribution. Side-effecting; user-only — never auto-invoke.
 model: sonnet
-allowed-tools: Bash, Read
+allowed-tools: Bash, Read, Agent
 disable-model-invocation: true
 ---
 
@@ -36,6 +36,8 @@ You are tasked with creating git commits for the changes made during this sessio
    - Draft clear, descriptive commit messages
    - Use imperative mood in commit messages
    - Focus on why the changes were made, not just what
+   - **For a large or mixed working tree, delegate the split to the `quartermaster` agent** (see `~/.claude/skills/_thoughts/subagent-guide.md`). It surveys the diff and returns an ordered set of atomic commits with explicit file lists and drafted messages, plus warnings about secrets, stray debug output, or generated files. You still present the plan and run the commits. Plan inline when the change is small or you already know exactly what you did in this session.
+   - The session context you carry is an advantage the quartermaster doesn't have — correct its grouping or its "why" when you know better.
 
 4. **Present your plan to the user:**
    - List the files you plan to add for each commit

@@ -170,6 +170,14 @@ significant, say so in one line.
 
 Pass that string as the `prompt` argument. The agent's output is the body of the review — present it verbatim in Step 4.
 
+## Step 3b (optional): Triage with the `marshal`
+
+Skip this for a short review — three findings do not need a coordinator. Run it when the review came back long (roughly 6+ findings), when both tiers ran, or when the user asks what to actually fix.
+
+Spawn the `marshal` agent (see `~/.claude/skills/_thoughts/subagent-guide.md`) with the review output **verbatim**, the diff range, and the repo root. It verifies each finding against the tree, merges duplicates across reviewers, and rules each one `fix now` / `defer` / `reject` with evidence.
+
+This does not replace Step 4's verbatim output — it is appended after it, under a `triage:` heading. The user sees what the reviewer said and what survived checking, in that order. Never let the triage silently swallow a finding: a rejected finding still appears, with its reason.
+
 ## Step 4: Present output
 
 First line tells the user which tier ran:
@@ -204,7 +212,7 @@ Skip the cross-model block when Tier 2 ran (same model family — the comparison
 
 ## Rules
 
-- **Read-only.** Codex runs with `-s read-only`; the subagent has no `Edit`/`Write`. This skill never modifies files.
+- **Read-only.** Codex runs with `-s read-only`; the `adversarial-reviewer` and `marshal` agents have no `Edit`/`Write`. This skill never modifies files.
 - **Verbatim output.** Don't summarize, truncate, or soften findings before presenting. Synthesis comes after, not instead of.
 - **No double-reviewing.** Don't re-run Claude's own `/review` from inside this skill.
 - **One pass per invocation.** Don't loop. The user can re-run with a tighter focus.

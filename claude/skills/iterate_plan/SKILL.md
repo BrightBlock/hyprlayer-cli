@@ -2,7 +2,7 @@
 name: iterate_plan
 description: Iterate on an existing implementation plan with thorough research and surgical updates. Use when the user asks to update, refine, or rewrite parts of an existing plan. Mutates an existing thoughts artifact (a plan).
 model: opus
-allowed-tools: Bash, Read, Grep, Glob, Agent, Write, Edit, mcp__claude_ai_Notion__*, mcp__anytype__*
+allowed-tools: Bash, Read, Grep, Glob, Agent, Write, Edit, Skill, mcp__claude_ai_Notion__*, mcp__anytype__*
 ---
 
 # Iterate Implementation Plan
@@ -72,7 +72,7 @@ If the user's feedback requires understanding new code patterns or validating as
 1. **Create a research todo list** using TodoWrite
 
 2. **Spawn parallel sub-tasks for research**:
-   Read `~/.claude/skills/_thoughts/subagent-guide.md` for the catalog and spawning rules. Use the codebase-research and thoughts directory sections.
+   Read `~/.claude/skills/_thoughts/subagent-guide.md` for the catalog and spawning rules. Spawn a `cartographer` per area the feedback opens up (give each its exact directories), an `archivist` for prior artifacts that bear on the change, and the narrow `codebase-*` agents for single targeted questions. `thoughts-locator` / `thoughts-analyzer` remain available for narrow `git`/`obsidian` lookups.
 
 3. **Read any new files identified by research**:
    - Read them FULLY into the main context
@@ -121,6 +121,10 @@ Get user confirmation before proceeding.
    - Write measurable success criteria
    - Use `make` commands for automated verification
    - Keep language clear and actionable
+
+4. **Re-check structural changes with the `adjudicator`** (see `~/.claude/skills/_thoughts/subagent-guide.md`). Hand it the revised plan and the repo root whenever the iteration added or reordered a phase, changed the approach, or rewrote success criteria — those are exactly the edits that introduce phantom paths and criteria nobody can run. Skip it for wording and scope-note tweaks.
+
+   For a substantial rewrite of one or more phases, delegate the rewrite to the `draughtsman` first (hand it the current plan, the requested change, and the research), then adjudicate the result. Surgical edits stay yours.
 
 ### Step 5: Sync and Review
 

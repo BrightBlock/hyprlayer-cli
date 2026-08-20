@@ -2,7 +2,7 @@
 name: create_plan
 description: Create detailed implementation plans through interactive research and iteration. Use when the user asks to plan, design, or scope a non-trivial change. Produces a thoughts artifact (a plan).
 model: opus
-allowed-tools: Bash, Read, Grep, Glob, Agent, Write, Edit, mcp__claude_ai_Notion__*, mcp__anytype__*
+allowed-tools: Bash, Read, Grep, Glob, Agent, Write, Edit, Skill, mcp__claude_ai_Notion__*, mcp__anytype__*
 ---
 
 # Implementation Plan
@@ -53,7 +53,7 @@ Read `~/.claude/skills/_thoughts/storage-backend.md` and follow it for where to 
    - **NEVER** read files partially - if a file is mentioned, read it completely
 
 2. **Spawn initial research tasks to gather context**:
-   Before asking the user any questions, use specialized agents to research in parallel. Read `~/.claude/skills/_thoughts/subagent-guide.md` for the catalog and spawning rules. For initial context, lean on the codebase-research agents and (if a JIRA ticket is mentioned) the JIRA agents.
+   Before asking the user any questions, use specialized agents to research in parallel. Read `~/.claude/skills/_thoughts/subagent-guide.md` for the catalog and spawning rules. For initial context, spawn one `cartographer` per area of the codebase the task touches (give each its exact directories), plus `archivist` for any prior plans/research/handoffs on the same topic, plus the JIRA agents if a ticket is mentioned.
 
 3. **Read all files identified by research tasks**:
    - After research tasks complete, read ALL files they identified as relevant
@@ -96,7 +96,7 @@ After getting initial clarifications:
 2. **Create a research todo list** using TodoWrite to track exploration tasks
 
 3. **Spawn parallel sub-tasks for comprehensive research**:
-   Read `~/.claude/skills/_thoughts/subagent-guide.md` for the catalog and spawning rules. For deeper investigation, lean on codebase-research, thoughts directory (for historical context), and JIRA (for related tickets) agents.
+   Read `~/.claude/skills/_thoughts/subagent-guide.md` for the catalog and spawning rules. For deeper investigation: another round of `cartographer` agents on the areas the first round surfaced, `archivist` for historical context, JIRA agents for related tickets, and the narrow `codebase-*` agents for single targeted questions.
 
 3. **Wait for ALL sub-tasks to complete** before proceeding
 
@@ -144,10 +144,22 @@ Once aligned on approach:
 
 After structure approval:
 
-1. **Save the plan** following the storage backend dispatch from the top of this command. The title format follows the backend-specific rule in `~/.claude/skills/_thoughts/required-metadata.md`:
+1. **Delegate the draft to the `draughtsman` agent.** Hand it: the task, the approved phase outline, your research findings (including the sub-agent maps), the repo root, and the template path `~/.claude/skills/_thoughts/templates/plan.md`. It returns the plan body as markdown — phases in dependency order, verified file paths, success criteria split automated/manual. It does not write files; persistence is yours.
+
+   Draft the body yourself only when the plan is small enough that delegation costs more than it saves (a single phase, a handful of files).
+
+   If the draughtsman returns a `BLOCKER:` line, resolve it — with the user if it needs a decision — and re-spawn rather than shipping a plan with a hole in it.
+
+2. **Review the draft with the `adjudicator` agent** before the user ever sees it. Hand it the draft body and the repo root. It checks the plan against the actual tree: phantom file paths, unverifiable success criteria, phase ordering that can't hold, missing migrations, unstated open questions.
+   - `verdict: ship` — proceed to step 3.
+   - `verdict: revise` — fix the blocker/major findings (re-spawn the draughtsman with the findings attached for anything structural) and re-run the adjudicator once.
+   - `verdict: reject` — the approach is wrong. Go back to the user with what the adjudicator found; do not save the plan.
+
+   You are the arbiter, not a relay: if a finding is wrong, say why and move on. Don't churn the plan to satisfy a bad call.
+
+3. **Save the plan** following the storage backend dispatch from the top of this command. The title format follows the backend-specific rule in `~/.claude/skills/_thoughts/required-metadata.md`:
    - For `git`/`obsidian`: kebab-case dated slug (e.g. `2025-01-08-improve-error-handling`); write to `thoughts/shared/plans/<title>.md` with YAML frontmatter containing every required schema field.
    - For `notion`/`anytype`: normal human-readable heading without a date prefix (e.g. `Improve error handling` or `Parent-child tracking (ENG-1478)`); create the database row / object with every required property populated; the narrative content below becomes the body.
-2. **Use the template at `~/.claude/skills/_thoughts/templates/plan.md`** — read it, populate every placeholder, and save the result to the destination from step 1.
 
 ### Step 5: Sync and Review
 
@@ -171,6 +183,7 @@ After structure approval:
    - Adjust technical approach
    - Clarify success criteria (both automated and manual)
    - Add/remove scope items
+   - Re-run the `adjudicator` after any round of edits that adds or reorders a phase, changes an approach, or rewrites success criteria — a plan patched three times without a re-check is where phantom paths creep back in
    - For `backend: git`, re-run `hyprlayer thoughts sync` after each round of edits
 
 4. **Continue refining** until the user is satisfied
@@ -293,15 +306,13 @@ When spawning research sub-tasks:
    - Cross-check findings against the actual codebase
    - Don't accept results that seem incorrect
 
-Example of spawning multiple tasks:
-```python
-# Spawn these tasks concurrently:
-tasks = [
-    Task("Research database schema", db_research_prompt),
-    Task("Find API patterns", api_research_prompt),
-    Task("Investigate UI components", ui_research_prompt),
-    Task("Check test patterns", test_research_prompt)
-]
+Example of spawning multiple tasks concurrently — one agent per area, each told exactly where to look:
+
+```
+cartographer  "Map how sessions are persisted — crates/hyprlayer-core/src/store/"
+cartographer  "Map the IPC command surface for sessions — src-tauri/src/commands/"
+cartographer  "Map how the session list renders — src/features/session/"
+archivist     "Prior plans, research, and handoffs about session persistence"
 ```
 
 ## Example Interaction Flow

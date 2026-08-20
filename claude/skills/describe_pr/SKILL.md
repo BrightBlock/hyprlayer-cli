@@ -2,7 +2,7 @@
 name: describe_pr
 description: Generate comprehensive PR descriptions following the repository's pr_description.md template. Use when the user asks to describe an existing PR (including running its automated verification commands and updating the PR via gh pr edit).
 model: sonnet
-allowed-tools: Bash, Read, Write, mcp__claude_ai_Notion__*, mcp__anytype__*
+allowed-tools: Bash, Read, Write, Agent, Skill, mcp__claude_ai_Notion__*, mcp__anytype__*
 ---
 
 # Generate PR Description
@@ -46,6 +46,9 @@ The numbered steps below fold the dispatched read/write into the broader interac
    - Manual-only steps (UI interactions, external services) remain unchecked regardless.
 
 7. **Generate the description:**
+   - **For a PR of any size, delegate the write-up to the `herald` agent** (see `~/.claude/skills/_thoughts/subagent-guide.md`). Hand it the PR number, the template (path or body), the repo root, and — if step 6 ran verification — which commands were run and what they returned. It reads the diff and commits itself and returns the finished body. Keeping a large diff out of this context is most of the value; write inline only for a trivial one-file PR.
+   - The herald marks a verification box `- [x]` only for commands you told it passed. Check that its checklist matches what actually happened in step 6 before you use the body.
+   - What the herald returns is the body, whole and unedited — it goes to `gh pr edit --body-file` in step 9, so whatever is in it is what reviewers read. If it returns a `BLOCKER:` line instead, resolve what it names and re-spawn it. If anything caller-facing rode along with the body anyway, strip it before step 8; never persist or publish it.
    - Fill out each section from the template thoroughly:
      - Answer each question/section based on your analysis
      - Be specific about problems solved and changes made

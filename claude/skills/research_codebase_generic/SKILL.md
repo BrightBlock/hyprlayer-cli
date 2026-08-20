@@ -2,7 +2,7 @@
 name: research_codebase_generic
 description: Research a codebase comprehensively using parallel sub-agents (generic variant — minimal opinions about thoughts directory structure or sub-agent specialization). Use when the user asks for code research in a project that does not assume the standard thoughts directory. Read-only; produces a thoughts artifact (research).
 model: opus
-allowed-tools: Bash, Read, Grep, Glob, Agent
+allowed-tools: Bash, Read, Grep, Glob, Agent, Write, Edit
 ---
 
 # Research Codebase
@@ -39,7 +39,8 @@ Then wait for the user's research query.
 
 3. **Spawn parallel sub-agent tasks for comprehensive research:**
    - Read `~/.claude/skills/_thoughts/subagent-guide.md` for the catalog and spawning rules.
-   - For this skill (generic variant), use whichever sections apply to the project at hand.
+   - Default to one `cartographer` per research area, spawned in parallel — each returns a document-ready section with `file:line` references.
+   - For this skill (generic variant), use whichever other sections apply to the project at hand.
 
 4. **Wait for all sub-agents to complete and synthesize findings:**
    - IMPORTANT: Wait for ALL sub-agent tasks to complete before proceeding

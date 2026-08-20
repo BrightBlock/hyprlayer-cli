@@ -1,7 +1,7 @@
 ---
 name: founder_mode
 description: Create a JIRA ticket and PR retroactively for an experimental feature that bypassed the standard ticketing flow. Side-effecting; user-only — never auto-invoke. Use when the user asks to "founder-mode" a commit or retroactively ticket and PR something already on the local branch.
-allowed-tools: Bash, Read
+allowed-tools: Bash, Read, Agent
 disable-model-invocation: true
 ---
 

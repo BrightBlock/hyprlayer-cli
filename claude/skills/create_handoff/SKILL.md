@@ -1,7 +1,7 @@
 ---
 name: create_handoff
 description: Create a handoff document for transferring work to another session. Use when the user asks to create a handoff, summarize the session for a future agent, or capture context for a clean restart. Produces a thoughts artifact (a handoff).
-allowed-tools: Bash, Read, Write, Edit, mcp__claude_ai_Notion__*, mcp__anytype__*
+allowed-tools: Bash, Read, Write, Edit, Agent, Skill, mcp__claude_ai_Notion__*, mcp__anytype__*
 ---
 
 # Create Handoff
@@ -31,6 +31,12 @@ Use the following information to understand how to create your document:
 
 ### 2. Handoff writing.
 Read `~/.claude/skills/_thoughts/templates/handoff.md` for the body template. Populate every placeholder using the metadata from step 1, then save the result to the destination resolved by the storage backend dispatch.
+
+**Write the narrative yourself.** The value of a handoff is the context only this session holds — the dead ends, the reason an approach was abandoned, what "done" actually means for the task in flight. A sub-agent cannot recover that.
+
+Use the `archivist` agent (see `~/.claude/skills/_thoughts/subagent-guide.md`) for the parts that live in the store rather than in your head:
+- **Artifacts** — ask it for the plan, research docs, prior handoffs, and PR records tied to this ticket or topic, with their current `status` and correct paths/IDs. That section is then accurate instead of remembered.
+- **Shaping** — for a long session, hand it your raw bullet dump of state/changes/learnings plus the template, and have it return the structured body. Review what comes back: if it dropped a learning you consider load-bearing, put it back.
 
 ---
 

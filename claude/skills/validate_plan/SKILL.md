@@ -1,7 +1,7 @@
 ---
 name: validate_plan
 description: Validate that an implementation plan was correctly executed, run its automated success criteria, report deviations and remaining manual steps, and promote the plan's status frontmatter to `implemented` once fully verified. Use when the user asks to validate or audit an implementation against an existing plan.
-allowed-tools: Bash, Read, Edit, Grep, Glob, Agent
+allowed-tools: Bash, Read, Edit, Grep, Glob, Agent, Skill
 ---
 
 # Validate Plan
@@ -47,25 +47,17 @@ If starting fresh or need more context:
    - Note all success criteria (automated and manual)
    - Identify key functionality to verify
 
-3. **Spawn parallel research tasks** to discover implementation:
-   ```
-   Task 1 - Verify database changes:
-   Research if migration [N] was added and schema changes match plan.
-   Check: migration files, schema version, table structure
-   Return: What was implemented vs what plan specified
+3. **Delegate the audit to the `inspector` agent** (see `~/.claude/skills/_thoughts/subagent-guide.md`). Hand it: the plan (path or body), the diff range or commits that implemented it, the repo root, and the report template path `~/.claude/skills/_thoughts/templates/validation-report.md`.
 
-   Task 2 - Verify code changes:
-   Find all modified files related to [feature].
-   Compare actual changes to plan specifications.
-   Return: File-by-file comparison of planned vs actual
+   It reads the plan, checks each claimed-complete phase against the actual diff, runs every automated success criterion, and returns the report plus `verdict: promote` or `verdict: block`. A fresh context is the point — an agent that did not write the code will not assume its own work is correct.
 
-   Task 3 - Verify test coverage:
-   Check if tests were added/modified as specified.
-   Run test commands and capture results.
-   Return: Test status and any missing coverage
-   ```
+   **Delegate by default.** There is exactly one exception: you implemented this work yourself, in this same session, *and* the diff is small enough to re-read in full (roughly one phase, under ~100 changed lines). Both conditions, not either. "The diff looks small" on its own is not a reason to skip the fresh context — a small diff is cheap for the inspector too. If you do audit inline, hold yourself to the same bar: run every command, cite every claim with `file:line`.
+
+   For a large plan, spawn one inspector per phase group rather than one for everything, and reconcile their reports yourself.
 
 ### Step 2: Systematic Validation
+
+If an `inspector` ran, this step is verification of its report, not a repeat of it: spot-check the phases it marked complete against the diff yourself, and re-run any automated command whose reported result you have reason to doubt. Its `verdict:` is advice — the promotion decision in step 4 is yours.
 
 For each phase in the plan:
 
