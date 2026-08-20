@@ -1,8 +1,8 @@
-//! Lightweight `ureq`-based HTTP wrapper for telemetry-adjacent calls.
+//! Lightweight `ureq`-based HTTP wrapper for telemetry- and agent-install
+//! HTTP calls.
 //!
-//! New code should route through here rather than shelling out to `curl`.
-//! The existing `curl_get_json` / `curl_download_file` callsites in
-//! `agents.rs` and `version.rs` migrate in a separate follow-up.
+//! All GitHub-facing network calls route through here rather than shelling
+//! out to `curl` — see `agents.rs` for the GitHub API / codeload callers.
 
 use std::io::Read as _;
 use std::path::Path;
@@ -86,7 +86,22 @@ pub fn get_text(url: &str, timeout: Duration) -> Result<String, HttpError> {
 /// by our own infrastructure (e.g. the GitHub releases API), so a hostile or
 /// misconfigured source can't stream gigabytes into a `String`.
 pub fn get_text_capped(url: &str, timeout: Duration, max_bytes: u64) -> Result<String, HttpError> {
-    let resp = agent(timeout).get(url).call()?;
+    get_text_capped_with_headers(url, timeout, max_bytes, &[])
+}
+
+/// Like `get_text_capped`, but with extra request headers (e.g. GitHub's
+/// `Accept: application/vnd.github.v3+json`).
+pub fn get_text_capped_with_headers(
+    url: &str,
+    timeout: Duration,
+    max_bytes: u64,
+    headers: &[(&str, &str)],
+) -> Result<String, HttpError> {
+    let mut req = agent(timeout).get(url);
+    for (k, v) in headers {
+        req = req.set(k, v);
+    }
+    let resp = req.call()?;
     let mut reader = resp.into_reader().take(max_bytes + 1);
     let mut buf = Vec::new();
     reader.read_to_end(&mut buf)?;
@@ -134,7 +149,6 @@ pub fn download_file(url: &str, dest: &Path, timeout: Duration) -> Result<(), Ht
 /// Streaming download with an optional byte cap. Once `max_bytes` is reached
 /// the connection is aborted and the partial file deleted so we never end up
 /// hashing/swapping an over-sized artifact.
-#[allow(dead_code)]
 pub fn download_file_capped(
     url: &str,
     dest: &Path,
