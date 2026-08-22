@@ -86,8 +86,27 @@ orchestration:
       because: >
         A plan that re-decides something already decided is worse than no
         plan. The archivist covers every backend and returns one briefing.
-        This and `deeper-history` are the only steps reading prior context,
-        so skipping both is the whole of a no-thoughts run.
+        This, `deeper-history` and `thoughts-lookup` are the only steps
+        reading prior context; skipping them is the whole of a no-thoughts
+        run.
+
+    - id: thoughts-lookup
+      requires: [decompose]
+      when: backend == git or backend == obsidian
+      when-examples:
+        match:    ["backend == git", "backend == obsidian"]
+        no-match: ["backend == notion", "backend == anytype"]
+      agent: one-of [thoughts-locator, thoughts-analyzer]
+      judgment: >
+        Same call as `context-history`, plus: locator to find what exists,
+        analyzer to pull facts from a document you can already name. See
+        "Prior context" below.
+      because: >
+        Narrow lookups against a filesystem thoughts directory, for one
+        specific fact rather than a synthesized trail. A plan often turns on
+        a single prior decision — the constraint someone already ruled out —
+        and that is cheaper to fetch than to re-derive. Both agents read
+        files, so notion/anytype have nothing for them.
 
     - id: context-ticket
       requires: [decompose]
@@ -384,9 +403,10 @@ conventions:
 ## Judgment
 
 **Prior context.** Only the request says whether this plan wants the prior trail. Skip
-`context-history` and `deeper-history` when the user asks to plan from the code alone —
-"fresh start", "ignore the old plan", "without the prior research". Silent request: read
-it.
+`context-history`, `deeper-history` and `thoughts-lookup` when the user asks to plan
+from the code alone — "fresh start", "ignore the old plan", "without the prior
+research". Silent request: read it. Reach for `thoughts-lookup` on top of the archivist
+when the plan turns on one prior decision you can name.
 
 The error is asymmetric. An unwanted trail anchors the plan to a decision that was
 already superseded; an excluded one costs a re-run.

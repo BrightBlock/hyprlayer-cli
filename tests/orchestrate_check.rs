@@ -1,7 +1,7 @@
 //! Integration tests for `hyprlayer orchestrate check`. Seven deliberately
 //! broken fixtures, each inline (three to six lines whose content is the
-//! point), plus the positive case against the 229-line on-disk fixture
-//! that mirrors the real `research_codebase` skill.
+//! point), plus the positive case against the real, shipped
+//! `research_codebase` skill.
 //!
 //! Every invocation passes `--target claude --agents-dir <repo_root>/claude/agents`:
 //! `run()` points `HOME` at a tempdir, so `~/.claude/agents` does not
@@ -173,9 +173,10 @@ fn fanout_without_over_fails() {
 }
 
 #[test]
-fn the_research_skill_checks_clean_with_three_warnings() {
-    // Three warnings, one per step whose guard needs a live probe:
+fn the_research_skill_checks_clean_with_four_warnings() {
+    // Four warnings, one per step whose guard needs a live probe:
     // `history` (exit0 test -d thoughts, or a notion/anytype backend),
+    // `thoughts-lookup` (a git/obsidian backend),
     // `permalinks` (exit0) and `sync` (backend == git). Each is reported
     // once for the step rather than once per example, because every
     // example it carries is unevaluable for the same structural reason.
@@ -194,8 +195,8 @@ fn the_research_skill_checks_clean_with_three_warnings() {
     assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
     let warn_count = stdout.matches("warn").count();
     assert_eq!(
-        warn_count, 3,
-        "expected exactly three warnings, got:\n{stdout}"
+        warn_count, 4,
+        "expected exactly four warnings, got:\n{stdout}"
     );
     assert!(
         !stdout.contains("error"),
@@ -206,7 +207,7 @@ fn the_research_skill_checks_clean_with_three_warnings() {
     assert_eq!(json_code, 0);
     let parsed: serde_json::Value = serde_json::from_str(&json_out).unwrap();
     assert_eq!(parsed["ok"], true, "payload: {parsed}");
-    assert_eq!(parsed["files"][0]["warnings"], 3, "payload: {parsed}");
+    assert_eq!(parsed["files"][0]["warnings"], 4, "payload: {parsed}");
     assert_eq!(parsed["files"][0]["errors"], 0, "payload: {parsed}");
 }
 

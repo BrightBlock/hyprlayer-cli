@@ -96,8 +96,25 @@ orchestration:
         The guard only proves a trail exists. `notion`/`anytype` have no
         thoughts/ directory to test, so a bare `test -d thoughts` would skip
         the users with the richest trail; when the tree is the store, cover
-        all of thoughts/, not just research/. This is the only step that reads
-        prior context, so skipping it is the whole of a no-thoughts run.
+        all of thoughts/, not just research/. With `thoughts-lookup` these are
+        the only steps reading prior context; skipping both is the whole of a
+        no-thoughts run.
+
+    - id: thoughts-lookup
+      requires: [decompose]
+      when: backend == git or backend == obsidian
+      when-examples:
+        match:    ["backend == git", "backend == obsidian"]
+        no-match: ["backend == notion", "backend == anytype"]
+      agent: one-of [thoughts-locator, thoughts-analyzer]
+      judgment: >
+        Same call as `history`, plus: locator to find what exists, analyzer to
+        pull facts from a document you can already name. See "Prior context".
+      because: >
+        Narrow lookups against a filesystem thoughts directory, for one
+        specific fact rather than a synthesized trail — that is what the
+        archivist is for. Both agents read files, so notion/anytype have
+        nothing for them.
 
     - id: targeted
       requires: [decompose]
@@ -248,9 +265,11 @@ conventions:
 ## Judgment
 
 **Prior context.** The guard proves a trail exists; only the request says whether this
-research wants one. Skip `history` when the user asks for the codebase on its own
-terms — "fresh eyes", "just the code", "without the prior research". Silent request and
-a trail exists: read it, and say so in the summary.
+research wants one. Skip `history` and `thoughts-lookup` when the user asks for the
+codebase on its own terms — "fresh eyes", "just the code", "without the prior
+research". Silent request and a trail exists: read it, and say so in the summary.
+Reach for `thoughts-lookup` on top of `history` when you need one fact out of a named
+document rather than the whole trail.
 
 The error is asymmetric. An unwanted trail contaminates the finding — the research
 comes back agreeing with the last document rather than the tree, and that reads as

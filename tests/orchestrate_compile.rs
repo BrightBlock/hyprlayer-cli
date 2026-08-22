@@ -17,7 +17,7 @@ fn repo_root() -> PathBuf {
 //   sync:       backend == git                                → true
 //   history:    exit0(test -d thoughts)                       → true
 // Without the first two, both steps skip and a wave vanishes. Without the
-// third the archivist never spawns and totalSpawns is 5, not 6 — that guard
+// third the archivist never spawns and totalSpawns is 6, not 7 — that guard
 // is what lets one skill cover both the thoughts and no-thoughts cases, so
 // the no-thoughts shape is simply this file with the pin removed.
 const PINS: [&str; 6] = [
@@ -54,7 +54,7 @@ fn compile_json(xdg: &Path, extra: &[&str]) -> serde_json::Value {
 }
 
 #[test]
-fn fourteen_steps_compile_to_eight_waves_and_six_spawns() {
+fn fifteen_steps_compile_to_eight_waves_and_seven_spawns() {
     let (_guard, xdg) = isolated_dirs();
     let d = compile_json(
         &xdg,
@@ -66,9 +66,9 @@ fn fourteen_steps_compile_to_eight_waves_and_six_spawns() {
             "--no-probe",
         ],
     );
-    assert_eq!(d["stepCount"], 14, "payload: {d}");
+    assert_eq!(d["stepCount"], 15, "payload: {d}");
     assert_eq!(d["waveCount"], 8, "payload: {d}");
-    assert_eq!(d["totalSpawns"], 6, "payload: {d}");
+    assert_eq!(d["totalSpawns"], 7, "payload: {d}");
 }
 
 #[test]
@@ -171,9 +171,13 @@ fn a_one_of_agent_is_one_spawn_with_an_unresolved_choice() {
         .iter()
         .filter(|u| u["kind"] == "agent-choice")
         .collect();
-    assert_eq!(choice.len(), 1, "payload: {d}");
-    assert_eq!(choice[0]["step"], "targeted");
-    assert_eq!(choice[0]["candidates"].as_array().unwrap().len(), 3);
+    // Two `one-of` steps: `targeted` picks among the three narrow codebase
+    // agents, `thoughts-lookup` between locator and analyzer. Each is one
+    // spawn with the choice deferred, never two spawns.
+    let steps: Vec<&str> = choice.iter().map(|c| c["step"].as_str().unwrap()).collect();
+    assert_eq!(steps, vec!["thoughts-lookup", "targeted"], "payload: {d}");
+    let targeted = choice.iter().find(|c| c["step"] == "targeted").unwrap();
+    assert_eq!(targeted["candidates"].as_array().unwrap().len(), 3);
 }
 
 #[test]
@@ -336,6 +340,7 @@ fn every_judgment_step_is_recorded_as_an_unresolved_decision() {
             // research wants one is the user's intent, which no probe can
             // read — so the decision is a judgment and lands here.
             "history",
+            "thoughts-lookup",
             "targeted",
             "verify-results",
             "write",
