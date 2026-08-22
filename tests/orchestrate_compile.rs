@@ -1,5 +1,5 @@
 //! Integration tests for `hyprlayer orchestrate compile`, exercised
-//! against the real `research_codebase_declared` fixture and against
+//! against the real `research_codebase` skill and against
 //! small inline blocks for the individual scheduling rules.
 
 mod common;
@@ -15,16 +15,22 @@ fn repo_root() -> PathBuf {
 // The target skill reproduces the observed run ONLY with these pins:
 //   permalinks: exit0(git merge-base --is-ancestor HEAD @{u}) → true
 //   sync:       backend == git                                → true
-// Without them both steps skip and wave 7 vanishes.
-const PINS: [&str; 4] = [
+//   history:    exit0(test -d thoughts)                       → true
+// Without the first two, both steps skip and a wave vanishes. Without the
+// third the archivist never spawns and totalSpawns is 5, not 6 — that guard
+// is what lets one skill cover both the thoughts and no-thoughts cases, so
+// the no-thoughts shape is simply this file with the pin removed.
+const PINS: [&str; 6] = [
     "--fact",
     "exit0(git merge-base --is-ancestor HEAD @{u})=true",
     "--fact",
     "backend=git",
+    "--fact",
+    "exit0(test -d thoughts)=true",
 ];
 
 fn compile_json(xdg: &Path, extra: &[&str]) -> serde_json::Value {
-    let fixture = repo_root().join("tests/fixtures/research_codebase_declared.md");
+    let fixture = repo_root().join("claude/skills/research_codebase/SKILL.md");
     let claude_agents = repo_root().join("claude/agents");
     let mut args = vec![
         "orchestrate",
@@ -173,7 +179,7 @@ fn a_one_of_agent_is_one_spawn_with_an_unresolved_choice() {
 #[test]
 fn a_fanout_with_no_size_binding_is_an_error_naming_the_flag() {
     let (_guard, xdg) = isolated_dirs();
-    let fixture = repo_root().join("tests/fixtures/research_codebase_declared.md");
+    let fixture = repo_root().join("claude/skills/research_codebase/SKILL.md");
     let claude_agents = repo_root().join("claude/agents");
     let mut args = vec![
         "orchestrate",
@@ -200,7 +206,7 @@ fn a_fanout_with_no_size_binding_is_an_error_naming_the_flag() {
 #[test]
 fn two_identical_invocations_produce_byte_identical_stdout() {
     let (_guard, xdg) = isolated_dirs();
-    let fixture = repo_root().join("tests/fixtures/research_codebase_declared.md");
+    let fixture = repo_root().join("claude/skills/research_codebase/SKILL.md");
     let claude_agents = repo_root().join("claude/agents");
     let mut args = vec![
         "orchestrate",

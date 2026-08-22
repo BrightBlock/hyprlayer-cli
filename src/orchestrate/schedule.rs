@@ -1,5 +1,5 @@
 //! The wave scheduler. Two semantics here were verified empirically
-//! against `research_codebase_declared` and are the only way 14 steps
+//! against `research_codebase` and are the only way 14 steps
 //! reproduce as 7 waves — do not "simplify" either one:
 //!
 //!   1. Skipped steps are EXCLUDED from wave numbering. Including the

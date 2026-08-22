@@ -17,7 +17,7 @@ fn repo_root() -> PathBuf {
 }
 
 fn fixture() -> PathBuf {
-    repo_root().join("tests/fixtures/research_codebase_declared.md")
+    repo_root().join("claude/skills/research_codebase/SKILL.md")
 }
 
 fn claude_agents() -> PathBuf {
