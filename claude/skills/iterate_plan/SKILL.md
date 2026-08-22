@@ -302,43 +302,39 @@ conventions:
 
 **Prior context.** Only the request says whether this iteration wants the prior trail.
 Skip `prior-art` and `thoughts-lookup` when the user asks to work from the plan and the
-code alone — "ignore the old research", "fresh look". Silent request: read it.
+code alone — "ignore the old research", "fresh look". Silent request: read it. The error
+is asymmetric: an unwanted trail argues for the plan as written, which is the thing
+being iterated on; an excluded one costs a re-run.
 
-The error is asymmetric. An unwanted trail argues for the plan as written, which is the
-thing being iterated on; an excluded one costs a re-run.
-
-**Deciding what needs research.** Research only what the feedback actually opens
-up — a change that touches code you have not read needs an area; a wording or
-scope-note tweak needs none. Over-researching stalls a two-line edit behind four
-contexts; under-researching produces a phase grounded in what you assumed the code
-does, and the plan reads perfectly right up until someone tries to execute it.
+**Deciding what needs research.** Research only what the feedback opens up — a change
+touching code you have not read needs an area; a wording tweak needs none.
+Over-researching stalls a two-line edit behind four contexts; under-researching
+produces a phase grounded in what you assumed, and the plan reads perfectly right up
+until someone executes it.
 
 **Naming an area's directories.** "The CLI" is `src/`; "the daemon" is `hld/`. The
-reject rule catches a missing path, not a plausible wrong one. Hand a cartographer
-the wrong directory and you get a confident, well-cited map of the wrong code — and
-you will edit the plan to match it.
+reject rule catches a missing path, not a plausible wrong one — a cartographer handed
+the wrong directory returns a confident map of the wrong code, and you will edit the
+plan to match it.
 
-**Pushing back.** A change request can be wrong for the plan: vague, technically
-infeasible, or in conflict with a phase already there. Question it before
-`confirm-approach`, not after, and ask for the specific thing you need rather than
-guessing at intent. Feedback edited in faithfully but understood loosely produces a
-phase nobody can execute, and it now carries the authority of being written down.
+**Pushing back.** A change request can be wrong for the plan: vague, infeasible, or in
+conflict with a phase already there. Question it before `confirm-approach`, and ask for
+the specific thing you need rather than guessing at intent. Feedback edited in
+faithfully but understood loosely produces a phase nobody can execute, now carrying the
+authority of being written down.
 
 **Delegating a rewrite.** A substantial rewrite of one or more phases goes to the
-`draughtsman` with the current plan, the requested change, and the research;
-surgical edits stay yours. Delegating a two-line edit costs a context and loses the
-surrounding structure you had in view; keeping a whole-phase rewrite yourself
-produces a phase that reads like a patch of the old one rather than a coherent
-replacement.
+`draughtsman`; surgical edits stay yours. Delegating a two-line edit costs a context
+and loses the structure you had in view; keeping a whole-phase rewrite produces a phase
+that reads like a patch of the old one rather than a replacement.
 
 **When adjudication earns its context.** Adjudicate whenever the iteration added or
-reordered a phase, changed the approach, or rewrote success criteria — those are
-exactly the edits that introduce phantom paths and criteria nobody can run. Skip it
-for wording and scope-note tweaks. The cost of skipping it wrongly is a plan that
-looks executable and is not; the cost of running it wrongly is one context spent
-confirming a typo fix.
+reordered a phase, changed the approach, or rewrote success criteria — the edits that
+introduce phantom paths and criteria nobody can run. Skip it for wording tweaks.
+Skipping wrongly costs a plan that looks executable and is not; running wrongly costs
+one context confirming a typo fix.
 
-**Re-entering the loop.** Further feedback on this plan re-enters at `read-plan`
-against the plan as it now stands — not at `edit-plan` against the copy in your
-context, which is one iteration stale. A brand-new request is a new invocation.
-Editing from the stale copy is how a second round silently reverts the first.
+**Re-entering the loop.** Further feedback re-enters at `read-plan` against the plan as
+it now stands, not at `edit-plan` against the copy in your context, which is one
+iteration stale. A brand-new request is a new invocation. Editing from the stale copy
+is how a second round silently reverts the first.

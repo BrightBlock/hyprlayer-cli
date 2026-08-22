@@ -125,17 +125,14 @@ orchestration:
       run: emit "✅ Already verified for this config (cached <human-readable-ago>)"
       ends-run: true
       because: >
-        The terminal step on the cached path, and the only one that runs there:
-        `check-backend`, `report` and `cache-write` each carry the negation of
-        this same probe. That repetition is the early exit. The block has no
-        early-exit vocabulary and `ends-run: true` is a note to the reader
-        rather than a barrier — a step whose `requires` are already satisfied
-        schedules in the same wave as this one, so without the negated guard the
-        1–15s probe the cache exists to avoid would run beside the cached
-        answer, and `cache-write` would then re-touch the sentinel it had just
-        read, making the cache immortal. If the probe cannot resolve `$TMP` or
-        `$HASH` the guard reads false and the full procedure runs, which is the
-        safe direction to fail in.
+        The terminal step on the cached path. `check-backend`, `report` and
+        `cache-write` each carry the negation of this probe, and that repetition
+        IS the early exit — the block has no early-exit vocabulary, and a step
+        whose `requires` are satisfied schedules in this same wave. Without the
+        negation the 1–15s probe the cache exists to avoid would run beside the
+        cached answer, and `cache-write` would re-touch the sentinel it just
+        read, making the cache immortal. An unresolvable `$TMP`/`$HASH` reads
+        false and runs the full procedure — the safe direction.
 
     - id: check-backend
       requires: [cache-check, resolve-backend]
@@ -173,17 +170,15 @@ orchestration:
       produces: [consolidated-report, failures]
       format: conventions.report-format
       because: >
-        `requires` names `cache-check` and `resolve-backend` and not only
-        `check-backend`, because a skipped step satisfies whatever required it:
-        naming just the guarded procedure step would be the same as naming
-        nothing, and this aggregation would schedule in wave 1 — before the
-        config is parsed, before there is a backend to head the block with, and
-        before any procedure has emitted a line to fold. Each procedure emits
-        its own per-step ✅/⏭/❌ lines; this folds them into one block headed by
-        the backend and repo, ending in a single Status line. `failures` is
-        counted here and nowhere else — every ❌ line, plus every ⏭ the
-        procedure did not explicitly mark optional or N/A — which is what
-        `cache-write` reads. Do not re-run a write check that failed: report it.
+        `requires` names `cache-check` and `resolve-backend`, not just the
+        guarded `check-backend`: a skipped step satisfies its dependents, so
+        naming only that would schedule this in wave 1 — before the config is
+        parsed or any procedure has emitted a line to fold. Each procedure emits
+        its own ✅/⏭/❌ lines; this folds them into one block headed by backend
+        and repo, ending in a single Status line. `failures` is counted here and
+        nowhere else — every ❌, plus every ⏭ not explicitly marked optional or
+        N/A — and that is what `cache-write` reads. Do not re-run a failed write
+        check: report it.
 
     - id: cache-write
       requires: [cache-check, report]

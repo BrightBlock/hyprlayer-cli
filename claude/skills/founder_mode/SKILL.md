@@ -113,19 +113,15 @@ orchestration:
       produces: branch-name
       reject: not exists(default-branch) or matches(default-branch, "^origin/")
       because: >
-        The prose this replaces said `git checkout main`. Resolve the default
-        branch instead of assuming its name — this repository's is `master` —
-        because branching an experiment off a stale or nonexistent `main` fails
-        late and quietly, at the point where the PR shows a diff nobody wrote.
-        Strip the remote prefix: bare `git symbolic-ref --short
-        refs/remotes/origin/HEAD` prints `origin/master`, and `git checkout
-        origin/master` detaches HEAD instead of checking out a branch, so the
-        next `git checkout -b` cuts the ticket branch from a detached HEAD and
-        nothing here complains. `origin/HEAD` is also unset in `--single-branch`
-        and most CI clones, where that command exits non-zero and prints
-        nothing; the fallback is `git remote show origin | sed -n 's/.*HEAD
-        branch: //p'`, and the reject rule is what stops an empty or still
-        remote-prefixed value from reaching `git checkout` at all.
+        Resolve the default branch, never assume `main` — branching off a stale
+        or nonexistent one fails late, at the point where the PR shows a diff
+        nobody wrote. Strip the remote prefix: `git symbolic-ref --short
+        refs/remotes/origin/HEAD` prints `origin/master`, and checking that out
+        detaches HEAD, so the next `git checkout -b` cuts the branch from a
+        detached HEAD silently. `origin/HEAD` is unset in `--single-branch` and
+        most CI clones; fall back to
+        `git remote show origin | sed -n 's/.*HEAD branch: //p'`. The reject
+        rule stops an empty or still-prefixed value reaching `git checkout`.
 
     - id: cherry-pick
       requires: [base-branch]

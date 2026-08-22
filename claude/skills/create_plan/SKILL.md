@@ -404,60 +404,43 @@ conventions:
 
 **Prior context.** Only the request says whether this plan wants the prior trail. Skip
 `context-history`, `deeper-history` and `thoughts-lookup` when the user asks to plan
-from the code alone — "fresh start", "ignore the old plan", "without the prior
-research". Silent request: read it. Reach for `thoughts-lookup` on top of the archivist
-when the plan turns on one prior decision you can name.
+from the code alone — "fresh start", "ignore the old plan". Silent request: read it.
+Reach for `thoughts-lookup` when the plan turns on one prior decision you can name.
+The error is asymmetric: an unwanted trail anchors the plan to a superseded decision,
+an excluded one costs a re-run.
 
-The error is asymmetric. An unwanted trail anchors the plan to a decision that was
-already superseded; an excluded one costs a re-run.
+**Decomposing the task.** Break the task into the areas it touches, looking past the
+literal ticket to the patterns behind it. Your area list bounds what the research can
+find: miss a dimension and you get a thorough, well-cited plan for the wrong change.
 
-**Decomposing the task.** Break the task into the areas of the codebase it
-touches, looking past the literal ticket to the patterns and connections behind
-it. Your area list bounds what the research can find, and the plan can only be as
-correct as the research under it: miss a dimension and you get a thorough,
-well-cited plan for the wrong change.
+**Naming an area's directories.** "The CLI" is `src/`; "the daemon" is `hld/`. Name the
+module, never the concept. The reject rule catches a missing path, not a plausible
+wrong one — a cartographer handed the wrong directory returns a confident map of the
+wrong code, which is harder to catch than an empty one.
 
-**Naming an area's directories.** "The CLI" is `src/`; "the daemon" is `hld/`.
-Name the module or crate, never the concept. The reject rule catches a missing
-path, not a plausible wrong one — hand a cartographer the wrong directory and you
-get a confident map of the wrong code, which is harder to catch than an empty one.
+**Scope is what the code says.** Cross-reference every ticket requirement against the
+tree and treat the difference as the finding. A ticket says what someone wanted; the
+code says what is there. A plan sized to the ticket runs out of phases halfway through.
 
-**Scope is what the code says.** Cross-reference every ticket requirement against
-the actual tree, and treat the difference as the finding. A ticket describes what
-someone wanted; the code describes what is there. Where they disagree, the tree
-decides the scope, and a plan sized to the ticket instead of the tree is the plan
-that runs out of phases halfway through implementation.
+**Which questions are actually for the human.** Ask only what code investigation cannot settle:
+business logic, design preference, priorities between tradeoffs. A question the tree
+already answers costs a round trip and buries the one or two that really needed them.
 
-**Which questions are actually for the human.** Ask only what code investigation
-genuinely cannot settle: business logic, design preference, priorities between
-tradeoffs. Everything else you look up. A question the tree already answers costs
-the user a round trip and tells them the research was shallow — and buries the one
-or two questions that really did need them.
+**A correction is a claim, not a fact.** Spawn research against the files the user
+named and verify it. Users are usually right and sometimes remembering an older version
+of the code. An unverified correction propagates into the phases, where it is expensive.
 
-**A correction is a claim, not a fact.** When the user corrects a misunderstanding,
-do not just adopt it: spawn research against the files and directories they named
-and verify it yourself. Users are usually right and sometimes remembering an older
-version of the code. An unverified correction propagates straight into the phases,
-where it is expensive; a verified one costs one extra round of agents.
+**Phasing granularity.** Each phase independently testable and landable in one sitting,
+ordered so nothing depends on a later one. Too coarse and it cannot be verified until
+the end; too fine and nobody follows it. Say what the plan is NOT doing — the unwritten
+exclusion is what gets argued about later.
 
-**Phasing granularity.** Each phase should be independently testable and land in
-one sitting, ordered so nothing depends on a later phase. Too coarse and the plan
-cannot be verified until the end; too fine and it becomes a checklist nobody
-follows. Consider migration and rollback at the boundaries, and say explicitly
-what the plan is NOT doing — the unwritten exclusion is what gets argued about
-later.
-
-**Drafting it yourself.** Delegate to the `draughtsman` by default: it is the
-step that turns findings into phases, and it does it with a fresh context. Draft
-inline only when the plan is genuinely small — a single phase, a handful of files
-— where handing over the full research costs more than writing the body. Getting
-this wrong in the cheap direction wastes a spawn; getting it wrong in the
-expensive direction means summarizing your research into a prompt and losing the
-detail that made it worth gathering.
+**Drafting it yourself.** Delegate to the `draughtsman` by default; draft inline only
+for a genuinely small plan, where handing over the research costs more than writing the
+body. Wrong in the cheap direction wastes a spawn; wrong in the expensive direction
+means compressing your research into a prompt and losing the detail worth gathering.
 
 **The arbiter, not a relay.** The adjudicator's report is input, not a verdict you
-execute. Fix what it got right, and where a finding is wrong say why and move on.
-Churning the plan to satisfy a bad call degrades it while looking like diligence,
-and three rounds of that produce a plan nobody can follow. `verdict: reject` is
-different: that is the approach being wrong, and it goes back to the user rather
-than into another revision.
+execute. Fix what it got right; where a finding is wrong, say why and move on. Churning
+to satisfy a bad call degrades the plan while looking like diligence. `verdict: reject`
+is different — the approach is wrong, and that goes back to the user.

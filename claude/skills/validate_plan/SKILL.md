@@ -192,21 +192,15 @@ orchestration:
         Leave `status` exactly as it is and change nothing else — no
         `last_updated` bump, no sync — then name what is blocking.
       because: >
-        This is the promotion, and this skill owns it outright: `implement_plan`
-        runs first, ticks the plan's checkboxes, and stops at `hand-off-status`
-        with `status` still `active`. Nothing else writes it, so the audit is
-        what the word `implemented` rests on. The bar in `gate:` is the whole of
-        the decision — three counts, all zero, no taste in it — but it is skill
-        data rather than a `when:`, deliberately: all three are counted from the
-        report *this run* produces, so nothing binds them at compile time. As a
-        guard the expression evaluated `unknown`, and `unknown` skips, so the one
-        step this skill exists to reach never ran in any run. As a `judgment:` the
-        step always schedules and the question lands in `unresolved[]`, to be
-        answered against the report. Fail closed by hand: a count you could not
-        resolve is a bar you did not evaluate, so it is not zero. The bump and the
-        sync stay inside this step rather than behind it, so that a run that does
-        not promote cannot stamp `last_updated` or sync a plan whose status never
-        moved.
+        This skill owns the promotion outright — `implement_plan` ticks the
+        checkboxes and leaves `status` `active` — so the audit is what the word
+        `implemented` rests on. `gate:` is the whole decision and has no taste in
+        it, but it is skill data rather than a `when:` because all three counts
+        come from the report *this run* produces: as a guard it evaluated
+        `unknown`, and `unknown` skips, so the one step this skill exists to
+        reach never ran. Fail closed by hand — a count you could not resolve is
+        not zero. The bump and the sync stay inside this step so a run that does
+        not promote cannot stamp `last_updated` or sync an unmoved plan.
 
     - id: summary
       requires: [report, promote]
@@ -259,51 +253,34 @@ conventions:
 
 ## Judgment
 
-**Delegating the audit.** Delegate by default. There is exactly one exception and
-it takes both halves: you implemented this work yourself, in this same session,
-*and* the diff is small enough to re-read in full — roughly one phase, under ~100
-changed lines. "The diff looks small" on its own is not a reason to skip the fresh
-context; a small diff is cheap for the inspector too. Audit inline and you are
-asking the context that produced the code to find what it missed, which is the one
-thing that context is worst at. If you do audit inline, hold yourself to the
-inspector's bar: run every command, cite every claim with `file:line`. The other
-half of the call is how many. On a large plan, one inspector per phase group and
-you reconcile; split too fine and no inspector sees a regression that crosses
-phases, hand one inspector everything and you get a shallow pass over a plan too
-big to hold.
+**Delegating the audit.** Delegate by default. The one exception takes both halves:
+you implemented this work yourself, in this session, *and* the diff is small enough to
+re-read in full (~one phase, under 100 lines). "It looks small" alone is not a reason —
+a small diff is cheap for the inspector too. Audit inline and you are asking the context
+that produced the code to find what it missed, which is what that context is worst at.
+On a large plan, one inspector per phase group: split too fine and none of them sees a
+regression crossing phases; hand one everything and you get a shallow pass.
 
-**Verifying the audit, not repeating it.** `verify-report` verifies the inspector's
-report; it does not re-run it. Re-run everything and you spent the fresh context
-for nothing. Re-run nothing and the `verdict:` has quietly become the decision,
-which this skill says it is not. Spot-check the phases marked complete, and re-run
-the specific command whose reported result you have a reason to doubt — a
-suspiciously fast pass, a check whose output was summarized instead of pasted, a
-phase whose evidence cites a file the diff never touched. `retry: {step: audit,
-max: 1}` is there for the case where the answer is "this report is wrong": spawn a
-fresh inspector rather than averaging two reports into one you trust less than
-either.
+**Verifying the audit, not repeating it.** Re-run everything and the fresh context was
+wasted. Re-run nothing and the `verdict:` has quietly become the decision. Spot-check
+the phases marked complete, and re-run the specific command you have reason to doubt — a
+suspiciously fast pass, output summarized instead of pasted, evidence citing a file the
+diff never touched. `retry: {step: audit, max: 1}` is for when the report is simply
+wrong: spawn a fresh inspector rather than averaging two you trust less than either.
 
-**Looking past the checklist.** The plan's criteria are a floor, not a ceiling.
-Were error conditions handled or only the happy path? Are there validations the
-plan never thought to ask for? Did the diff break something it touched
-incidentally? Will this be maintainable? An implementation can satisfy every
-criterion in letter and still leave the feature broken — a test added that never
-runs, a flag wired but never read — and none of that ever shows up as a red check.
+**Looking past the checklist.** The plan's criteria are a floor. Were error conditions
+handled or only the happy path? Validations the plan never thought to ask for? Did the
+diff break something it touched incidentally? An implementation can satisfy every
+criterion and still leave the feature broken — a test added that never runs, a flag
+wired but never read — and none of that shows up as a red check.
 
-**Resolving the promotion gate.** The gate is three counts and no taste; getting
-the counts right is where the taste is, and so is admitting when you could not get
-one. It is a `judgment:` rather than a `when:` for a mechanical reason: all three
-counts come out of the report this run just produced, so nothing can bind them at
-compile time, and a guard that evaluates `unknown` skips its step — the promotion
-would never happen at all. Fail closed by hand instead: a count you could not
-resolve is not zero. `manual-outstanding` is the sharp edge: a `- [x]` beside a
-manual item means a human said they ran it, and nothing else does. The inspector
-may never check one off, and neither may you. If nobody in this conversation
-confirmed it, count it outstanding. Promote on a manual item nobody performed and
-the plan carries `implemented` while its user-facing half has never been tried —
-and the next run trusts that status instead of re-checking it. Blocking has a cost
-worth naming: this is the only skill that writes `active -> implemented`, so a plan
-you block stays `active` until someone re-runs this skill. That is the intended
-shape — `implemented` is meant to mean audited, not merely finished — and it is why
-`implement_plan` stops short of promoting rather than promoting first and leaving
-this gate with nothing to decide.
+**Resolving the promotion gate.** Three counts, no taste; the taste is in getting them
+right and in admitting when you could not. Fail closed: a count you could not resolve is
+not zero. `manual-outstanding` is the sharp edge — a `- [x]` beside a manual item means
+a human said they ran it, and nothing else does. Neither the inspector nor you may check
+one off; if nobody in this conversation confirmed it, it is outstanding. Promote on an
+unperformed manual item and the plan reads `implemented` while its user-facing half has
+never been tried, and the next run trusts that status instead of re-checking. Blocking
+costs something real: this is the only skill that writes `active -> implemented`, so a
+blocked plan stays `active` until someone re-runs this skill. That is intended —
+`implemented` means audited, not merely finished.

@@ -210,17 +210,14 @@ orchestration:
         claude/skills:  warn-rabbit-hole
         claude/agents:  warn-rabbit-hole
       because: >
-        The guard is HAS_CODEX: when it is false tier 1 is impossible on every row
-        of the table, so skipping is always right. When it is true tier 1 is only
-        the default row — `--claude` still forces tier 2, and that half lives in
-        `pick-tier`'s judgment rather than in this guard, because `flag(--claude)`
-        evaluates unknown and would skip tier 1 even on the row it owns. Both script
-        variants pipe codex's `--json` output through `hyprlayer codex stream`, which
-        prints `[codex thinking]`, `[codex ran]`, agent messages and token totals;
-        both capture stderr and print a one-line auth hint when it looks like an auth
-        or login error. The boundary prefix is not decoration — without it codex
-        burns tool calls reading skill definitions, and `on:` is the after-the-fact
-        check that it did not.
+        The guard is HAS_CODEX alone: false makes tier 1 impossible on every
+        row, so skipping is always right. True makes it only the default row —
+        `--claude` still forces tier 2, and that half lives in `pick-tier`'s
+        judgment because `flag(--claude)` evaluates unknown and would skip
+        tier 1 even on the row it owns. Both script variants pipe codex's
+        `--json` through `hyprlayer codex stream` and print a one-line hint on
+        an auth error. The boundary prefix is not decoration — without it codex
+        burns tool calls reading skill definitions, and `on:` checks it did not.
 
     - id: subagent-review
       requires: [pick-tier, abort-missing-codex]
@@ -236,22 +233,16 @@ orchestration:
         - { value: focus,      src: "the invocation argument with flags stripped" }
       ask: [findings-ordered-by-severity, one-line-when-nothing-significant]
       because: >
-        This step carries no `when:` on purpose. The two rows it owns are "HAS_CODEX
-        is false" and "`--claude` was passed", and the second cannot be written as a
-        guard: `flag(--claude)` never resolves, so a guard covering only the first
-        would skip tier 2 in exactly the case the user asked for it by name and the
-        run would produce no review at all. So it schedules unconditionally and the
-        judgment decides — including deciding not to run it when tier 1 ran. It
-        carries no `reject:` for the same reason: the original's table has no row
-        making `--codex --claude` an error, and rejecting on `flag(--codex)` would
-        block the row `--claude` selects, so that invocation would have tier 1
-        declined by the judgment and tier 2 refused by the block — no review at
-        all, which is the failure this step exists to prevent. Same model family as the caller,
-        but a fresh context window plus a canonical adversarial persona produce
-        findings the main thread misses. The prompt must be self-contained: the agent
-        runs `git diff origin/<base>...HEAD` itself and reads the surrounding context
-        of any changed file before flagging an issue. Its output is the body of the
-        review, presented verbatim.
+        No `when:` and no `reject:`, both for one reason: `flag(--claude)` never
+        resolves, so a guard here would skip tier 2 in exactly the case the user
+        named it, and rejecting on `flag(--codex)` would block the row
+        `--claude` selects. Either way the run produces no review at all. It
+        schedules unconditionally and the judgment decides, including deciding
+        not to run when tier 1 did. Same model family as the caller, but a fresh
+        context and an adversarial persona surface what the main thread missed.
+        The prompt is self-contained: the agent runs
+        `git diff origin/<base>...HEAD` itself and reads around each change
+        before flagging it. Its output is the review body, verbatim.
 
     - id: triage
       requires: [pick-tier, abort-missing-codex, codex-review, subagent-review]
@@ -347,54 +338,42 @@ conventions:
 
 ## Judgment
 
-**Which tier runs.** HAS_CODEX is mechanical and the guards carry it; the flags are
-not, because no fact source binds `flag(...)` and a guard reading one evaluates
-unknown, which skips the step. So the table in `pick-tier` is yours to apply: no
-flags means tier 1 when HAS_CODEX=yes and tier 2 otherwise, `--codex` means tier 1 or
-the abort, `--claude` means tier 2 on either row. When codex is present and
-authenticated both tier steps schedule in the same wave — that is the compiler saying
-it cannot see your flags, not an instruction to run two reviews. Run exactly one, name
-it in the first response line, and say which one you skipped. The original prose has
-no row for `--codex --claude` together; `--claude`'s row is unconditional tier 2, so
-take tier 2 and say which flag you honoured rather than stopping to ask. Run both and
-you bill the user twice for the same diff and hand them two bodies under one tier
-header; run neither and the whole invocation produces a header with nothing under it.
+**Which tier runs.** HAS_CODEX is mechanical and the guards carry it; the flags are not,
+because nothing binds `flag(...)` and a guard reading one evaluates unknown, which
+skips. So `pick-tier`'s table is yours to apply: no flags means tier 1 when
+HAS_CODEX=yes and tier 2 otherwise, `--codex` means tier 1 or the abort, `--claude`
+means tier 2 on either row. With codex present both tier steps land in the same wave —
+that is the compiler saying it cannot see your flags, not an instruction to run two.
+Run exactly one, name it in the first response line, and say which you skipped. There
+is no row for `--codex --claude`; `--claude` is unconditional tier 2, so take it and
+say which flag you honoured. Run both and you bill twice for one diff; run neither and
+the invocation produces a header with nothing under it.
 
-**Aborting instead of falling through.** The guard on `abort-missing-codex` only
-establishes that codex is missing or unauthenticated — the common case, where tier 2
-is the right answer and this step emits nothing. It becomes an abort only when
-`--codex` was passed, which lives in the invocation text and nowhere a `--fact`
-reaches. Emit the install and auth text and end the run there: nothing downstream
-executes, which is why every later step names this one in its `requires:`. Fall
+**Aborting instead of falling through.** The guard only establishes codex is missing or
+unauthenticated — the common case, where tier 2 is right and this step emits nothing.
+It becomes an abort only when `--codex` was passed, which lives in the invocation text
+and nowhere a `--fact` reaches. Emit the install and auth text and end the run. Fall
 through instead and you hand the user a single-model review under the one name they
-explicitly refused, and they have no way to tell from the output that it happened.
+explicitly refused, with no way to tell from the output.
 
-**Whether to triage.** Three findings do not need a coordinator; a long review does.
-Run the marshal when the review came back long — roughly six findings or more — when
-a previous invocation in this conversation already ran the other tier and you now
-have two reviews to reconcile, or when the user asks what to actually fix rather than
-what is wrong. This is not a `when:` because nothing binds the count: the number of
-findings exists only after the tier returns, and `count(findings) >= 6` would
-evaluate unknown and skip the step in every run, including the long reviews it was
-written to catch. Get it wrong in the cheap direction and you spend a whole agent
-context ranking three findings. Get it wrong in the expensive direction and you hand
-the user fifteen unverified findings with no ordering, so they fix the three cheapest
-and miss the one that was going to page them.
+**Whether to triage.** Three findings need no coordinator; a long review does. Run the
+marshal at roughly six or more, when a previous invocation ran the other tier and you
+have two reviews to reconcile, or when the user asks what to fix rather than what is
+wrong. Not a `when:` because the count exists only after the tier returns, so
+`count(findings) >= 6` evaluates unknown and skips exactly the long reviews it targets.
+Cheap direction: an agent ranks three findings. Expensive direction: fifteen unverified
+findings with no ordering, so they fix the three cheapest and miss the one that pages
+them.
 
-**Disagreeing on the record.** At most one `note:` line, and only when you disagree
-with a *named* finding for a *stated* reason. Genuine disagreement is not something a
-guard can test — it is your read of the code against the reviewer's, which is exactly
-the taste the second opinion was bought for. Fabricate one to look engaged and you
-teach the user to discount the whole review, including the finding that was right.
-Suppress a real one to stay out of the way and you have passed along a finding you
-already know is wrong, under a header that says an adversarial reviewer stands behind
-it.
+**Disagreeing on the record.** At most one `note:` line, and only against a *named*
+finding for a *stated* reason. Fabricate one to look engaged and you teach the user to
+discount the whole review, including the finding that was right. Suppress a real one
+and you have passed along a finding you know is wrong, under a header saying an
+adversarial reviewer stands behind it.
 
-**Claiming a cross-model comparison.** The guard establishes that codex was available,
-not that it ran: with `--claude` you took tier 2 on a machine where codex is present,
-and there is no codex output to diff. Only you can establish that tier 1 ran, and only
-you can establish that Claude's own `/review` ran earlier in this conversation,
-because that fact lives in the transcript and no `--fact` reaches it. If either did
-not happen, emit nothing — there is no second set of findings to diff against. A
-cross-model block assembled from a half-remembered review is a fabricated comparison,
-and it is the one part of this output the user has no way to check.
+**Claiming a cross-model comparison.** The guard establishes codex was available, not
+that it ran — with `--claude` there is no codex output to diff. Only you can establish
+that tier 1 ran, and that Claude's own `/review` ran earlier, because that lives in the
+transcript. If either did not happen, emit nothing. A block assembled from a
+half-remembered review is a fabricated comparison, and it is the one part of this
+output the user cannot check.

@@ -254,27 +254,16 @@ orchestration:
       updates: [status]
       deletes: [scratch-path]
       because: >
-        With no thoughts backend, `persist` wrote only the scratch file and
-        there is no record to promote — the guard resolves unknown and the
-        step skips, which is the whole of a no-thoughts run here.
-        Runs only after `persist` wrote the record and `edit-pr` succeeded, or
-        was skipped because the PR had already resolved. Both edges are named
-        here because a skipped step satisfies whatever required it: with
-        `requires: [edit-pr]` alone, an `edit-pr` that skips leaves this step
-        unconstrained and it runs in wave 1 — promoting a record that does not
-        exist yet and deleting a scratch file nothing has written. Promoting
-        without a successful edit leaves a
-        `status: active` record advertising a synced PR whose body is still the
-        placeholder. Reconcile `status` to the live PR `state` on **every**
-        backend, not just `notion`/`anytype`: `draft` → `active` on a
-        successful edit of an open PR, `merged`/`closed` when it has already
-        resolved. This lookup happens every time this skill runs, not just the
-        first time; it is what keeps records from sticking on `draft`. Delete
-        the transient scratch file under `${TMPDIR:-${TEMP:-/tmp}}` on every
-        backend — it was only ever the input to `gh pr edit`, so nothing of
-        value is lost. On `notion`/`anytype`, set `merged`/`closed` only if
-        that value is present in `schema.options`; otherwise leave `active` and
-        add a one-line body note rather than inventing an unsupported option.
+        No backend means `persist` wrote only the scratch file and there is
+        nothing to promote. Both `requires:` edges are named because a skipped
+        step satisfies its dependents: on `[edit-pr]` alone a skipped `edit-pr`
+        leaves this unconstrained and it runs in wave 1, promoting a record
+        that does not exist yet. Reconcile `status` to the live PR `state` on
+        every backend and every run, not just the first — that is what stops
+        records sticking on `draft` — then delete the scratch file. On
+        `notion`/`anytype` set `merged`/`closed` only if `schema.options` has
+        it; otherwise leave `active` and note it in the body rather than
+        inventing an option.
 
     - id: sync-promoted
       requires: [promote]

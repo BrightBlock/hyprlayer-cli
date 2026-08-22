@@ -247,21 +247,16 @@ orchestration:
       leaves: { status: active }
       defers: { status-promotion: validate_plan }
       because: >
-        This skill does not promote `status`. It leaves the plan `active` and says
-        so when it signs off, naming `validate_plan` as the skill that writes
-        `active → implemented` — see `conventions.status-ownership` below. Every
-        checkbox in the file is this skill's; the `status` line is not. Promoting
-        here would be self-certification, because the only evidence available to
-        the gate is the marks this skill just wrote in `check-off` and
-        `check-off-manual`. It would also make `validate_plan`'s three-part gate
-        unreachable: that skill runs after this one, so it would find `status`
-        already `implemented`, its `from: active` precondition false, and its
-        promotion a no-op edit that still stamps `last_updated` and still runs
-        `hyprlayer thoughts sync`. The step carries no guard because it always
-        runs — a plan finished here is always a plan left for validation — and
-        because the guard it used to carry could not resolve anyway: nothing binds
-        `count(unchecked-items)` at compile time, so it evaluated `unknown`, and
-        `unknown` skips.
+        This skill does not promote `status`. Every checkbox in the file is
+        this skill's; the `status` line is `validate_plan`'s — see
+        `conventions.status-ownership`. Promoting here would be
+        self-certification, since the only evidence is the marks this skill just
+        wrote, and it would make `validate_plan`'s three-part gate unreachable:
+        running second, it would find `status` already `implemented` and its
+        promotion a no-op that still stamps `last_updated` and syncs. No guard,
+        because it always runs — and because the guard it used to carry could
+        not resolve anyway: nothing binds `count(unchecked-items)`, so it
+        evaluated `unknown`, and `unknown` skips.
 
 conventions:
 
@@ -312,51 +307,41 @@ conventions:
 ## Judgment
 
 **Delegating a phase, or doing it yourself.** Delegate when the phase touches several
-files, spans a subsystem you would otherwise have to load into this context, or is one
-of many phases you are working through in sequence. Implement inline when the phase is
-a handful of lines, when you already hold all the context it needs, or when the user is
-iterating with you interactively on that specific code. Neither test is checkable from
-the plan: "substantial" is a statement about how much context the phase would cost
-*you*, and only you can see how full this one already is. Delegate a five-line phase and
-you pay a whole agent to re-read the plan; hold a subsystem-wide phase inline and you
-crowd out the context the phases after it need.
+files, spans a subsystem you would otherwise load into this context, or is one of many
+you are working through in sequence. Do it inline when it is a handful of lines, when
+you already hold the context, or when the user is iterating with you on that code.
+Neither test is checkable from the plan: "substantial" is about how much context the
+phase costs *you*, and only you can see how full this one is. Delegate a five-line
+phase and you pay an agent to re-read the plan; hold a subsystem-wide phase inline and
+you crowd out the phases after it.
 
-**Whether phases are genuinely independent.** `delegate-phase` is a `fanout: foreman`
-over `phase-batch`, so the size of that batch *is* the parallelism decision — and
-nothing mechanical can make it. A plan's phases do not declare the files they touch,
-and the ordering dependency between them is usually implicit in the design rather than
-written down; there is no command that returns "these two phases do not collide". So it
-is a `judgment:` and not a `when:`. Default the batch to one. Two foremen in one file
-means last write wins, and the plan will say both phases are done.
+**Whether phases are genuinely independent.** The size of `phase-batch` *is* the
+parallelism decision, and nothing mechanical can make it: phases do not declare the
+files they touch, and their ordering is usually implicit in the design. No command
+returns "these two do not collide", which is why this is a `judgment:` and not a
+`when:`. Default the batch to one. Two foremen in one file means last write wins, and
+the plan will say both phases are done.
 
-**Resuming a partly-implemented plan.** `resume-point` carries no guard, because there
-is nothing to guard it with: the plan arrives as an invocation argument, so no probe
-can grep it before you have read it, and whether the `- [x]` marks are *true* was never
-mechanical anyway. Trust completed work and pick
-up from the first unchecked item, verifying earlier work only if something seems off.
-Re-verifying everything burns the run for nothing; trusting a checkmark left by a
-session that was interrupted mid-phase builds every later phase on half a phase.
+**Resuming a partly-implemented plan.** Trust completed work, pick up from the first
+unchecked item, and verify earlier work only if something seems off. Re-verifying
+everything burns the run; trusting a checkmark left by a session interrupted mid-phase
+builds every later phase on half a phase.
 
-**Reading a foreman's report.** The report is input, not truth — read it against the
-plan rather than accepting its summary. The `reject` rule catches a report with no
-verification output at all, not a report whose verification output does not support
-what it claims. Check off items on a phase that never actually ran green and the
-failure surfaces several phases later, inside code you did not write.
+**Reading a foreman's report.** Input, not truth — read it against the plan rather than
+accepting its summary. The `reject` rule catches a report with no verification output,
+not one whose output fails to support what it claims. Check off a phase that never ran
+green and the failure surfaces later, inside code you did not write.
 
-**When the plan and the code disagree.** Small, obvious divergences you adapt to — the
-plan says `foo.rs:42` and the function moved to `foo.rs:58` — noting them as you go.
-Anything that changes behavior, contract, or scope you stop for: think about *why* the
-plan cannot be followed, then present it and ask. You are implementing a solution, not
-checking boxes, so keep the end goal in mind and keep momentum where the divergence is
-cosmetic. Improvise a redesign instead and you have shipped an unreviewed plan — the
-plan was reviewed, your workaround was not.
+**When the plan and the code disagree.** Adapt to small divergences — the plan says
+`foo.rs:42` and the function moved to `:58` — noting them as you go. Stop for anything
+that changes behavior, contract, or scope: work out *why* the plan cannot be followed,
+then present it and ask. Improvise a redesign instead and you have shipped an
+unreviewed plan; the plan was reviewed, your workaround was not.
 
-**Reaching for a sub-agent when stuck.** A `cartographer` when the territory is
-genuinely unfamiliar; a narrow `codebase-*` agent for a single targeted question. Before
-either, make sure you have actually read the relevant code, and consider whether the
-codebase has evolved since the plan was written — a stale plan looks exactly like a
-broken implementation. Never re-spawn a foreman on a phase that failed the same way,
-which is why the block carries no `retry:` back to `delegate-phase`: a bounded
-re-spawn is a permission to do the thing the rule forbids, and the block wins over the
-prose. A second identical spawn burns a whole context to reproduce a failure you
-already have in hand.
+**Reaching for a sub-agent when stuck.** A `cartographer` for genuinely unfamiliar
+territory, a narrow `codebase-*` agent for one targeted question. First make sure you
+have read the relevant code, and consider whether the codebase moved since the plan was
+written — a stale plan looks exactly like a broken implementation. Never re-spawn a
+foreman on a phase that failed the same way; that is why there is no `retry:` back to
+`delegate-phase`. A second identical spawn burns a context to reproduce a failure you
+already have.
