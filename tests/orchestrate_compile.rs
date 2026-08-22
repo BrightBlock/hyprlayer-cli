@@ -331,6 +331,11 @@ fn every_judgment_step_is_recorded_as_an_unresolved_decision() {
         judgments,
         vec![
             "decompose",
+            // `history` is the consolidation of the old no-thoughts variant.
+            // Its `when:` only proves a paper trail EXISTS; whether this
+            // research wants one is the user's intent, which no probe can
+            // read — so the decision is a judgment and lands here.
+            "history",
             "targeted",
             "verify-results",
             "write",

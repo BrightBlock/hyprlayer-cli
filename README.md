@@ -109,7 +109,10 @@ Run `hyprlayer storage info --json` from inside a project to see the resolved ba
 | [`/founder_mode`](https://brightblock.ai/hyprlayer/commands/founder-mode/) | Retroactively create a JIRA ticket and PR |
 | [`/cost_estimate`](https://brightblock.ai/hyprlayer/commands/cost-estimate/) | Estimate development costs |
 
-Most commands have [`_nt` and `_generic` variants](https://brightblock.ai/hyprlayer/reference/variants/).
+The `_nt` and `_generic` command variants have been folded into their parents. A repo
+with no thoughts backend, or a request asking for the codebase on its own terms, now
+skips the steps that read or write prior context — see the `Prior context` judgment in
+`research_codebase`, `create_plan`, and `iterate_plan`.
 
 ## Orchestration
 

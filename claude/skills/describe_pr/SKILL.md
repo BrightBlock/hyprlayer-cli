@@ -45,8 +45,9 @@ orchestration:
         sections and its checklist are the whole contract for the body. On
         `notion`/`anytype` a template that cannot be located is a stop: tell
         the user to create a page or object named exactly
-        `PR Description Template`. Never fall back to a hardcoded template —
-        `describe_pr_nt` is the skill for that case.
+        `PR Description Template`. Never fall back to a hardcoded template:
+        a body written to the wrong contract is worse than a stop the user
+        can act on.
 
     - id: identify-pr
       inline: true
@@ -245,10 +246,17 @@ orchestration:
 
     - id: promote
       requires: [persist, edit-pr]
+      when: backend == git or backend == obsidian or backend == notion or backend == anytype
+      when-examples:
+        match:    ["backend == git", "backend == notion"]
+        no-match: ["no thoughts backend is configured for this repo"]
       inline: true
       updates: [status]
       deletes: [scratch-path]
       because: >
+        With no thoughts backend, `persist` wrote only the scratch file and
+        there is no record to promote — the guard resolves unknown and the
+        step skips, which is the whole of a no-thoughts run here.
         Runs only after `persist` wrote the record and `edit-pr` succeeded, or
         was skipped because the PR had already resolved. Both edges are named
         here because a skipped step satisfies whatever required it: with

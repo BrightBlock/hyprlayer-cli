@@ -81,9 +81,13 @@ orchestration:
       agent: archivist
       given: [{ value: topic, src: "the task statement, verbatim" }]
       ask: [prior-plans, prior-research, prior-handoffs, what-superseded-what]
+      judgment: >
+        Does this plan want the prior trail? See "Prior context" below.
       because: >
         A plan that re-decides something already decided is worse than no
         plan. The archivist covers every backend and returns one briefing.
+        This and `deeper-history` are the only steps reading prior context,
+        so skipping both is the whole of a no-thoughts run.
 
     - id: context-ticket
       requires: [decompose]
@@ -159,6 +163,9 @@ orchestration:
       agent: archivist
       given: [{ value: topic, src: "the corrected task statement" }]
       ask: [what-was-decided, what-shipped, what-is-open]
+      judgment: >
+        Same call as `context-history`, on the corrected task. See "Prior
+        context" below.
 
     - id: deeper-targeted
       requires: [verify-corrections]
@@ -375,6 +382,14 @@ conventions:
 ```
 
 ## Judgment
+
+**Prior context.** Only the request says whether this plan wants the prior trail. Skip
+`context-history` and `deeper-history` when the user asks to plan from the code alone —
+"fresh start", "ignore the old plan", "without the prior research". Silent request: read
+it.
+
+The error is asymmetric. An unwanted trail anchors the plan to a decision that was
+already superseded; an excluded one costs a re-run.
 
 **Decomposing the task.** Break the task into the areas of the codebase it
 touches, looking past the literal ticket to the patterns and connections behind

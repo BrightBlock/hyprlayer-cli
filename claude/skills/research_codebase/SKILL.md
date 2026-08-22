@@ -90,14 +90,14 @@ orchestration:
       agent: archivist
       given: [{ value: topic, src: "the user's request, verbatim" }]
       ask: [what-was-decided, what-shipped, what-is-open, what-superseded-what]
+      judgment: >
+        Does this research want the prior trail? See "Prior context" below.
       because: >
-        This variant does not assume a thoughts directory exists, so the paper
-        trail is guarded rather than assumed — but the trail is not always on
-        disk. On `notion`/`anytype` the archivist queries the store by
-        type+project and there is never a thoughts/ directory to test, so a
-        bare `test -d thoughts` would skip the step for exactly the users who
-        have the richest trail. When the tree is the store, cover all of
-        thoughts/, not just the research subdirectory.
+        The guard only proves a trail exists. `notion`/`anytype` have no
+        thoughts/ directory to test, so a bare `test -d thoughts` would skip
+        the users with the richest trail; when the tree is the store, cover
+        all of thoughts/, not just research/. This is the only step that reads
+        prior context, so skipping it is the whole of a no-thoughts run.
 
     - id: targeted
       requires: [decompose]
@@ -162,14 +162,16 @@ orchestration:
         - { value: findings, src: "the verified agent reports" }
       apply: [path-rewrite, frontmatter, citations]
       sections-when:
-        historical-context: exit0(test -d thoughts) or backend == notion or backend == anytype
+        # The `history` STEP, not its guard: no trail read, no section. A
+        # heading over an empty body claims the trail was searched and bare.
+        historical-context: history-ran
       judgment: >
         How do the maps connect? See "Synthesizing" below — this step is the
         one the sub-agents cannot do for you.
       because: >
-        The historical-context section rides on the same check that gates
-        `history`, verbatim: no paper trail, no section. The document is
-        self-contained either way.
+        The document is self-contained either way — one with no
+        historical-context section is not incomplete, just sourced entirely
+        from the live tree.
 
     - id: permalinks
       requires: [write]
@@ -244,6 +246,15 @@ conventions:
 ```
 
 ## Judgment
+
+**Prior context.** The guard proves a trail exists; only the request says whether this
+research wants one. Skip `history` when the user asks for the codebase on its own
+terms — "fresh eyes", "just the code", "without the prior research". Silent request and
+a trail exists: read it, and say so in the summary.
+
+The error is asymmetric. An unwanted trail contaminates the finding — the research
+comes back agreeing with the last document rather than the tree, and that reads as
+corroboration. An excluded one costs a re-run.
 
 **Decomposing.** Break the query into composable areas. Look past the literal
 question to the patterns and connections behind it. Your area list bounds what the

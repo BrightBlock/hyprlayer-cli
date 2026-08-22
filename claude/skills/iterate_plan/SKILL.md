@@ -87,9 +87,12 @@ orchestration:
         - { value: change-topic, src: "the user's feedback, verbatim" }
         - { value: plan-title,   src: "the plan you read in read-plan" }
       ask: [what-was-decided, what-shipped, what-is-open, what-superseded-what]
+      judgment: >
+        Does this iteration want the prior trail? See "Prior context" below.
       because: >
         The prior artifacts that bear on this change. The archivist covers
-        every backend and returns one synthesized briefing.
+        every backend and returns one synthesized briefing. This and
+        `thoughts-lookup` are the only steps reading prior context.
 
     - id: thoughts-lookup
       requires: [scope-research]
@@ -296,6 +299,13 @@ conventions:
 ```
 
 ## Judgment
+
+**Prior context.** Only the request says whether this iteration wants the prior trail.
+Skip `prior-art` and `thoughts-lookup` when the user asks to work from the plan and the
+code alone — "ignore the old research", "fresh look". Silent request: read it.
+
+The error is asymmetric. An unwanted trail argues for the plan as written, which is the
+thing being iterated on; an excluded one costs a re-run.
 
 **Deciding what needs research.** Research only what the feedback actually opens
 up — a change that touches code you have not read needs an area; a wording or
