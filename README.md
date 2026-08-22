@@ -111,6 +111,30 @@ Run `hyprlayer storage info --json` from inside a project to see the resolved ba
 
 Most commands have [`_nt` and `_generic` variants](https://brightblock.ai/hyprlayer/reference/variants/).
 
+## Orchestration
+
+Some skills carry their sub-agent wiring as data — an `orchestration:` block — instead of prose. `hyprlayer orchestrate` validates and schedules that block. It is a **validator and a planner, not an execution engine**: it never spawns an agent or runs a step.
+
+```bash
+hyprlayer orchestrate check   <skill.md>...             # six mechanical checks, exit 0/1
+hyprlayer orchestrate compile <skill.md> --areas N       # the wave schedule, as JSON on stdout
+hyprlayer orchestrate grammar                            # the `when:` guard grammar
+```
+
+`check` never executes anything — no `exit0` probing, no PATH lookups, no config reads — which is what makes it safe to run from a hook or an editor on every keystroke. `compile` may probe live state (`exit0(...)` commands, `available()` PATH lookups, the effective storage backend) to resolve a step's `when:` guard; pass `--no-probe` to pin every fact explicitly instead and skip execution entirely.
+
+Both leaves validate against a **target harness's agent namespace** — `claude`, `opencode`, or `codex` — because the same skill file is often read by more than one. This matters because **OpenCode reads `~/.claude/skills/` directly**: a skill authored for Claude Code is loaded and executed by OpenCode with no action from the author, against a smaller agent registry. `check` defaults to every harness installed on the machine so an author sees the portability gap before it becomes a spawn-time failure; `compile` takes exactly one target, since a compiled plan is executed by a single harness.
+
+Worked example, from a checkout of this repo, against the test fixture that mirrors a real skill's block:
+
+```bash
+hyprlayer orchestrate check tests/fixtures/research_codebase_declared.md --target claude --agents-dir claude/agents
+hyprlayer orchestrate compile tests/fixtures/research_codebase_declared.md --target claude --agents-dir claude/agents \
+  --areas 4 --request "map the PTY stack" > plan.json
+```
+
+`plan.json` is a diffable artifact: the same block, repo state, request text, and fanout count produce byte-identical output across process restarts, keyed by a `planHash` that changes whenever the target, the schedule, or any resolved fact changes.
+
 ## Configuration
 
 ### Auto-update

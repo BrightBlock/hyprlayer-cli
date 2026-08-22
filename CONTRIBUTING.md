@@ -55,6 +55,22 @@ cargo fmt --all
 cargo clippy --all-targets
 ```
 
+These four gates (`cargo build`, `cargo test`, `cargo fmt --all`, `cargo clippy
+--all-targets`) are **developer-run**, not CI-enforced — `.github/workflows/`
+contains only `cla.yml` and `release.yml`. Run them yourself before opening a
+PR.
+
+### The `when:` grammar is generated, not hand-written
+
+The `when:` guard grammar that `orchestrate check`/`compile` parse against lives
+in exactly one place, `src/orchestrate/grammar.rs`'s `LEAF_FORMS` table. The
+grammar table inside
+`claude/skills/_thoughts/orchestration-runtime.md`'s generated region (between
+the `<!-- generated: ... -->` markers) is produced *from* that table — never
+edit it by hand. If you change `LEAF_FORMS`, a `cargo test` run will fail with
+a message naming the exact regeneration command to run and where to paste the
+output; follow that message rather than guessing at the format.
+
 ## Opening a pull request
 
 1. Fork the repository and create a topic branch off `master`.
