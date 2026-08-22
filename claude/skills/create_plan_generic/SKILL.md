@@ -7,312 +7,399 @@ allowed-tools: Bash, Read, Grep, Glob, Agent, Write, Edit
 
 # Implementation Plan
 
-You are tasked with creating detailed implementation plans through an interactive, iterative process. You should be skeptical, thorough, and work collaboratively with the user to produce high-quality technical specifications.
+Turn a task or ticket into a phased implementation plan, by researching the tree
+in parallel, aligning with the user on an approach, and having the plan drafted
+and adversarially reviewed before it is saved. Generic variant: no thoughts
+directory conventions, and no assumption about which parts of the agent catalog
+this project uses.
 
-## Initial Response
+```yaml
+loads:
+  - orchestration-runtime      # how to execute this block — read before anything
+  - storage-backend            # where the artifact is saved
+  - required-metadata          # schema fields + backend-specific title format
+  - subagent-guide             # the agent catalog and the spawning rules
+  - templates/plan             # the artifact body structure
 
-When this command is invoked:
+on-empty-invocation: |
+  I'll help you create a detailed implementation plan. Let me start by understanding what we're building.
 
-1. **Check if parameters were provided**:
-   - If a file path or ticket reference was provided as a parameter, skip the default message
-   - Immediately read any provided files FULLY
-   - Begin the research process
+  Please provide:
+  1. The task/ticket description (or reference to a ticket file)
+  2. Any relevant context, constraints, or specific requirements
+  3. Links to related research or previous implementations
 
-2. **If no parameters provided**, respond with:
+  I'll analyze this information and work with you to create a comprehensive plan.
+
+  Tip: You can also invoke this command with a ticket file directly: `/create_plan thoughts/allison/tickets/eng_1234.md`
+  For deeper analysis, try: `/create_plan think deeply about thoughts/allison/tickets/eng_1234.md`
+
+artifact:
+  type: plan
+  title-from: task
+
+orchestration:
+  owns: [decomposition, arbitration, synthesis, persistence, sync, user-dialogue]
+
+  steps:
+    - id: read-mentioned
+      inline: true
+      reject: matches(read-call, "limit|offset")
+      because: >
+        A parameter means skip the opener and start here. Ticket files,
+        research documents, prior plans, any JSON mentioned — read them
+        yourself, in the main context, before spawning anything. A sub-agent
+        summary is not a substitute for having read the ticket, and a partial
+        read is not a substitute for the whole file.
+
+    - id: decompose
+      requires: [read-mentioned]
+      inline: true
+      produces: areas
+      track-with: TodoWrite
+      judgment: >
+        Which areas of the codebase does this task touch, and which exact
+        directories does each one own? See "Decomposing the task" below.
+
+    - id: context-map
+      requires: [decompose]
+      fanout: cartographer
+      over: areas
+      given:
+        - { value: repo-root,           src: pwd }
+        - { value: exact-directories,   src: "the area list decompose produced" }
+        - { value: task-statement,      src: "the files read in read-mentioned, plus the user's request verbatim" }
+      ask: [how-it-works, what-it-connects-to, conventions, gaps]
+      reject: not matches(exact-directories, "/")
+      because: >
+        Research before questions, and one cartographer per area rather than
+        one agent for the whole task. Each returns a document-ready section
+        with file:line references, so what you hand the user in
+        present-understanding is grounded rather than guessed. The reject rule
+        is the mechanical half of "be extremely specific about directories" —
+        it catches a bare concept, not a real path aimed at the wrong area.
+
+    - id: read-identified
+      requires: [context-map]
+      inline: true
+      reject: matches(read-call, "limit|offset")
+      because: >
+        The maps name files; the files are the evidence. Read every file the
+        research surfaced, fully, into the main context. You cannot
+        cross-reference a ticket against code you have only read about.
+
+    - id: verify-understanding
+      requires: [read-identified]
+      inline: true
+      produces: [discrepancies, assumptions-needing-verification, true-scope]
+      judgment: >
+        Where does the ticket disagree with the tree, and what is the real
+        scope once you account for the difference? See "Scope is what the code
+        says" below.
+
+    - id: present-understanding
+      requires: [verify-understanding]
+      inline: true
+      presents:
+        - accurate-summary-of-what-we-are-building
+        - findings-with-file-line-references
+        - questions-research-could-not-answer
+      judgment: >
+        Which of your open questions genuinely cannot be answered by reading
+        more code? See "Which questions are actually for the human" below.
+      because: >
+        Questions come after the research, never before it. Asking the user
+        something the tree already answers spends their attention on work you
+        could have done yourself.
+
+    - id: verify-corrections
+      requires: [present-understanding]
+      inline: true
+      retry: { step: context-map, max: 1 }
+      judgment: >
+        Did the user's answer correct a fact you asserted, and have you
+        verified the correction yourself? See "A correction is a claim, not a
+        fact" below.
+
+    - id: deeper-research
+      requires: [verify-corrections]
+      fanout: cartographer
+      over: follow-up-areas
+      track-with: TodoWrite
+      given:
+        - { value: repo-root,           src: pwd }
+        - { value: exact-directories,   src: "the areas the first round surfaced" }
+        - { value: what-round-one-left-open, src: "the gaps: sections of the context-map reports" }
+      ask: [how-it-works, what-it-connects-to, conventions, gaps]
+      reject: not matches(exact-directories, "/")
+      because: >
+        A second round aimed at what round one surfaced, not a repeat of round
+        one. Everything ready spawns in one message; nothing downstream starts
+        until all of them return.
+
+    - id: deeper-history
+      requires: [verify-corrections]
+      agent: archivist
+      given: [{ value: topic, src: "the corrected task statement" }]
+      ask: [what-was-decided, what-shipped, what-is-open]
+      judgment: >
+        Does this project keep a paper trail worth searching? See "Which
+        catalog sections apply" below.
+
+    - id: deeper-targeted
+      requires: [verify-corrections]
+      agent: one-of [codebase-locator, codebase-analyzer, codebase-pattern-finder]
+      judgment: >
+        Is any remaining gap one narrow question rather than an area needing a
+        map? A cartographer on a single lookup wastes a context; a narrow
+        agent on a whole area returns search output instead of a section.
+
+    - id: present-options
+      requires: [deeper-research, deeper-history, deeper-targeted]
+      inline: true
+      presents: [current-state, design-options-with-tradeoffs, open-questions]
+      judgment: >
+        Which of these are genuinely different approaches rather than the same
+        approach renamed? Two options that share a data model are one option,
+        and offering them as two hides the decision instead of surfacing it.
+      because: >
+        The user picks the approach here, and everything downstream is written
+        against that pick. A wrong one is cheap now and expensive after draft.
+
+    - id: outline
+      requires: [present-options]
+      inline: true
+      shapes: phase-shapes
+      presents: [overview, numbered-phases-with-what-each-accomplishes]
+      judgment: >
+        What are the phases, in what order, at what granularity? See "Phasing
+        granularity" below.
+
+    - id: approve-outline
+      requires: [outline]
+      inline: true
+      because: >
+        Structure feedback before detail. This barrier is the whole reason the
+        skill is interactive: restructuring after the body is written throws
+        away the draughtsman's entire pass, and course corrections are free
+        while the plan is still a list of phase names.
+
+    - id: draft
+      requires: [approve-outline]
+      agent: draughtsman
+      given:
+        - { value: task,          src: "the files read in read-mentioned" }
+        - { value: phase-outline, src: "the outline the user approved in approve-outline" }
+        - { value: findings,      src: "the verified sub-agent maps and reports" }
+        - { value: repo-root,     src: pwd }
+        - { value: template,      src: "_thoughts/templates/plan.md" }
+      ask: [phases-in-dependency-order, verified-file-paths, success-criteria-split]
+      on:
+        "BLOCKER:": resolve-it-before-moving-on-then-respawn
+      judgment: >
+        Is this plan small enough that delegating costs more than it saves?
+        See "Drafting it yourself" below.
+      because: >
+        The draughtsman returns the plan body as markdown and writes no files.
+        Persistence stays with you.
+
+    - id: adjudicate
+      requires: [draft]
+      agent: adjudicator
+      retry: { step: draft, max: 1 }
+      given:
+        - { value: draft-body, src: "the draughtsman's return in draft" }
+        - { value: repo-root,  src: pwd }
+      ask:
+        - verdict
+        - phantom-file-paths
+        - unverifiable-success-criteria
+        - phase-ordering-that-cannot-hold
+        - unstated-open-questions
+      on:
+        "verdict: ship":   proceed-to-save
+        "verdict: revise": fix-the-blocker-and-major-findings-then-re-run-it-once
+        "verdict: reject": take-the-finding-back-to-the-user-rather-than-saving
+      judgment: >
+        Is each finding right? See "The arbiter, not a relay" below.
+      because: >
+        The review happens before the user ever sees the draft. A plan the
+        user has already read is a plan they have already started trusting.
+
+    - id: save
+      requires: [adjudicate]
+      inline: true
+      given:
+        - { value: date-iso,   src: "date -Iseconds" }
+        - { value: git-commit, src: "git rev-parse HEAD" }
+        - { value: branch,     src: "git branch --show-current" }
+        - { value: author,     src: "hyprlayer thoughts config --json, else git config user.name" }
+        - { value: backend,    src: "hyprlayer storage info --json" }
+      apply: [template, frontmatter]
+      reject: exists(open-question)
+      title-format:
+        git:      kebab-case-dated-slug     # 2025-01-08-ENG-1478-parent-child-tracking
+        obsidian: kebab-case-dated-slug
+        notion:   human-readable-heading
+        anytype:  human-readable-heading
+      destination:
+        git:      thoughts/shared/plans/<title>.md
+        obsidian: thoughts/shared/plans/<title>.md
+        notion:   database-row (every required property populated, narrative as body)
+        anytype:  object (every required property populated, narrative as body)
+      because: >
+        Every template placeholder populated, every required schema field
+        present. The reject rule is the mechanical half of "no open questions
+        in the final plan": if one is still open, stop and resolve it rather
+        than writing the plan around it. Every decision has to be made before
+        the file exists.
+
+    - id: sync
+      requires: [save]
+      when: backend == git
+      when-examples:
+        match:    ["backend == git"]
+        no-match: ["backend == notion"]
+      inline: true
+      run: hyprlayer thoughts sync
+      because: >
+        Pushes the plan upstream. obsidian/notion/anytype have no push/pull
+        cycle, so there is nothing to sync there.
+
+    - id: present
+      requires: [save, sync]
+      inline: true
+      presents: [artifact-location, review-prompts]
+      location-form:
+        git:      path
+        obsidian: path
+        notion:   database-row-link
+        anytype:  object-id
+      review-prompts:
+        - Are the phases properly scoped?
+        - Are the success criteria specific enough?
+        - Any technical details that need adjustment?
+        - Missing edge cases or considerations?
+      because: >
+        Hand over the location only after it is pushed, so what you give the
+        user is something they can actually open.
+
+    - id: iterate
+      requires: [present]
+      inline: true
+      accepts: [missing-phases, technical-approach, success-criteria, scope-items]
+      because: continue refining until the user is satisfied.
+
+conventions:
+
+  success-criteria:
+    split: [automated, manual]
+    automated:
+      definition: runnable by an execution agent
+      covers: [commands, files-that-must-exist, compilation, type-checking, test-suites]
+    manual:
+      definition: requires a human at a keyboard
+      covers: [ui-ux, performance-under-real-conditions, hard-to-automate-edge-cases, user-acceptance]
+    format: |
+      ### Success Criteria:
+
+      #### Automated Verification:
+      - [ ] Database migration runs successfully: `make migrate`
+      - [ ] All unit tests pass: `go test ./...`
+      - [ ] No linting errors: `golangci-lint run`
+      - [ ] API endpoint returns 200: `curl localhost:8080/api/new-endpoint`
+
+      #### Manual Verification:
+      - [ ] New feature appears correctly in the UI
+      - [ ] Performance is acceptable with 1000+ items
+      - [ ] Error messages are user-friendly
+      - [ ] Feature works correctly on mobile devices
+
+  plan-shape:
+    changes: incremental-and-testable
+    must-consider: [migration, rollback, edge-cases]
+    must-include: what-we-are-NOT-doing
+    open-questions: none-in-the-final-plan
+
+  phase-shapes:
+    database-change: [schema-migration, store-methods, business-logic, expose-via-api, update-clients]
+    new-feature:     [research-existing-patterns, data-model, backend-logic, api-endpoints, ui-last]
+    refactor:        [document-current-behavior, incremental-changes, backwards-compatibility, migration-strategy]
+
+  subagent-prompts:
+    spawn: every-ready-agent-in-one-message
+    each-prompt-carries:
+      - exactly-what-to-search-for
+      - which-directories          # the full path context, never a bare concept
+      - what-information-to-extract
+      - expected-output-format
+      - read-only-tools
+    returns: file:line
+    on-unexpected-result: spawn-a-follow-up-and-cross-check-against-the-tree
+    example-fanout:
+      - 'cartographer  "Map how sessions are persisted — crates/hyprlayer-core/src/store/"'
+      - 'cartographer  "Map the IPC command surface for sessions — src-tauri/src/commands/"'
+      - 'cartographer  "Map how the session list renders — src/features/session/"'
+      - 'archivist     "Prior plans, research, and handoffs about session persistence"'
 ```
-I'll help you create a detailed implementation plan. Let me start by understanding what we're building.
 
-Please provide:
-1. The task/ticket description (or reference to a ticket file)
-2. Any relevant context, constraints, or specific requirements
-3. Links to related research or previous implementations
-
-I'll analyze this information and work with you to create a comprehensive plan.
-
-Tip: You can also invoke this command with a ticket file directly: `/create_plan thoughts/allison/tickets/eng_1234.md`
-For deeper analysis, try: `/create_plan think deeply about thoughts/allison/tickets/eng_1234.md`
-```
-
-Then wait for the user's input.
-
-## Storage backend dispatch
-
-Read `~/.claude/skills/_thoughts/storage-backend.md` and follow it for where to save the artifact. Read `~/.claude/skills/_thoughts/required-metadata.md` for the schema-required fields and the backend-specific title format. For this command: artifact type is `plan`; the title is derived from the task.
-
-## Process Steps
-
-### Step 1: Context Gathering & Initial Analysis
-
-1. **Read all mentioned files immediately and FULLY**:
-   - Ticket files (e.g., `thoughts/allison/tickets/eng_1234.md`)
-   - Research documents
-   - Related implementation plans
-   - Any JSON/data files mentioned
-   - **IMPORTANT**: Use the Read tool WITHOUT limit/offset parameters to read entire files
-   - **CRITICAL**: DO NOT spawn sub-tasks before reading these files yourself in the main context
-   - **NEVER** read files partially - if a file is mentioned, read it completely
-
-2. **Spawn initial research tasks to gather context**:
-   Before asking the user any questions, use specialized agents to research in parallel. Read `~/.claude/skills/_thoughts/subagent-guide.md` for the catalog and spawning rules. For initial context, spawn one `cartographer` per area of the codebase the task touches, each with its exact directories.
-
-3. **Read all files identified by research tasks**:
-   - After research tasks complete, read ALL files they identified as relevant
-   - Read them FULLY into the main context
-   - This ensures you have complete understanding before proceeding
-
-4. **Analyze and verify understanding**:
-   - Cross-reference the ticket requirements with actual code
-   - Identify any discrepancies or misunderstandings
-   - Note assumptions that need verification
-   - Determine true scope based on codebase reality
-
-5. **Present informed understanding and focused questions**:
-   ```
-   Based on the ticket and my research of the codebase, I understand we need to [accurate summary].
-
-   I've found that:
-   - [Current implementation detail with file:line reference]
-   - [Relevant pattern or constraint discovered]
-   - [Potential complexity or edge case identified]
-
-   Questions that my research couldn't answer:
-   - [Specific technical question that requires human judgment]
-   - [Business logic clarification]
-   - [Design preference that affects implementation]
-   ```
-
-   Only ask questions that you genuinely cannot answer through code investigation.
-
-### Step 2: Research & Discovery
-
-After getting initial clarifications:
-
-1. **If the user corrects any misunderstanding**:
-   - DO NOT just accept the correction
-   - Spawn new research tasks to verify the correct information
-   - Read the specific files/directories they mention
-   - Only proceed once you've verified the facts yourself
-
-2. **Create a research todo list** using TodoWrite to track exploration tasks
-
-3. **Spawn parallel sub-tasks for comprehensive research**:
-   Read `~/.claude/skills/_thoughts/subagent-guide.md` for the catalog and spawning rules. Use whichever sections apply to the project at hand.
-
-3. **Wait for ALL sub-tasks to complete** before proceeding
-
-4. **Present findings and design options**:
-   ```
-   Based on my research, here's what I found:
-
-   **Current State:**
-   - [Key discovery about existing code]
-   - [Pattern or convention to follow]
-
-   **Design Options:**
-   1. [Option A] - [pros/cons]
-   2. [Option B] - [pros/cons]
-
-   **Open Questions:**
-   - [Technical uncertainty]
-   - [Design decision needed]
-
-   Which approach aligns best with your vision?
-   ```
-
-### Step 3: Plan Structure Development
-
-Once aligned on approach:
-
-1. **Create initial plan outline**:
-   ```
-   Here's my proposed plan structure:
-
-   ## Overview
-   [1-2 sentence summary]
-
-   ## Implementation Phases:
-   1. [Phase name] - [what it accomplishes]
-   2. [Phase name] - [what it accomplishes]
-   3. [Phase name] - [what it accomplishes]
-
-   Does this phasing make sense? Should I adjust the order or granularity?
-   ```
-
-2. **Get feedback on structure** before writing details
-
-### Step 4: Detailed Plan Writing
-
-After structure approval:
-
-1. **Delegate the draft to the `draughtsman` agent** (see `~/.claude/skills/_thoughts/subagent-guide.md`). Hand it the task, the approved phase outline, your research findings, the repo root, and the template path `~/.claude/skills/_thoughts/templates/plan.md`. It returns the plan body as markdown; persistence stays with you. Draft inline only when the plan is small enough that delegation costs more than it saves. Resolve any `BLOCKER:` line it returns before moving on.
-
-2. **Review the draft with the `adjudicator` agent** before the user sees it — it checks the plan against the actual tree for phantom paths, unverifiable criteria, phase ordering that can't hold, and unstated open questions. On `verdict: revise`, fix the blocker/major findings and re-run it once; on `verdict: reject`, take the finding back to the user rather than saving the plan. You are the arbiter: if a finding is wrong, say why and move on.
-
-3. **Save the plan** following the storage backend dispatch from the top of this command. The title format follows the backend-specific rule in `~/.claude/skills/_thoughts/required-metadata.md`:
-   - For `git`/`obsidian`: kebab-case dated slug (e.g. `2025-01-08-ENG-1478-parent-child-tracking`); write to `thoughts/shared/plans/<title>.md` with YAML frontmatter containing every required schema field.
-   - For `notion`/`anytype`: normal human-readable heading; create the database row / object with every required property populated; the narrative content below becomes the body.
-4. **Use the template at `~/.claude/skills/_thoughts/templates/plan.md`** — every placeholder populated, saved to the destination from step 3.
-
-### Step 5: Sync and Review
-
-1. **Sync (git backend only)**:
-   - For `backend: git`, run `hyprlayer thoughts sync` so the plan is pushed upstream.
-   - For `obsidian`/`notion`/`anytype`, skip this step.
-
-2. **Present the draft plan location** (path for git/obsidian, database row link for notion, object ID for anytype):
-   ```
-   I've created the initial implementation plan at [path or link].
-
-   Please review it and let me know:
-   - Are the phases properly scoped?
-   - Are the success criteria specific enough?
-   - Any technical details that need adjustment?
-   - Missing edge cases or considerations?
-   ```
-
-3. **Iterate based on feedback** - be ready to:
-   - Add missing phases
-   - Adjust technical approach
-   - Clarify success criteria (both automated and manual)
-   - Add/remove scope items
-
-4. **Continue refining** until the user is satisfied
-
-## Important Guidelines
-
-1. **Be Skeptical**:
-   - Question vague requirements
-   - Identify potential issues early
-   - Ask "why" and "what about"
-   - Don't assume - verify with code
-
-2. **Be Interactive**:
-   - Don't write the full plan in one shot
-   - Get buy-in at each major step
-   - Allow course corrections
-   - Work collaboratively
-
-3. **Be Thorough**:
-   - Read all context files COMPLETELY before planning
-   - Research actual code patterns using parallel sub-tasks
-   - Include specific file paths and line numbers
-   - Write measurable success criteria with clear automated vs manual distinction
-
-4. **Be Practical**:
-   - Focus on incremental, testable changes
-   - Consider migration and rollback
-   - Think about edge cases
-   - Include "what we're NOT doing"
-
-5. **Track Progress**:
-   - Use TodoWrite to track planning tasks
-   - Update todos as you complete research
-   - Mark planning tasks complete when done
-
-6. **No Open Questions in Final Plan**:
-   - If you encounter open questions during planning, STOP
-   - Research or ask for clarification immediately
-   - Do NOT write the plan with unresolved questions
-   - The implementation plan must be complete and actionable
-   - Every decision must be made before finalizing the plan
-
-## Success Criteria Guidelines
-
-**Always separate success criteria into two categories:**
-
-1. **Automated Verification** (can be run by execution agents):
-   - Commands that can be run: `make test`, `npm run lint`, etc.
-   - Specific files that should exist
-   - Code compilation/type checking
-   - Automated test suites
-
-2. **Manual Verification** (requires human testing):
-   - UI/UX functionality
-   - Performance under real conditions
-   - Edge cases that are hard to automate
-   - User acceptance criteria
-
-**Format example:**
-```markdown
-### Success Criteria:
-
-#### Automated Verification:
-- [ ] Database migration runs successfully: `make migrate`
-- [ ] All unit tests pass: `go test ./...`
-- [ ] No linting errors: `golangci-lint run`
-- [ ] API endpoint returns 200: `curl localhost:8080/api/new-endpoint`
-
-#### Manual Verification:
-- [ ] New feature appears correctly in the UI
-- [ ] Performance is acceptable with 1000+ items
-- [ ] Error messages are user-friendly
-- [ ] Feature works correctly on mobile devices
-```
-
-## Common Patterns
-
-### For Database Changes:
-- Start with schema/migration
-- Add store methods
-- Update business logic
-- Expose via API
-- Update clients
-
-### For New Features:
-- Research existing patterns first
-- Start with data model
-- Build backend logic
-- Add API endpoints
-- Implement UI last
-
-### For Refactoring:
-- Document current behavior
-- Plan incremental changes
-- Maintain backwards compatibility
-- Include migration strategy
-
-## Sub-task Spawning Best Practices
-
-When spawning research sub-tasks:
-
-1. **Spawn multiple tasks in parallel** for efficiency
-2. **Each task should be focused** on a specific area
-3. **Provide detailed instructions** including:
-   - Exactly what to search for
-   - Which directories to focus on
-   - What information to extract
-   - Expected output format
-4. **Be EXTREMELY specific about directories**:
-   - Include the full path context in your prompts
-5. **Specify read-only tools** to use
-6. **Request specific file:line references** in responses
-7. **Wait for all tasks to complete** before synthesizing
-8. **Verify sub-task results**:
-   - If a sub-task returns unexpected results, spawn follow-up tasks
-   - Cross-check findings against the actual codebase
-   - Don't accept results that seem incorrect
-
-Example of spawning multiple tasks concurrently — one agent per area, each told exactly where to look:
-
-```
-cartographer  "Map how sessions are persisted — crates/hyprlayer-core/src/store/"
-cartographer  "Map the IPC command surface for sessions — src-tauri/src/commands/"
-cartographer  "Map how the session list renders — src/features/session/"
-archivist     "Prior plans, research, and handoffs about session persistence"
-```
-
-## Example Interaction Flow
-
-```
-User: /implementation_plan
-Assistant: I'll help you create a detailed implementation plan...
-
-User: We need to add parent-child tracking for Claude sub-tasks. See thoughts/allison/tickets/eng_1478.md
-Assistant: Let me read that ticket file completely first...
-
-[Reads file fully]
-
-Based on the ticket, I understand we need to track parent-child relationships for Claude sub-task events in the daemon. Before I start planning, I have some questions...
-
-[Interactive process continues...]
-```
+## Judgment
+
+**Decomposing the task.** Break the task into the areas of the codebase it
+touches, looking past the literal ticket to the patterns and connections behind
+it. Your area list bounds what the research can find, and the plan can only be as
+correct as the research under it: miss a dimension and you get a thorough,
+well-cited plan for the wrong change.
+
+**Naming an area's directories.** Give each cartographer the full path context —
+the module, crate, or directory the area actually lives in, never the concept it
+is called by in conversation. The reject rule catches a missing path, not a
+plausible wrong one, and a cartographer handed the wrong directory returns a
+confident map of the wrong code, which is harder to catch than an empty one. This
+variant assumes nothing about the project's layout, so there is no default to
+fall back on if you guess.
+
+**Which catalog sections apply.** This variant makes no assumption about the
+project's conventions, so the agent catalog is a menu rather than a checklist.
+The `archivist` is worth a spawn wherever the project keeps prior plans, research,
+or handoffs; where it does not, that spawn returns nothing and costs a round. Pick
+by what the project actually has, not by what the catalog offers.
+
+**Scope is what the code says.** Cross-reference every ticket requirement against
+the actual tree, and treat the difference as the finding. A ticket describes what
+someone wanted; the code describes what is there. Where they disagree, the tree
+decides the scope, and a plan sized to the ticket instead of the tree is the plan
+that runs out of phases halfway through implementation.
+
+**Which questions are actually for the human.** Ask only what code investigation
+genuinely cannot settle: business logic, design preference, priorities between
+tradeoffs. Everything else you look up. A question the tree already answers costs
+the user a round trip and tells them the research was shallow — and buries the one
+or two questions that really did need them.
+
+**A correction is a claim, not a fact.** When the user corrects a misunderstanding,
+do not just adopt it: spawn research against the files and directories they named
+and verify it yourself. Users are usually right and sometimes remembering an older
+version of the code. An unverified correction propagates straight into the phases,
+where it is expensive; a verified one costs one extra round of agents.
+
+**Phasing granularity.** Each phase should be independently testable and land in
+one sitting, ordered so nothing depends on a later phase. Too coarse and the plan
+cannot be verified until the end; too fine and it becomes a checklist nobody
+follows. Consider migration and rollback at the boundaries, and say explicitly
+what the plan is NOT doing — the unwritten exclusion is what gets argued about
+later.
+
+**Drafting it yourself.** Delegate to the `draughtsman` by default: it is the
+step that turns findings into phases, and it does it with a fresh context. Draft
+inline only when the plan is genuinely small — a single phase, a handful of files
+— where handing over the full research costs more than writing the body. Getting
+this wrong in the cheap direction wastes a spawn; getting it wrong in the
+expensive direction means summarizing your research into a prompt and losing the
+detail that made it worth gathering.
+
+**The arbiter, not a relay.** The adjudicator's report is input, not a verdict you
+execute. Fix what it got right, and where a finding is wrong say why and move on.
+Churning the plan to satisfy a bad call degrades it while looking like diligence.
+`verdict: reject` is different: that is the approach being wrong, and it goes back
+to the user rather than into another revision.

@@ -7,223 +7,308 @@ disable-model-invocation: true
 
 # Resume work from a handoff document
 
-You are tasked with resuming work from a handoff document through an interactive process. These handoffs contain critical context, learnings, and next steps from previous work sessions that need to be understood and continued.
+Pick up work a previous session left behind: read its handoff in full, check every
+claim it makes against the tree as it stands now, and turn what survives into an
+agreed action plan.
 
-## Initial Response
+```yaml
+loads:
+  - orchestration-runtime      # how to execute this block — read before anything
+  - storage-backend            # "How to read existing artifacts" — the lookup dispatch
+  - subagent-guide             # the catalog, and the rule that the caller reads first
 
-When this command is invoked:
+reads-artifact:
+  type: handoff
+  addressed-by: [path, ticket]
 
-1. **If the path to a handoff document was provided**:
-   - If a handoff document path was provided as a parameter, skip the default message
-   - Immediately read the handoff document FULLY
-   - Immediately read any research or plan documents that it links to under `thoughts/shared/plans` or `thoughts/shared/research`. do NOT use a sub-agent to read these critical files.
-   - Begin the analysis process by ingesting relevant context from the handoff document, reading additional files it mentions
-   - Then propose a course of action to the user and confirm, or ask for clarification on direction.
+on-empty-invocation: |
+  I'll help you resume work from a handoff document. Let me find the available handoffs.
 
-2. **If a ticket number (like ENG-XXXX) was provided**:
-   - For `backend: git`, run `hyprlayer thoughts sync` to ensure your `thoughts/` directory is up to date. For `obsidian`/`notion`/`anytype`, skip this step.
-   - Locate the most recent handoff per the storage backend dispatch above.
-   - There may be zero, one or multiple matching handoffs.
-   - **If there are zero matches**: tell the user: "I'm sorry, I can't seem to find that handoff document. Can you please provide me with a path to it?"
-   - **If there is only one match**: proceed with that handoff
-   - **If there are multiple matches**: select the most recent (by `YYYY-MM-DD_HH-MM-SS` filename prefix for git/obsidian, or by `date` property descending for notion/anytype)
-   - Immediately read the handoff document FULLY
-   - Immediately read any research or plan documents that it links to under `thoughts/shared/plans` or `thoughts/shared/research`; do NOT use a sub-agent to read these critical files.
-   - Begin the analysis process by ingesting relevant context from the handoff document, reading additional files it mentions
-   - Then propose a course of action to the user and confirm, or ask for clarification on direction.
+  Which handoff would you like to resume from?
 
-3. **If no parameters provided**, respond with:
+  Tip: You can invoke this command directly with a handoff path: `/resume_handoff `thoughts/shared/handoffs/ENG-XXXX/YYYY-MM-DD_HH-MM-SS_ENG-XXXX_description.md`
+
+  or using a ticket number to resume from the most recent handoff for that ticket: `/resume_handoff ENG-XXXX`
+
+orchestration:
+  owns: [handoff-reading, linked-artifact-reading, verification, confirmation-gates, task-list, implementation]
+
+  steps:
+    - id: sync-thoughts
+      when: backend == git and matches(request, "[A-Z]{2,}-\d+") and not matches(request, "\.md")
+      when-examples:
+        match:    ["ENG-2124", "resume ENG-2124 please"]
+        no-match: ["thoughts/shared/handoffs/ENG-2124/2026-01-14_09-30-00_ENG-2124_pty.md", "resume the handoff we wrote yesterday"]
+      inline: true
+      run: hyprlayer thoughts sync
+      because: >
+        Only the ticket-lookup path needs this — it searches the tree, and a
+        stale tree finds a stale handoff or none at all. A path the user typed
+        is already resolved, and obsidian/notion/anytype have no sync step.
+
+    - id: locate-handoff
+      requires: [sync-thoughts]
+      when: matches(request, "[A-Z]{2,}-\d+") and not matches(request, "\.md")
+      when-examples:
+        match:    ["ENG-2124", "resume ENG-2124 please"]
+        no-match: ["thoughts/shared/handoffs/ENG-2124/2026-01-14_09-30-00_ENG-2124_pty.md", "resume the handoff we wrote yesterday"]
+      inline: true
+      produces: [handoff-path, handoff-matches]
+      apply: [handoff-lookup]
+      because: >
+        A ticket names a directory, not a document; there may be zero, one or
+        many handoffs under it. Picking among them is mechanical, so the rule
+        lives in `conventions.handoff-lookup`. A path skips this step.
+
+    - id: ask-for-path
+      requires: [locate-handoff]
+      when: exists(handoff-matches) and count(handoff-matches) == 0
+      when-examples:
+        match:    ["the ticket's handoff directory is empty"]
+        no-match:
+          - "one handoff matched the ticket"
+          - "four handoffs matched the ticket"
+          - "the user gave a path, so no lookup ran and there is no match list"
+      inline: true
+      emits: >
+        I'm sorry, I can't seem to find that handoff document. Can you please
+        provide me with a path to it?
+      because: >
+        A miss stops the lookup: `read-handoff` requires this step, so nothing
+        is read until the user has supplied a path. Do not widen to a
+        neighbouring ticket or to the newest handoff in the repo — resuming
+        the wrong session's work is worse than resuming none. The `exists(...)`
+        conjunct keeps the apology off the path invocation, where no lookup
+        ran and `handoff-matches` was never produced at all.
+
+    - id: read-handoff
+      requires: [locate-handoff, ask-for-path]
+      inline: true
+      given:
+        - { value: handoff-path, src: "the invocation argument, or the file locate-handoff selected" }
+      reject: not exists(handoff-path) or matches(read-call, "limit|offset")
+      extract: [tasks-and-statuses, recent-changes, learnings, artifacts, action-items, other-notes]
+      because: >
+        Read FULLY, in the main context, before anything else happens — never
+        through a sub-agent, never with limit/offset. Everything downstream is
+        a claim this document makes, and you cannot weigh a claim you have
+        only a summary of.
+
+    - id: read-linked
+      requires: [read-handoff]
+      inline: true
+      given:
+        - { value: linked-artifacts, src: "the links in the handoff's Artifacts section" }
+        - { value: backend,          src: "hyprlayer storage info --json" }
+      extract: [key-requirements, decisions-already-made, phases-still-open]
+      because: >
+        The plan and research documents the handoff links to are read the same
+        way, by the same backend dispatch that found the handoff. These are the
+        critical files: a sub-agent's summary of the plan you are resuming is
+        not the plan. Nothing is delegated until this step returns.
+
+    - id: paper-trail
+      requires: [name-areas]
+      agent: archivist
+      given:
+        - { value: ticket-or-topic, src: "the handoff's frontmatter and the user's invocation" }
+        - { value: handoff-date,    src: "the handoff's `date` field" }
+      ask: [what-else-exists, what-superseded-what, which-plans-are-still-active, what-shipped-since]
+      because: >
+        The handoff is history, not truth. Someone may have replaced its plan,
+        shipped half its action items, or closed the ticket since it was
+        written, and none of that is visible from the document itself. It
+        requires `name-areas` rather than `read-linked` so that it and `remap`
+        are ready in the same wave and spawn in one message, which is what
+        "parallel research tasks" means.
+
+    - id: name-areas
+      requires: [read-linked]
+      inline: true
+      produces: in-flight-areas
+      judgment: >
+        Which code areas does the handoff say were in flight, and which exact
+        directories does each one own? See "Naming the in-flight areas'
+        directories" below.
+
+    - id: remap
+      requires: [name-areas]
+      fanout: cartographer
+      over: in-flight-areas
+      given:
+        - { value: repo-root,         src: pwd }
+        - { value: exact-directories, src: "the area list name-areas produced" }
+        - { value: handoff-claim,     src: "that area's entries under Recent changes and Learnings" }
+      ask: [how-it-works-now, what-moved-since, which-claims-still-hold, conventions]
+      reject: not matches(exact-directories, "/")
+      because: >
+        The tree has moved since the handoff was written, so each area is
+        mapped as it stands rather than as it was described. Hand every
+        cartographer the handoff's claim about its own area so the report
+        comes back as a comparison rather than a fresh survey.
+
+    - id: read-critical-files
+      requires: [paper-trail, remap]
+      inline: true
+      because: >
+        Every sub-agent returns before this starts. Then read completely: the
+        files named in Learnings, the files named in Recent changes, and the
+        new related files the research surfaced — that last group is why this
+        comes after the fan-out and not straight after read-handoff.
+
+    - id: verify-references
+      requires: [read-critical-files]
+      inline: true
+      checks: [file-references-still-resolve, changes-still-present, learnings-still-apply, no-new-conflicts-or-regressions]
+      retry: { step: remap, max: 1 }
+      because: >
+        Never assume handoff state matches current state: verify ALL mentioned
+        changes still exist and check for breaking changes since. A sub-agent's
+        report is input, not truth — where one contradicts another or
+        contradicts something you checked yourself, re-run the fan-out rather
+        than averaging the two.
+
+    - id: classify-divergence
+      requires: [verify-references]
+      inline: true
+      scenarios: [clean-continuation, diverged-codebase, incomplete-handoff-work, stale-handoff]
+      judgment: >
+        Which scenario is this, and where the handoff and the tree disagree,
+        which of them is describing reality? See "Reading the divergence"
+        below.
+
+    - id: present-analysis
+      requires: [classify-divergence]
+      inline: true
+      apply: [analysis-report]
+      because: >
+        Findings before work. The report pairs every handoff claim with its
+        current verification, so the user can see what has rotted before
+        agreeing to anything.
+
+    - id: confirm-direction
+      requires: [present-analysis]
+      inline: true
+      because: >
+        A gate, not a formality: nothing is edited until the user has agreed to
+        the direction or corrected it. Course corrections are cheapest here.
+
+    - id: action-plan
+      requires: [confirm-direction]
+      inline: true
+      track-with: TodoWrite
+      produces: task-list
+      judgment: >
+        In what order does the surviving work go, given what verification
+        turned up? See "Ordering the resumed work" below.
+
+    - id: present-plan
+      requires: [action-plan]
+      inline: true
+      apply: [plan-presentation]
+      because: >
+        The todo list is shown and the first task named before it starts — the
+        second gate, and the last cheap moment to reorder.
+
+    - id: implement
+      requires: [present-plan]
+      inline: true
+      apply: [handoff-learnings, documented-patterns, known-dead-ends]
+      updates: [todo-status]
+      because: >
+        Start with the first approved task. Learnings is the section that earns
+        the handoff its keep: the patterns it documents and the mistakes it
+        names are how this session avoids paying for them twice.
+
+    - id: continuity
+      requires: [implement]
+      inline: true
+      cite-in-commits: handoff-path
+      records: [deviations-from-the-original-plan]
+      judgment: >
+        Does this session end somewhere the next one would need its own handoff
+        to reach? See "Whether to hand off again" below.
+
+conventions:
+
+  handoff-lookup:
+    artifact-type: handoff
+    by-path: read it directly — no lookup, and no default message
+    by-ticket:
+      git-obsidian: >
+        list thoughts/shared/handoffs/<TICKET>/ and take the most recent by the
+        YYYY-MM-DD_HH-MM-SS filename prefix
+      notion-anytype: >
+        query the database/type filtered by type = handoff, project =
+        <mappedName>, ticket = <TICKET>, sorted by `date` descending
+    linked-artifacts: >
+      same backend, same dispatch — find a linked plan or research document by
+      its `type` schema field
+
+  handoff-sections: [tasks-and-statuses, recent-changes, learnings, artifacts, action-items, other-notes]
+
+  scenarios:
+    clean-continuation:
+      looks-like: every change the handoff describes is present; no conflicts, no regressions; the action items name clear next steps
+      response: proceed with the handoff's recommended actions
+    diverged-codebase:
+      looks-like: some changes missing or modified; new related code landed since
+      response: reconcile the differences and adapt the plan to current state
+    incomplete-handoff-work:
+      looks-like: tasks left `in_progress`; partial implementations to re-understand
+      response: finish the unfinished work before starting anything new
+    stale-handoff:
+      looks-like: significant time has passed; major refactoring since
+      response: re-evaluate the strategy — the original approach may no longer apply
+
+  analysis-report:
+    opens-with: "I've analyzed the handoff from <date> by <researcher>. Here's the current situation:"
+    sections:
+      original-tasks:     "<task>: <status from handoff> → <current verification>"
+      key-learnings:      "<learning, with file:line> — still valid / changed"
+      recent-changes:     "<change> — verified present / missing / modified"
+      artifacts-reviewed: "<document>: <key takeaway>"
+      recommended-next:   "ordered, from the handoff's action items plus what verification turned up"
+      potential-issues:   "conflicts, regressions, missing dependencies, broken code"
+    closes-with: "Shall I proceed with <recommended action 1>, or would you like to adjust the approach?"
+
+  plan-presentation:
+    opens-with: "I've created a task list based on the handoff and current analysis:"
+    body: the todo list, in order
+    closes-with: "Ready to begin with the first task: <task>?"
 ```
-I'll help you resume work from a handoff document. Let me find the available handoffs.
 
-Which handoff would you like to resume from?
+## Judgment
 
-Tip: You can invoke this command directly with a handoff path: `/resume_handoff `thoughts/shared/handoffs/ENG-XXXX/YYYY-MM-DD_HH-MM-SS_ENG-XXXX_description.md`
+**Naming the in-flight areas' directories.** The handoff names its areas in prose —
+"the PTY stack", "the sync path" — and a cartographer needs `src/pty/`, not the
+phrase. The reject rule catches a missing path, not a plausible wrong one, and here
+there is a second way to be wrong that the reference case does not have: the paths
+the handoff itself cites may no longer exist, so a name that was accurate when it was
+written can now point at nothing. Hand a cartographer the wrong directory and you get
+a confident, well-cited map of the wrong code, which is harder to catch than an empty
+one.
 
-or using a ticket number to resume from the most recent handoff for that ticket: `/resume_handoff ENG-XXXX`
-```
+**Reading the divergence.** `conventions.scenarios` lists the four shapes a resume
+takes and what each one asks for; telling them apart is the call. Weigh how much time
+has passed, how much of Recent changes survived verification, and whether the plan
+the handoff was executing is still `active`. The handoff's Learnings are the last
+thing to discard — a learning survives a refactor more often than a `file:line` does
+— but where the tree contradicts the document the tree wins, and the contradiction is
+itself a finding worth showing the user. Read a stale handoff as a clean continuation
+and you implement against an architecture that is gone; read a clean continuation as
+a stale handoff and you re-research work that was already done and paid for.
 
-Then wait for the user's input.
+**Ordering the resumed work.** The handoff proposes an order, and verification may
+have invalidated it: a task whose precondition shipped is now free, a task whose
+precondition was reverted now has to go last. Prioritize on dependencies as they are
+now, using the handoff's guidance as evidence rather than as the answer. Follow a
+stale order and you start the task whose precondition no longer holds, and find out
+three tasks in.
 
-## Storage backend dispatch
-
-Read `~/.claude/skills/_thoughts/storage-backend.md` for the per-backend mechanics — see the "How to read existing artifacts" section. For this command: artifact type is `handoff`. If the user provides only a ticket number (e.g. `ENG-2124`), find the most recent handoff for that ticket per the backend's rules:
-
-- **`git`** / **`obsidian`**: list `thoughts/shared/handoffs/ENG-2124/` and pick the most recent file by the `YYYY-MM-DD_HH-MM-SS` filename prefix.
-- **`notion`** / **`anytype`**: query the database/type filtered by `type = handoff` + `project = <mappedName>` + `ticket = ENG-XXXX`, sorted by `date` descending.
-
-If the referenced handoff points to related artifacts (plan, research docs), apply the same dispatch logic to retrieve those — use the same backend; use the artifacts' `type` schema field to locate them.
-
-## Process Steps
-
-### Step 1: Read and Analyze Handoff
-
-1. **Read handoff document completely**:
-   - Use the Read tool WITHOUT limit/offset parameters
-   - Extract all sections:
-     - Task(s) and their statuses
-     - Recent changes
-     - Learnings
-     - Artifacts
-     - Action items and next steps
-     - Other notes
-
-2. **Spawn focused research tasks**:
-   Based on the handoff content, spawn parallel research tasks to verify current state. Read `~/.claude/skills/_thoughts/subagent-guide.md` for the catalog: use the `archivist` for the paper trail around this ticket (what else exists, what superseded what, which plans are still `active`) and a `cartographer` per code area the handoff says was in flight — the tree has moved since the handoff was written, and the handoff is history, not truth. Note that you must still read the handoff and its linked plan/research documents yourself, in the main context, before delegating anything.
-
-   ```
-   Task 1 - Gather artifact context:
-   Read all artifacts mentioned in the handoff.
-   1. Read feature documents listed in "Artifacts"
-   2. Read implementation plans referenced
-   3. Read any research documents mentioned
-   4. Extract key requirements and decisions
-   Use tools: Read
-   Return: Summary of artifact contents and key decisions
-   ```
-
-3. **Wait for ALL sub-tasks to complete** before proceeding
-
-4. **Read critical files identified**:
-   - Read files from "Learnings" section completely
-   - Read files from "Recent changes" to understand modifications
-   - Read any new related files discovered during research
-
-### Step 2: Synthesize and Present Analysis
-
-1. **Present comprehensive analysis**:
-   ```
-   I've analyzed the handoff from [date] by [researcher]. Here's the current situation:
-
-   **Original Tasks:**
-   - [Task 1]: [Status from handoff] → [Current verification]
-   - [Task 2]: [Status from handoff] → [Current verification]
-
-   **Key Learnings Validated:**
-   - [Learning with file:line reference] - [Still valid/Changed]
-   - [Pattern discovered] - [Still applicable/Modified]
-
-   **Recent Changes Status:**
-   - [Change 1] - [Verified present/Missing/Modified]
-   - [Change 2] - [Verified present/Missing/Modified]
-
-   **Artifacts Reviewed:**
-   - [Document 1]: [Key takeaway]
-   - [Document 2]: [Key takeaway]
-
-   **Recommended Next Actions:**
-   Based on the handoff's action items and current state:
-   1. [Most logical next step based on handoff]
-   2. [Second priority action]
-   3. [Additional tasks discovered]
-
-   **Potential Issues Identified:**
-   - [Any conflicts or regressions found]
-   - [Missing dependencies or broken code]
-
-   Shall I proceed with [recommended action 1], or would you like to adjust the approach?
-   ```
-
-2. **Get confirmation** before proceeding
-
-### Step 3: Create Action Plan
-
-1. **Use TodoWrite to create task list**:
-   - Convert action items from handoff into todos
-   - Add any new tasks discovered during analysis
-   - Prioritize based on dependencies and handoff guidance
-
-2. **Present the plan**:
-   ```
-   I've created a task list based on the handoff and current analysis:
-
-   [Show todo list]
-
-   Ready to begin with the first task: [task description]?
-   ```
-
-### Step 4: Begin Implementation
-
-1. **Start with the first approved task**
-2. **Reference learnings from handoff** throughout implementation
-3. **Apply patterns and approaches documented** in the handoff
-4. **Update progress** as tasks are completed
-
-## Guidelines
-
-1. **Be Thorough in Analysis**:
-   - Read the entire handoff document first
-   - Verify ALL mentioned changes still exist
-   - Check for any regressions or conflicts
-   - Read all referenced artifacts
-
-2. **Be Interactive**:
-   - Present findings before starting work
-   - Get buy-in on the approach
-   - Allow for course corrections
-   - Adapt based on current state vs handoff state
-
-3. **Leverage Handoff Wisdom**:
-   - Pay special attention to "Learnings" section
-   - Apply documented patterns and approaches
-   - Avoid repeating mistakes mentioned
-   - Build on discovered solutions
-
-4. **Track Continuity**:
-   - Use TodoWrite to maintain task continuity
-   - Reference the handoff document in commits
-   - Document any deviations from original plan
-   - Consider creating a new handoff when done
-
-5. **Validate Before Acting**:
-   - Never assume handoff state matches current state
-   - Verify all file references still exist
-   - Check for breaking changes since handoff
-   - Confirm patterns are still valid
-
-## Common Scenarios
-
-### Scenario 1: Clean Continuation
-- All changes from handoff are present
-- No conflicts or regressions
-- Clear next steps in action items
-- Proceed with recommended actions
-
-### Scenario 2: Diverged Codebase
-- Some changes missing or modified
-- New related code added since handoff
-- Need to reconcile differences
-- Adapt plan based on current state
-
-### Scenario 3: Incomplete Handoff Work
-- Tasks marked as "in_progress" in handoff
-- Need to complete unfinished work first
-- May need to re-understand partial implementations
-- Focus on completing before new work
-
-### Scenario 4: Stale Handoff
-- Significant time has passed
-- Major refactoring has occurred
-- Original approach may no longer apply
-- Need to re-evaluate strategy
-
-## Example Interaction Flow
-
-```
-User: /resume_handoff specification/feature/handoffs/handoff-0.md
-Assistant: Let me read and analyze that handoff document...
-
-[Reads handoff completely]
-[Spawns research tasks]
-[Waits for completion]
-[Reads identified files]
-
-I've analyzed the handoff from [date]. Here's the current situation...
-
-[Presents analysis]
-
-Shall I proceed with implementing the webhook validation fix, or would you like to adjust the approach?
-
-User: Yes, proceed with the webhook validation
-Assistant: [Creates todo list and begins implementation]
-```
+**Whether to hand off again.** Reference this handoff in commits and record any
+deviation from the original plan as you go; then decide, at the end, whether what
+this session learned needs its own handoff. The test is not how much you did but how
+much of what you know is only in this context window. Skip it when it was needed and
+the next session restarts from where this one started rather than from where it
+ended.

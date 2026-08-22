@@ -1,11 +1,17 @@
 # Sub-agent picker guide
 
-Skills that delegate work to sub-agents pick from this catalog. Each agent already knows its job — do NOT write detailed prompts about HOW to work; tell it WHAT you need and hand it the context it cannot discover on its own (the plan, the diff range, the template, the repo root).
+Skills that delegate work to sub-agents pick from this catalog. Each agent already knows its job — do NOT write detailed prompts about HOW to work; tell it WHAT you need.
+
+> **The mechanics of delegation live in the block, not here.** `given:` (with its `src:`) is the context you hand over, `ask:` is what you want back, `requires:` is the ordering and the barrier, `constraints:` binds every agent you spawn, and the wave schedule decides what runs in parallel. See `orchestration-runtime.md`; it is the authority on all of that, and this file does not restate it.
+>
+> What this file holds is what a block cannot say: **what each agent gives you back**, and **what a sub-agent can never be**.
 
 Two families:
 
 - **Stage agents** carry one stage of the hyprlayer pipeline. They are the behavior a skill used to inline — delegate to them instead of re-describing the work.
 - **Research agents** are the narrow read-only workers. Use them directly when you need one specific thing; use a stage agent when you need the whole stage done.
+
+The catalog matters most at an `agent: one-of [a, b, c]` step. `orchestrate compile` deliberately declines to pick — it records the choice in `unresolved[]` and leaves it to you. These tables are what you decide from.
 
 ## Stage agents
 
@@ -61,13 +67,9 @@ All agents are leaves: none carry `Agent` or `Skill`. Fan-out belongs to the ski
 
 Because a skill's `allowed-tools` takes a bare `Skill` entry, a skill that can invoke one skill can invoke any of them. Keep the intended set named in the body prose — that is what actually gets read.
 
-## Spawning rules
+**Not every file in `claude/agents/` is spawnable.** `ship` is a *session* agent — it is what a whole Ship turn runs as (`claude --agent ship`), never something a skill spawns; for the read-only "draft me a PR body" job the answer is **herald**. `orchestrate check` resolves agent names from the filesystem and does not model this distinction, so `agent: ship` would pass validation and fail at spawn time. It is absent from the catalog above deliberately.
 
-- Run multiple agents in parallel when they work on different things — several cartographers over different areas, several foremen only when the phases are genuinely independent.
-- Start with locator and finder agents to find what exists, then use analyzer agents on the most promising findings.
-- Be EXTREMELY specific about directories in your prompts. If the task mentions "CLI", say `src/`; if it mentions "daemon", say `hld/`. Never use generic terms.
-- Hand over context the agent cannot find on its own: the plan path or body, the diff range, the template path, which phase is theirs, the repo root.
-- Wait for ALL sub-agent tasks to complete before synthesizing.
-- For skills under documentarian rules (`_thoughts/documentarian-rules.md`), remind agents they are documenting, not evaluating or improving. The cartographer already knows.
-- Verify sub-task results: if something seems off, spawn follow-up tasks rather than accepting the result. A `verdict:` line from an adjudicator, inspector, or marshal is advice — you and the user still decide.
-- **The caller owns persistence.** Stage agents return bodies and verdicts; writing artifacts, promoting `status`, committing, and editing PRs stay in the skill, where the storage backend dispatch lives.
+## Picking well
+
+- Be EXTREMELY specific about directories in your prompts. If the task mentions "CLI", say `src/`; if it mentions "daemon", say `hld/`. Never use generic terms. A cartographer handed the wrong directory returns a confident, well-cited map of the wrong code, which is harder to catch than an empty one.
+- Start with locator and finder agents to find what exists, then use analyzer agents on the most promising findings — when the block has not already fixed that order with `requires:`.
