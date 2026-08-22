@@ -193,6 +193,13 @@ impl AgentTool {
     /// these whenever we ship a top-level file existing users should pick up.
     fn is_installed_at(&self, dest: &Path) -> bool {
         match self {
+            // This sentinel doubles as the staged-download completeness
+            // gate (`is_installed_at` failing here after a staged fetch is
+            // a hard `bail!`, not a soft warning). It may therefore only
+            // ever name long-lived, load-bearing files that ship on every
+            // release — never a file from a branch not yet on `master`,
+            // or reverting that file turns a benign rollback into every
+            // user's next `ai configure`/`ai reinstall` failing outright.
             Self::Claude => {
                 dest.join("skills/code_review/SKILL.md").is_file()
                     && dest.join("agents/codebase-locator.md").is_file()
