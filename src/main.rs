@@ -11,17 +11,21 @@ mod git_ops;
 mod hooks;
 mod http;
 mod integrity;
+mod orchestrate;
 mod secure_fs;
 mod telemetry;
 mod version;
 mod version_source;
 
 use cli::{
-    AiCommands, CodexCommands, ProfileCommands, StorageCommands, TelemetryCommands,
-    TelemetryHookAction, ThoughtsCommands,
+    AiCommands, CodexCommands, OrchestrateCommands, ProfileCommands, StorageCommands,
+    TelemetryCommands, TelemetryHookAction, ThoughtsCommands,
 };
 use commands::ai::{configure as ai_configure, reinstall as ai_reinstall, status as ai_status};
 use commands::codex::stream as codex_stream;
+use commands::orchestrate::check as orchestrate_check;
+use commands::orchestrate::compile as orchestrate_compile;
+use commands::orchestrate::grammar as orchestrate_grammar;
 use commands::self_update as self_update_cmd;
 use commands::storage::{
     info as storage_info, set_database_id as storage_set_database_id,
@@ -101,6 +105,11 @@ fn dispatch(cli: cli::Cli) -> Result<()> {
         },
         cli::Cli::Codex { command } => match command {
             CodexCommands::Stream(args) => codex_stream::stream(args)?,
+        },
+        cli::Cli::Orchestrate { command } => match command {
+            OrchestrateCommands::Check(args) => orchestrate_check::check(args)?,
+            OrchestrateCommands::Compile(args) => orchestrate_compile::compile(args)?,
+            OrchestrateCommands::Grammar(args) => orchestrate_grammar::grammar(args)?,
         },
         cli::Cli::Telemetry { command } => match command {
             TelemetryCommands::Init(args) => telemetry_cmd::init::init(args)?,

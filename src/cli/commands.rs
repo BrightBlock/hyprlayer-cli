@@ -284,6 +284,76 @@ pub struct SelfUpdateArgs {
 }
 
 #[derive(Debug, Args)]
+#[command(name = "check", about = "Validate a skill's `orchestration:` block")]
+pub struct OrchestrateCheckArgs {
+    #[arg(required = true)]
+    pub files: Vec<PathBuf>,
+    /// Emit findings as JSON for editor / app consumption
+    #[arg(long)]
+    pub json: bool,
+    /// Resolve agent names from these directories only, instead of the
+    /// target's defaults. Repeatable; requires exactly one `--target`.
+    #[arg(long)]
+    pub agents_dir: Vec<PathBuf>,
+    /// Harness whose agent namespace to validate against. Repeatable.
+    /// Default: every target with an agent directory on this machine.
+    #[arg(long, value_enum)]
+    pub target: Vec<crate::orchestrate::target::Target>,
+}
+
+#[derive(Debug, Args)]
+#[command(
+    name = "compile",
+    about = "Compute the wave schedule for a skill's orchestration block"
+)]
+pub struct OrchestrateCompileArgs {
+    pub file: PathBuf,
+    /// The user's request text, bound to every `matches(<field>, ...)` leaf
+    #[arg(long, conflicts_with = "request_file")]
+    pub request: Option<String>,
+    #[arg(long)]
+    pub request_file: Option<PathBuf>,
+    /// Size of a named `over:` list, e.g. --fanout areas=4. Repeatable.
+    #[arg(long, value_name = "NAME=N")]
+    pub fanout: Vec<String>,
+    /// Sugar for --fanout areas=N
+    #[arg(long)]
+    pub areas: Option<usize>,
+    /// Pin any guard leaf by its canonical key, e.g. --fact backend=git.
+    /// Repeatable. Always wins over a probe.
+    #[arg(long, value_name = "KEY=VALUE")]
+    pub fact: Vec<String>,
+    /// Resolve nothing by execution or environment inspection
+    #[arg(long)]
+    pub no_probe: bool,
+    /// Accepted for argv symmetry with `check`, so a caller can build one
+    /// argument list for both. Currently unused: `compile` schedules and
+    /// counts spawns but never resolves agent names — that is `check`'s
+    /// job (check 6). Records `agent:` values verbatim, unvalidated.
+    #[arg(long)]
+    pub agents_dir: Vec<PathBuf>,
+    /// Harness this plan will be executed by. Exactly one — a plan is run
+    /// by a single harness. Defaults to `ai.agentTool` from config, then
+    /// `claude`. (`check` takes many; `compile` takes one. See --help.)
+    #[arg(long, value_enum)]
+    pub target: Vec<crate::orchestrate::target::Target>,
+    /// Print a colored wave listing instead of JSON
+    #[arg(long)]
+    pub human: bool,
+}
+
+#[derive(Debug, Args)]
+#[command(name = "grammar", about = "Print the `when:` guard grammar")]
+pub struct OrchestrateGrammarArgs {
+    /// Emit the markdown table for orchestration-runtime.md's generated region
+    #[arg(long, conflicts_with = "json")]
+    pub markdown: bool,
+    /// Emit the machine-readable grammar description
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
 #[command(
     name = "stream",
     about = "Read codex --json output on stdin, write formatted lines to stdout"

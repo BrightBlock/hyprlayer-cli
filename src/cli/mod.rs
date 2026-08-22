@@ -30,6 +30,11 @@ pub enum Cli {
         #[command(subcommand)]
         command: CodexCommands,
     },
+    /// Validate and schedule a skill's declarative `orchestration:` block
+    Orchestrate {
+        #[command(subcommand)]
+        command: OrchestrateCommands,
+    },
     /// Manage usage telemetry
     Telemetry {
         #[command(subcommand)]
@@ -81,6 +86,11 @@ impl Cli {
             Cli::Codex { command } => match command {
                 CodexCommands::Stream(_) => "codex.stream",
             },
+            Cli::Orchestrate { command } => match command {
+                OrchestrateCommands::Check(_) => "orchestrate.check",
+                OrchestrateCommands::Compile(_) => "orchestrate.compile",
+                OrchestrateCommands::Grammar(_) => "orchestrate.grammar",
+            },
             Cli::Telemetry { command } => match command {
                 TelemetryCommands::Init(_) => "telemetry.init",
                 TelemetryCommands::Status(_) => "telemetry.status",
@@ -124,7 +134,15 @@ impl Cli {
     }
 
     pub fn skip_startup_checks(&self) -> bool {
-        self.is_silent_spool_writer() || matches!(self, Cli::SelfUpdate(_))
+        // `orchestrate check` is designed to run from a `PreToolUse` hook on
+        // every `Agent` spawn — a hot path. Startup checks do a network
+        // release probe, a full `claude/` bundle re-download when master's
+        // SHA has moved, and (on the auto-update branch) print a line to
+        // stdout and exit 0 — which would corrupt `compile`'s stdout, whose
+        // output *is* the plan artifact. Skip them for the whole group.
+        self.is_silent_spool_writer()
+            || matches!(self, Cli::SelfUpdate(_))
+            || matches!(self, Cli::Orchestrate { .. })
     }
 
     /// The `ConfigArgs` of whichever leaf subcommand was selected, or
@@ -157,6 +175,11 @@ impl Cli {
                 StorageCommands::SetTypeId(a) => &a.config,
             }),
             Cli::Codex { .. } => None,
+            // `orchestrate` reads `HyprlayerConfig` directly in the two
+            // places it needs to (the `backend` probe and `compile
+            // --target`'s default), rather than through `ConfigArgs`, so
+            // startup checks have nothing to honor here.
+            Cli::Orchestrate { .. } => None,
             Cli::Telemetry { command } => Some(match command {
                 TelemetryCommands::Init(a) => &a.config,
                 TelemetryCommands::Status(a) => &a.config,
@@ -222,6 +245,16 @@ pub enum CodexCommands {
 }
 
 #[derive(Subcommand, Debug)]
+pub enum OrchestrateCommands {
+    /// Validate a skill's `orchestration:` block
+    Check(OrchestrateCheckArgs),
+    /// Compute the wave schedule for a skill's orchestration block
+    Compile(OrchestrateCompileArgs),
+    /// Print the `when:` guard grammar
+    Grammar(OrchestrateGrammarArgs),
+}
+
+#[derive(Subcommand, Debug)]
 pub enum TelemetryCommands {
     Init(TelemetryInitArgs),
     Status(TelemetryStatusArgs),
@@ -272,6 +305,18 @@ mod tests {
             "storage.info"
         );
         assert_eq!(parsed_name(&["hyprlayer", "self-update"]), "self_update");
+        assert_eq!(
+            parsed_name(&["hyprlayer", "orchestrate", "grammar"]),
+            "orchestrate.grammar"
+        );
+        assert_eq!(
+            parsed_name(&["hyprlayer", "orchestrate", "check", "x.md"]),
+            "orchestrate.check"
+        );
+        assert_eq!(
+            parsed_name(&["hyprlayer", "orchestrate", "compile", "x.md"]),
+            "orchestrate.compile"
+        );
     }
 
     #[test]
