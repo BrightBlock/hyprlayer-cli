@@ -54,7 +54,7 @@ fn compile_json(xdg: &Path, extra: &[&str]) -> serde_json::Value {
 }
 
 #[test]
-fn fifteen_steps_compile_to_eight_waves_and_seven_spawns() {
+fn fifteen_steps_compile_to_nine_waves_and_seven_spawns() {
     let (_guard, xdg) = isolated_dirs();
     let d = compile_json(
         &xdg,
@@ -67,7 +67,7 @@ fn fifteen_steps_compile_to_eight_waves_and_seven_spawns() {
         ],
     );
     assert_eq!(d["stepCount"], 15, "payload: {d}");
-    assert_eq!(d["waveCount"], 8, "payload: {d}");
+    assert_eq!(d["waveCount"], 9, "payload: {d}");
     assert_eq!(d["totalSpawns"], 7, "payload: {d}");
 }
 
@@ -90,12 +90,16 @@ fn skipped_steps_do_not_consume_a_wave_number() {
         .iter()
         .map(|s| s["id"].as_str().unwrap())
         .collect();
+    // Nine waves, not eight: `present` requires `permalinks` so the summary
+    // is not handed over while links are still being written into the doc it
+    // points at, which pushes `present` to w8 and `follow-up` to w9.
+    //
     // `follow-up` is no longer here: its `exists()` guard was a judgment
     // in disguise and is now declared as one, so it is scheduled (wave 8)
     // with the call recorded in `unresolved[]` instead of silently skipped
     // by a guard that could never evaluate.
     assert_eq!(skipped, vec!["web", "tickets"], "payload: {d}");
-    assert_eq!(d["waveCount"], 8, "payload: {d}");
+    assert_eq!(d["waveCount"], 9, "payload: {d}");
 }
 
 #[test]

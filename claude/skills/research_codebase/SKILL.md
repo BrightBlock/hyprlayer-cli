@@ -218,11 +218,15 @@ orchestration:
         step satisfies whatever required it.
 
     - id: present
-      requires: [write]
+      requires: [write, permalinks]
       inline: true
       because: >
         A concise summary with key file references, then ask for follow-up
         questions. The document is self-contained; the message is the way in.
+        `permalinks` is required so the summary is not handed over while the
+        links are still being written into the document it points at — the
+        original orders permalinks before this, and a skipped `permalinks`
+        satisfies this edge anyway.
 
     - id: follow-up
       requires: [present]
