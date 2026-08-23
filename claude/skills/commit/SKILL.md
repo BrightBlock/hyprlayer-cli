@@ -86,16 +86,20 @@ orchestration:
       requires: [plan-commits]
       inline: true
       shows: [files-per-commit, every-message-in-full]
-      asks-user: "I plan to create [N] commit(s) with these changes. Shall I proceed?"
       because: >
         The user is approving the exact text that will land in the repo, so they
         have to see all of it — file lists per commit and full messages, not a
-        summary of them.
+        summary of them. `shows:` is written into the conversation as ordinary
+        markdown, and this step asks nothing: the question belongs to
+        `approval`. Folding the plan into the question instead produces a
+        multi-kilobyte prompt string, which renders as an unformatted wall
+        because that field is a label, not a document.
 
     - id: approval
       requires: [present-plan]
       inline: true
       produces: user-approval
+      asks-user: "I plan to create [N] commit(s) with these changes. Shall I proceed?"
       because: >
         Unconditional. This step carries no `when:` because there is no state of
         the world in which it is skipped, and no `agent:` because it is never
@@ -103,6 +107,10 @@ orchestration:
         nothing is staged and nothing is committed until the user has
         answered. If they amend the plan, return to `plan-commits` and present
         again — an amended plan is presented, not assumed.
+
+        `asks-user:` is exactly the question and nothing else. The plan it
+        refers to was already written out by `present-plan`, so restating any
+        of it here duplicates what is on screen directly above.
 
     - id: execute
       requires: [approval, feature-branch]
