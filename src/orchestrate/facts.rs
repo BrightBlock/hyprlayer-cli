@@ -27,9 +27,9 @@ pub struct FactInputs<'a> {
 ///   2. `--request` / `--request-file` (binds `request` and every
 ///      `matches()` field)   via: "request-flag"
 ///   3. probes, unless `--no-probe`:
-///        `available(x)`  → PATH lookup           via: "probe:path"
-///        `exit0(cmd)`    → run it, check status  via: "probe:exec"
-///        `backend`       → `HyprlayerConfig`      via: "probe:config"
+///      `available(x)`  → PATH lookup           via: "probe:path"
+///      `exit0(cmd)`    → run it, check status  via: "probe:exec"
+///      `backend`       → `HyprlayerConfig`      via: "probe:config"
 ///   4. nothing              → `Tri::Unknown`      via: "unresolved-default-false"
 ///
 /// Only probes leaves that actually appear in `exprs` — a `PreToolUse`
@@ -63,23 +63,30 @@ pub fn build(exprs: &[expr::Expr], inputs: &FactInputs) -> Result<FactEnv> {
 
     if !inputs.no_probe {
         for leaf in &leaves {
+            // `set_if_absent` deduplicates the storage, not the work: a probe
+            // whose key is already bound — pinned by `--fact`, or answered by
+            // an identical earlier leaf — runs and has its result thrown away.
+            // Guards repeat across steps (`hyprlayer_doctor` asks the same
+            // `exit0(find ...)` in four `when:`s), so without this check the
+            // command forks once per occurrence and a `--fact` pin never
+            // suppresses the execution its precedence promises.
             match leaf {
                 Leaf::Available(bin) => {
-                    env.set_if_absent(
-                        eval::leaf_key(leaf),
-                        FactValue::Bool(probe_available(bin)),
-                        "probe:path",
-                    );
+                    let key = eval::leaf_key(leaf);
+                    if !env.contains(&key) {
+                        env.set_if_absent(key, FactValue::Bool(probe_available(bin)), "probe:path");
+                    }
                 }
                 Leaf::Exit0(cmd) => {
-                    env.set_if_absent(
-                        eval::leaf_key(leaf),
-                        FactValue::Bool(probe_exit0(cmd)),
-                        "probe:exec",
-                    );
+                    let key = eval::leaf_key(leaf);
+                    if !env.contains(&key) {
+                        env.set_if_absent(key, FactValue::Bool(probe_exit0(cmd)), "probe:exec");
+                    }
                 }
                 Leaf::Comparison { path, .. } if path == "backend" => {
-                    if let Some(backend) = probe_backend() {
+                    if !env.contains("backend")
+                        && let Some(backend) = probe_backend()
+                    {
                         env.set_if_absent("backend", FactValue::Str(backend), "probe:config");
                     }
                 }
@@ -256,6 +263,57 @@ mod tests {
             .unwrap();
         assert_eq!(entry.via, "fact-flag");
         assert!(matches!(entry.value, FactValue::Bool(true)));
+    }
+
+    /// The storage-vs-work distinction: `a_fact_beats_a_probe` above pins only
+    /// the stored value, and it uses `available()`, which forks nothing. This
+    /// pins that a command already answered for is not run a second time.
+    #[cfg(unix)]
+    #[test]
+    fn a_repeated_exit0_guard_is_probed_once() {
+        let marker =
+            std::env::temp_dir().join(format!("hyprlayer-probe-once-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let src = format!("exit0(printf x >> {})", marker.display());
+        let exprs = vec![
+            expr::parse(&src).unwrap(),
+            expr::parse(&src).unwrap(),
+            expr::parse(&src).unwrap(),
+        ];
+        let inputs = FactInputs {
+            fact_flags: &[],
+            request: None,
+            no_probe: false,
+        };
+        build(&exprs, &inputs).unwrap();
+        let runs = std::fs::read_to_string(&marker).unwrap_or_default();
+        let _ = std::fs::remove_file(&marker);
+        assert_eq!(runs.len(), 1, "probed {} times, expected 1", runs.len());
+    }
+
+    /// A `--fact` pin is documented as beating a probe. That has to mean the
+    /// probe does not run, not merely that its answer loses.
+    #[cfg(unix)]
+    #[test]
+    fn a_pinned_exit0_guard_is_not_run_at_all() {
+        let marker =
+            std::env::temp_dir().join(format!("hyprlayer-probe-pinned-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let src = format!("exit0(printf x >> {})", marker.display());
+        let exprs = vec![expr::parse(&src).unwrap()];
+        let inputs = FactInputs {
+            fact_flags: &[format!("{src}=true")],
+            request: None,
+            no_probe: false,
+        };
+        let env = build(&exprs, &inputs).unwrap();
+        assert_eq!(env.get(&src).unwrap().via, "fact-flag");
+        assert!(
+            !marker.exists(),
+            "the pinned command ran anyway: {}",
+            marker.display()
+        );
+        let _ = std::fs::remove_file(&marker);
     }
 
     #[test]
