@@ -140,6 +140,18 @@ hyprlayer orchestrate compile claude/skills/research_codebase/SKILL.md --target 
 evaluated statically" kind — guards that need a live probe. `compile` reports
 15 steps → 9 waves → 7 spawns.
 
+Those are the numbers for a checkout whose commits are all pushed. `compile`
+resolves guards against the repo as it stands, so the schedule moves with it:
+with unpushed commits, `permalinks` (`exit0(git merge-base --is-ancestor HEAD
+@{u})`) is skipped and you get 9 waves → 8. Pin the probes to compare runs
+across different repo states:
+
+```bash
+hyprlayer orchestrate compile claude/skills/research_codebase/SKILL.md --target claude --agents-dir claude/agents \
+  --areas 4 --request "map the PTY stack" \
+  --fact 'backend=git' --fact 'exit0(git merge-base --is-ancestor HEAD @{u})=true' --fact 'exit0(test -d thoughts)=true'
+```
+
 `plan.json` is a diffable artifact: the same block, repo state, request text, and fanout count produce byte-identical output across process restarts, keyed by a `planHash` that changes whenever the target, the schedule, or any resolved fact changes.
 
 ## Configuration
