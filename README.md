@@ -128,13 +128,17 @@ hyprlayer orchestrate grammar                            # the `when:` guard gra
 
 Both leaves validate against a **target harness's agent namespace** — `claude`, `opencode`, or `codex` — because the same skill file is often read by more than one. This matters because **OpenCode reads `~/.claude/skills/` directly**: a skill authored for Claude Code is loaded and executed by OpenCode with no action from the author, against a smaller agent registry. `check` defaults to every harness installed on the machine so an author sees the portability gap before it becomes a spawn-time failure; `compile` takes exactly one target, since a compiled plan is executed by a single harness.
 
-Worked example, from a checkout of this repo, against the test fixture that mirrors a real skill's block:
+Worked example, from a checkout of this repo, against a real shipped skill's block:
 
 ```bash
-hyprlayer orchestrate check tests/fixtures/research_codebase_declared.md --target claude --agents-dir claude/agents
-hyprlayer orchestrate compile tests/fixtures/research_codebase_declared.md --target claude --agents-dir claude/agents \
+hyprlayer orchestrate check claude/skills/research_codebase/SKILL.md --target claude --agents-dir claude/agents
+hyprlayer orchestrate compile claude/skills/research_codebase/SKILL.md --target claude --agents-dir claude/agents \
   --areas 4 --request "map the PTY stack" > plan.json
 ```
+
+`check` exits 0 with four `warn:` lines, all of the "examples cannot be
+evaluated statically" kind — guards that need a live probe. `compile` reports
+15 steps → 9 waves → 7 spawns.
 
 `plan.json` is a diffable artifact: the same block, repo state, request text, and fanout count produce byte-identical output across process restarts, keyed by a `planHash` that changes whenever the target, the schedule, or any resolved fact changes.
 
