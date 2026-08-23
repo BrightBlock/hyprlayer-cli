@@ -71,12 +71,7 @@ pub struct Step {
 
 #[derive(Debug, Clone)]
 pub struct Block {
-    /// 1-based file line of the ` ```yaml ` fence itself. Saphyr spans are
-    /// relative to the fenced content (content line 1 = file line
-    /// `fence_line + 1`), so `file_line = fence_line + span_line`.
-    pub fence_line: usize,
     pub steps: Vec<Step>,
-    pub owns: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -113,6 +108,9 @@ fn extract_fence(src: &str) -> Option<(&str, usize)> {
     Some((content, fence_line))
 }
 
+/// Saphyr spans are relative to the fenced content (content line 1 = file
+/// line `fence_line + 1`), so `file_line = fence_line + span_line`. Getting
+/// this wrong puts every reported position off by a constant.
 fn pos_of(node: &MarkedYaml, fence_line: usize) -> Pos {
     Pos {
         line: fence_line + node.span.start.line(),
@@ -307,13 +305,8 @@ pub fn parse(src: &str) -> Result<Block, BlockError> {
         .iter()
         .map(|s| parse_step(s, fence_line))
         .collect();
-    let owns = string_seq(orch, "owns");
 
-    Ok(Block {
-        fence_line,
-        steps,
-        owns,
-    })
+    Ok(Block { steps })
 }
 
 #[cfg(test)]
@@ -331,7 +324,6 @@ mod tests {
         let src =
             "line1\nline2\nline3\nline4\n```yaml\norchestration:\n  steps:\n    - id: a\n```\n";
         let block = parse(src).unwrap();
-        assert_eq!(block.fence_line, 5);
         assert_eq!(block.steps[0].pos.line, 8);
     }
 

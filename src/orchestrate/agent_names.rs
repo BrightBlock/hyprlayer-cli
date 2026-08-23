@@ -24,7 +24,6 @@ pub enum AgentSource {
 /// OpenCode and Codex, which differ in all three dimensions — directory,
 /// filename convention, and where the name actually lives.
 pub trait AgentRegistry {
-    fn target(&self) -> Target;
     /// Directories consulted, in order, for the error message.
     fn search_paths(&self) -> Vec<PathBuf>;
     /// Names with no backing file (harness built-ins).
@@ -35,10 +34,6 @@ pub trait AgentRegistry {
 pub struct ClaudeRegistry;
 
 impl AgentRegistry for ClaudeRegistry {
-    fn target(&self) -> Target {
-        Target::Claude
-    }
-
     fn search_paths(&self) -> Vec<PathBuf> {
         let mut dirs = vec![PathBuf::from("./.claude/agents")];
         if let Ok(home_dest) = crate::agents::AgentTool::Claude.dest_dir() {
@@ -123,10 +118,6 @@ pub fn registry_for(target: Target) -> Box<dyn AgentRegistry> {
 pub struct OpenCodeRegistry;
 
 impl AgentRegistry for OpenCodeRegistry {
-    fn target(&self) -> Target {
-        Target::OpenCode
-    }
-
     fn search_paths(&self) -> Vec<PathBuf> {
         let mut dirs = vec![PathBuf::from("./.opencode/agents")];
         if let Ok(home_dest) = crate::agents::AgentTool::OpenCode.dest_dir() {
@@ -217,10 +208,6 @@ fn opencode_json_agent_names(path: &Path) -> Vec<String> {
 pub struct CodexRegistry;
 
 impl AgentRegistry for CodexRegistry {
-    fn target(&self) -> Target {
-        Target::Codex
-    }
-
     /// Codex has no `AgentTool` variant and no hyprlayer-managed install
     /// (`src/agents.rs`'s `AgentTool` is `Claude | Copilot | OpenCode`) —
     /// its paths are constructed directly from `dirs::home_dir()`.
@@ -409,11 +396,15 @@ mod tests {
         assert!(registry.builtins().contains(&"explorer"));
     }
 
+    /// The registries' identity was previously asserted here through a
+    /// `target()` accessor that nothing else called. Those three assertions
+    /// were tautological — each impl returned a literal — and the invariant
+    /// worth holding, that `registry_for` dispatches each `Target` to the
+    /// right registry, is covered behaviourally by
+    /// `orchestrate_targets.rs::a_claude_only_agent_is_an_error_for_opencode`,
+    /// which drives the binary and fails on any mis-dispatch.
     #[test]
-    fn each_registrys_search_paths_and_identity_rule_are_distinct() {
-        assert_eq!(ClaudeRegistry.target(), Target::Claude);
-        assert_eq!(OpenCodeRegistry.target(), Target::OpenCode);
-        assert_eq!(CodexRegistry.target(), Target::Codex);
+    fn each_registrys_search_paths_are_distinct() {
         assert!(
             ClaudeRegistry
                 .search_paths()
