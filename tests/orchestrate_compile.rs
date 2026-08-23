@@ -95,7 +95,7 @@ fn skipped_steps_do_not_consume_a_wave_number() {
     // points at, which pushes `present` to w8 and `follow-up` to w9.
     //
     // `follow-up` is no longer here: its `exists()` guard was a judgment
-    // in disguise and is now declared as one, so it is scheduled (wave 8)
+    // in disguise and is now declared as one, so it is scheduled (wave 9)
     // with the call recorded in `unresolved[]` instead of silently skipped
     // by a guard that could never evaluate.
     assert_eq!(skipped, vec!["web", "tickets"], "payload: {d}");
