@@ -1161,15 +1161,16 @@ mod tests {
         fs::remove_dir_all(&temp_dir).ok();
     }
 
-    /// Round-trip test: copy the real shipped opencode/agents/adversarial-reviewer.md
-    /// into a tempdir and verify substitution leaves no `{{...}}` placeholders behind
-    /// for any provider. Catches regressions where someone removes the placeholder
-    /// from the template or adds a new placeholder without updating the substitution
-    /// machinery.
+    /// Round-trip test: copy the real shipped
+    /// assets/opencode/agents/adversarial-reviewer.md into a tempdir and
+    /// verify substitution leaves no `{{...}}` placeholders behind for any
+    /// provider. Catches regressions where someone removes the placeholder
+    /// from the template or adds a new placeholder without updating the
+    /// substitution machinery.
     #[test]
     fn opencode_adversarial_reviewer_template_substitutes_for_all_providers() {
         let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let template = manifest_dir.join("opencode/agents/adversarial-reviewer.md");
+        let template = manifest_dir.join("assets/opencode/agents/adversarial-reviewer.md");
         let template_body = fs::read_to_string(&template).expect("opencode template missing");
 
         for provider in OpenCodeProvider::ALL {

@@ -1,7 +1,7 @@
-//! Pins `claude/skills/_thoughts/orchestration-runtime.md`'s generated
-//! region to the binary's own `orchestrate grammar --markdown` output, so
-//! the vendored doc can never silently drift from the grammar the parser
-//! actually implements.
+//! Pins `assets/claude/skills/_thoughts/orchestration-runtime.md`'s
+//! generated region to the binary's own `orchestrate grammar --markdown`
+//! output, so the vendored doc can never silently drift from the grammar
+//! the parser actually implements.
 
 mod common;
 
@@ -19,6 +19,7 @@ fn repo_root() -> PathBuf {
 #[test]
 fn generated_region_matches_the_grammar_generator() {
     let doc_path = repo_root()
+        .join("assets")
         .join("claude")
         .join("skills")
         .join("_thoughts")
@@ -53,6 +54,6 @@ fn generated_region_matches_the_grammar_generator() {
         "orchestration-runtime.md's generated region is stale.\n\
          Fix: hyprlayer orchestrate grammar --markdown, then paste between\n\
          <!-- generated: ... --> and <!-- /generated --> in\n\
-         claude/skills/_thoughts/orchestration-runtime.md"
+         assets/claude/skills/_thoughts/orchestration-runtime.md"
     );
 }

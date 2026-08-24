@@ -651,7 +651,7 @@ mod tests {
     }
 
     fn repo_agents_dir() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("claude/agents")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/claude/agents")
     }
 
     #[test]

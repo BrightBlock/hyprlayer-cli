@@ -66,9 +66,9 @@ fn assert_preamble(file: &Path, expected_skill: &str) {
 
 #[test]
 fn every_claude_skill_has_no_preamble() {
-    let dir = repo_root().join("claude").join("skills");
+    let dir = repo_root().join("assets").join("claude").join("skills");
     let entries: Vec<_> = std::fs::read_dir(&dir)
-        .expect("claude/skills/ should exist")
+        .expect("assets/claude/skills/ should exist")
         .filter_map(Result::ok)
         .filter(|e| {
             e.file_type().map(|t| t.is_dir()).unwrap_or(false)
@@ -92,9 +92,9 @@ fn every_claude_skill_has_no_preamble() {
 
 #[test]
 fn every_copilot_prompt_has_telemetry_preamble() {
-    let dir = repo_root().join("copilot").join("prompts");
+    let dir = repo_root().join("assets").join("copilot").join("prompts");
     let entries: Vec<_> = std::fs::read_dir(&dir)
-        .expect("copilot/prompts/ should exist")
+        .expect("assets/copilot/prompts/ should exist")
         .filter_map(Result::ok)
         .filter(|e| e.file_name().to_string_lossy().ends_with(".prompt.md"))
         .collect();
@@ -112,9 +112,9 @@ fn every_opencode_command_has_no_preamble() {
     // skill_run emission for opencode now. Inline beacon prose would
     // double-fire (or, more often, fail with `command not found:
     // hyprlayer` under launchd's stripped PATH) — strip on sight.
-    let dir = repo_root().join("opencode").join("commands");
+    let dir = repo_root().join("assets").join("opencode").join("commands");
     let entries: Vec<_> = std::fs::read_dir(&dir)
-        .expect("opencode/commands/ should exist")
+        .expect("assets/opencode/commands/ should exist")
         .filter_map(Result::ok)
         .filter(|e| {
             e.file_name().to_string_lossy().ends_with(".md")

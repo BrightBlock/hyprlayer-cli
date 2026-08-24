@@ -42,11 +42,11 @@ fn a_claude_only_agent_is_an_error_for_opencode() {
     // `cartographer` resolves for claude, not for opencode. This is the
     // ten-agent gap: adjudicator, archivist, cartographer, draughtsman,
     // foreman, herald, inspector, marshal, quartermaster, ship all exist
-    // in claude/agents/ and none exist in opencode/agents/.
+    // in assets/claude/agents/ and none exist in assets/opencode/agents/.
     let (_guard, xdg) = isolated_dirs();
     let path = write_skill(&xdg, "x.md", CARTOGRAPHER_STEP);
 
-    let claude_agents = repo_root().join("claude/agents");
+    let claude_agents = repo_root().join("assets/claude/agents");
     let out = run(
         &xdg,
         &[
@@ -64,7 +64,7 @@ fn a_claude_only_agent_is_an_error_for_opencode() {
         "claude target should be clean: {out:?}"
     );
 
-    let opencode_agents = repo_root().join("opencode/agents");
+    let opencode_agents = repo_root().join("assets/opencode/agents");
     let out = run(
         &xdg,
         &[
@@ -134,8 +134,8 @@ fn checks_one_through_five_are_reported_once_not_once_per_target() {
 fn exit_is_one_when_any_single_target_has_an_error() {
     let (_guard, xdg) = isolated_dirs();
     let path = write_skill(&xdg, "x.md", CARTOGRAPHER_STEP);
-    let claude_agents = repo_root().join("claude/agents");
-    let opencode_agents = repo_root().join("opencode/agents");
+    let claude_agents = repo_root().join("assets/claude/agents");
+    let opencode_agents = repo_root().join("assets/opencode/agents");
 
     // claude alone: clean.
     let out = run(
@@ -198,7 +198,7 @@ fn no_installed_target_warns_and_skips_check_six() {
 fn agents_dir_with_multiple_targets_is_an_error_naming_the_fix() {
     let (_guard, xdg) = isolated_dirs();
     let path = write_skill(&xdg, "x.md", CARTOGRAPHER_STEP);
-    let claude_agents = repo_root().join("claude/agents");
+    let claude_agents = repo_root().join("assets/claude/agents");
     let out = run(
         &xdg,
         &[
@@ -329,7 +329,7 @@ fn a_repeated_target_still_allows_agents_dir() {
     // is still one target, so it must not trip that guard rail.
     let (_guard, xdg) = isolated_dirs();
     let path = write_skill(&xdg, "x.md", CARTOGRAPHER_STEP);
-    let claude_agents = repo_root().join("claude/agents");
+    let claude_agents = repo_root().join("assets/claude/agents");
     let out = run(
         &xdg,
         &[

@@ -3,7 +3,7 @@
 //! point), plus the positive case against the real, shipped
 //! `research_codebase` skill.
 //!
-//! Every invocation passes `--target claude --agents-dir <repo_root>/claude/agents`:
+//! Every invocation passes `--target claude --agents-dir <repo_root>/assets/claude/agents`:
 //! `run()` points `HOME` at a tempdir, so `~/.claude/agents` does not
 //! exist — without `--agents-dir`, check 6 silently skips and the
 //! `unknown-agent` fixture would pass. `--target claude` is likewise
@@ -25,6 +25,7 @@ fn repo_root() -> PathBuf {
 
 fn agents_dir_arg() -> String {
     repo_root()
+        .join("assets")
         .join("claude")
         .join("agents")
         .display()
@@ -190,7 +191,7 @@ fn the_research_skill_checks_clean_with_four_warnings() {
     // reported per-example, and `follow-up` carried an `exists()` guard
     // that has since been recast as the `judgment:` it always was.
     let (_guard, xdg) = isolated_dirs();
-    let fixture = repo_root().join("claude/skills/research_codebase/SKILL.md");
+    let fixture = repo_root().join("assets/claude/skills/research_codebase/SKILL.md");
     let (stdout, stderr, code) = check_output(&xdg, &fixture, &[]);
     assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
     let warn_count = stdout.matches("warn").count();

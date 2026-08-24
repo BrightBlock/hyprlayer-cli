@@ -73,7 +73,7 @@ fn claude_agent_names_in(dir: &Path) -> Vec<String> {
 }
 
 /// Frontmatter `name:` is preferred over the file stem when they differ.
-/// Verified: all 19 files in `claude/agents/` have `name:` equal to their
+/// Verified: all 19 files in `assets/claude/agents/` have `name:` equal to their
 /// stem today, so the two agree; preferring frontmatter is the right
 /// precedence for the day they diverge.
 fn agent_name_from_file(path: &Path) -> Option<String> {
@@ -160,7 +160,7 @@ fn opencode_agent_names_in(dir: &Path) -> Vec<String> {
 }
 
 /// OpenCode agent names come from the **filename**, never frontmatter —
-/// verified: 0 of 9 files in `opencode/agents/` carry a `name:` key.
+/// verified: 0 of 9 files in `assets/opencode/agents/` carry a `name:` key.
 /// Only `mode: subagent` entries count: a `mode: primary` agent cannot be
 /// spawned as a subagent, so admitting it would make check 6 accept a
 /// name that fails at runtime. A file with no discoverable `mode:` at all
@@ -320,10 +320,10 @@ mod tests {
 
     #[test]
     fn all_repo_agent_names_resolve_from_the_repo_directory() {
-        let repo_agents = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("claude/agents");
+        let repo_agents = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/claude/agents");
         let registry = ClaudeRegistry;
         let AgentSource::Resolved(names) = registry.resolve(&[repo_agents]) else {
-            panic!("expected the repo's claude/agents/ to resolve names");
+            panic!("expected the repo's assets/claude/agents/ to resolve names");
         };
         assert!(names.contains("cartographer"));
         assert!(names.contains("ship"));
@@ -354,10 +354,10 @@ mod tests {
 
     #[test]
     fn all_repo_opencode_agent_names_resolve_and_have_the_ten_agent_gap() {
-        let repo_agents = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("opencode/agents");
+        let repo_agents = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/opencode/agents");
         let registry = OpenCodeRegistry;
         let AgentSource::Resolved(names) = registry.resolve(&[repo_agents]) else {
-            panic!("expected the repo's opencode/agents/ to resolve names");
+            panic!("expected the repo's assets/opencode/agents/ to resolve names");
         };
         assert!(names.contains("codebase-locator"));
         // The ten-agent Claude/OpenCode gap.
