@@ -11,7 +11,9 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use crate::orchestrate::agent_names::{self, AgentSource};
-use crate::orchestrate::block::{self, AgentRef, Block, BlockError, GivenEntry, Pos, Spanned};
+use crate::orchestrate::block::{
+    self, AgentRef, Block, BlockError, GivenEntry, Pos, Spanned, Step,
+};
 use crate::orchestrate::eval::{self, FactEnv, FactValue, Tri};
 use crate::orchestrate::expr::{self, Expr, Leaf};
 use crate::orchestrate::target::Target;
@@ -530,6 +532,7 @@ fn check_agents(block: &Block, opts: &CheckOptions, findings: &mut Vec<Finding>)
         }
         check_names_an_agent(sid, "agent", step.agent.as_ref(), findings);
         check_names_an_agent(sid, "fanout", step.fanout.as_ref(), findings);
+        check_one_spawn_mode(sid, step, findings);
     }
 
     if opts.targets.is_empty() {
@@ -556,6 +559,38 @@ fn check_agents(block: &Block, opts: &CheckOptions, findings: &mut Vec<Finding>)
     for &target in &opts.targets {
         check_agents_for_target(block, target, &opts.agents_dir, findings);
     }
+}
+
+/// `inline:`, `agent:` and `fanout:` are alternatives, not a precedence
+/// list — `orchestration-runtime.md` states each as the whole of what a
+/// step does, and "`inline: true` you do yourself, never delegated" is
+/// the direct contradiction of carrying an `agent:` too. Nothing enforced
+/// that, and `spawn_mode` resolves the ambiguity by silently dropping the
+/// loser: `inline:` wins over both, `fanout:` wins over `agent:`. The
+/// declared delegation then vanishes from the plan with nothing said.
+fn check_one_spawn_mode(sid: &str, step: &Step, findings: &mut Vec<Finding>) {
+    let mut declared: Vec<&str> = Vec::new();
+    if step.inline {
+        declared.push("inline: true");
+    }
+    if step.agent.is_some() {
+        declared.push("agent:");
+    }
+    if step.fanout.is_some() {
+        declared.push("fanout:");
+    }
+    if declared.len() < 2 {
+        return;
+    }
+    findings.push(with_hint(
+        error(
+            6,
+            Some(sid),
+            Some(step.pos),
+            format!("step `{sid}`: declares {}", declared.join(" and ")),
+        ),
+        "a step has exactly one spawn mode; remove the one that does not apply",
+    ));
 }
 
 /// The structural half of check 6, run before any registry is consulted:

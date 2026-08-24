@@ -1,4 +1,4 @@
-//! Integration tests for `hyprlayer orchestrate check`. Eight deliberately
+//! Integration tests for `hyprlayer orchestrate check`. Nine deliberately
 //! broken fixtures, each inline (three to six lines whose content is the
 //! point), plus the positive case against the real, shipped
 //! `research_codebase` skill.
@@ -184,6 +184,22 @@ fn an_empty_one_of_fails_rather_than_planning_a_choice_with_no_candidates() {
     assert_eq!(code, 1, "stdout: {stdout}");
     assert!(
         stdout.contains("`agent: one-of` lists no agents"),
+        "stdout: {stdout}"
+    );
+}
+
+#[test]
+fn a_step_declaring_two_spawn_modes_is_an_error() {
+    let (_guard, xdg) = isolated_dirs();
+    let path = write_skill(
+        &xdg,
+        "two-modes.md",
+        "orchestration:\n  steps:\n    - id: a\n      inline: true\n      agent: cartographer\n",
+    );
+    let (stdout, _stderr, code) = check_output(&xdg, &path, &[]);
+    assert_eq!(code, 1, "stdout: {stdout}");
+    assert!(
+        stdout.contains("declares inline: true and agent:"),
         "stdout: {stdout}"
     );
 }
