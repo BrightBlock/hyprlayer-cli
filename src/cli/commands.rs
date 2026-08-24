@@ -229,6 +229,41 @@ pub struct AiStatusArgs {
 #[derive(Debug, Args)]
 #[command(name = "reinstall", about = "Reinstall AI agent files")]
 pub struct AiReinstallArgs {
+    // The pin is persisted and survives binary upgrades, so a bundle that
+    // regressed can be held back until it is fixed.
+    #[arg(
+        long,
+        value_name = "VERSION",
+        conflicts_with = "unpin",
+        help = "Pin the agent bundle to this version and install it"
+    )]
+    pub version: Option<String>,
+    // `conflicts_with` is what makes the pair mutually exclusive: clap
+    // rejects both at parse time, rather than the handler having to pick a
+    // winner between a pin and its removal.
+    #[arg(long, help = "Clear the version pin and install this binary's bundle")]
+    pub unpin: bool,
+    #[command(flatten)]
+    pub config: ConfigArgs,
+}
+
+#[derive(Debug, Args)]
+#[command(
+    name = "versions",
+    about = "List release versions that carry an agent bundle"
+)]
+pub struct AiVersionsArgs {
+    #[arg(long, help = "Output as JSON")]
+    pub json: bool,
+    // Passed straight through as the releases API's `per_page`, which
+    // caps at 100.
+    #[arg(
+        long,
+        default_value_t = 10,
+        value_parser = clap::value_parser!(u32).range(1..=100),
+        help = "How many recent releases to examine"
+    )]
+    pub limit: u32,
     #[command(flatten)]
     pub config: ConfigArgs,
 }
@@ -281,6 +316,76 @@ pub struct SelfUpdateArgs {
     pub force: bool,
     #[command(flatten)]
     pub config: ConfigArgs,
+}
+
+#[derive(Debug, Args)]
+#[command(name = "check", about = "Validate a skill's `orchestration:` block")]
+pub struct OrchestrateCheckArgs {
+    #[arg(required = true)]
+    pub files: Vec<PathBuf>,
+    /// Emit findings as JSON for editor / app consumption
+    #[arg(long)]
+    pub json: bool,
+    /// Resolve agent names from these directories only, instead of the
+    /// target's defaults. Repeatable; requires exactly one `--target`.
+    #[arg(long)]
+    pub agents_dir: Vec<PathBuf>,
+    /// Harness whose agent namespace to validate against. Repeatable.
+    /// Default: every target with an agent directory on this machine.
+    #[arg(long, value_enum)]
+    pub target: Vec<crate::orchestrate::target::Target>,
+}
+
+#[derive(Debug, Args)]
+#[command(
+    name = "compile",
+    about = "Compute the wave schedule for a skill's orchestration block"
+)]
+pub struct OrchestrateCompileArgs {
+    pub file: PathBuf,
+    /// The user's request text, bound to every `matches(<field>, ...)` leaf
+    #[arg(long, conflicts_with = "request_file")]
+    pub request: Option<String>,
+    #[arg(long)]
+    pub request_file: Option<PathBuf>,
+    /// Size of a named `over:` list, e.g. --fanout areas=4. Repeatable.
+    #[arg(long, value_name = "NAME=N")]
+    pub fanout: Vec<String>,
+    /// Sugar for --fanout areas=N
+    #[arg(long)]
+    pub areas: Option<usize>,
+    /// Pin any guard leaf by its canonical key, e.g. --fact backend=git.
+    /// Repeatable. Always wins over a probe.
+    #[arg(long, value_name = "KEY=VALUE")]
+    pub fact: Vec<String>,
+    /// Resolve nothing by execution or environment inspection
+    #[arg(long)]
+    pub no_probe: bool,
+    /// Accepted for argv symmetry with `check`, so a caller can build one
+    /// argument list for both. Currently unused: `compile` schedules and
+    /// counts spawns but never resolves agent names — that is `check`'s
+    /// job (check 6). Records `agent:` values verbatim, unvalidated.
+    #[arg(long)]
+    pub agents_dir: Vec<PathBuf>,
+    /// Harness this plan will be executed by. Exactly one — a plan is run
+    /// by a single harness. Defaults to `ai.agentTool` from config, then
+    /// `claude`. (`check` takes many; `compile` takes one. See --help.)
+    #[arg(long, value_enum)]
+    pub target: Vec<crate::orchestrate::target::Target>,
+    /// Print a colored wave listing instead of JSON
+    #[arg(long)]
+    pub human: bool,
+}
+
+#[derive(Debug, Args)]
+#[command(name = "grammar", about = "Print the `when:` guard grammar")]
+pub struct OrchestrateGrammarArgs {
+    /// Emit the markdown table for orchestration-runtime.md's generated region
+    #[arg(long, conflicts_with = "json")]
+    pub markdown: bool,
+    /// Emit the machine-readable grammar description
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -486,4 +591,79 @@ pub struct TelemetryConfigArgs {
     pub verbose: bool,
     #[command(flatten)]
     pub config: ConfigArgs,
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::cli::Cli;
+    use clap::Parser;
+
+    /// Parse a full `hyprlayer ai ...` invocation. The pin flags are only
+    /// worth testing through the real parser: `AiReinstallArgs` derives
+    /// `Args`, so it has no `try_parse_from` of its own, and the top-level
+    /// `#[command(version)]` is exactly the sort of thing that could shadow
+    /// a subcommand's own `--version`.
+    fn parse_ai(args: &[&str]) -> Result<Cli, clap::Error> {
+        let mut argv = vec!["hyprlayer", "ai"];
+        argv.extend_from_slice(args);
+        Cli::try_parse_from(argv)
+    }
+
+    fn reinstall_args(args: &[&str]) -> super::AiReinstallArgs {
+        match parse_ai(args).expect("should parse") {
+            Cli::Ai {
+                command: crate::cli::AiCommands::Reinstall(args),
+            } => args,
+            other => panic!("expected an ai reinstall command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reinstall_args_rejects_version_with_unpin() {
+        let err = parse_ai(&["reinstall", "--version", "1.5.9", "--unpin"])
+            .expect_err("--version and --unpin are mutually exclusive");
+        assert_eq!(
+            err.kind(),
+            clap::error::ErrorKind::ArgumentConflict,
+            "expected a conflict error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn reinstall_args_accept_version_on_its_own() {
+        let args = reinstall_args(&["reinstall", "--version", "1.5.9"]);
+        assert_eq!(args.version.as_deref(), Some("1.5.9"));
+        assert!(!args.unpin);
+    }
+
+    #[test]
+    fn reinstall_args_accept_unpin_on_its_own() {
+        let args = reinstall_args(&["reinstall", "--unpin"]);
+        assert!(args.unpin);
+        assert!(args.version.is_none());
+    }
+
+    #[test]
+    fn reinstall_args_default_to_neither_pin_flag() {
+        let args = reinstall_args(&["reinstall"]);
+        assert!(args.version.is_none());
+        assert!(!args.unpin);
+    }
+
+    #[test]
+    fn versions_args_default_the_limit_and_reject_an_out_of_range_one() {
+        let Cli::Ai {
+            command: crate::cli::AiCommands::Versions(args),
+        } = parse_ai(&["versions"]).expect("should parse")
+        else {
+            panic!("expected an ai versions command");
+        };
+        assert_eq!(args.limit, 10);
+        assert!(!args.json);
+
+        // `per_page` caps at 100 upstream; asking for more is a parse error
+        // rather than a request GitHub silently truncates.
+        assert!(parse_ai(&["versions", "--limit", "101"]).is_err());
+        assert!(parse_ai(&["versions", "--limit", "0"]).is_err());
+    }
 }

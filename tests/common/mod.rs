@@ -107,7 +107,31 @@ pub fn read_spool_events(path: &Path) -> Vec<serde_json::Value> {
 }
 
 pub fn run(xdg: &Path, args: &[&str]) -> std::process::Output {
+    run_inner(xdg, None, args)
+}
+
+/// `run()` with the child's working directory pinned too.
+///
+/// Every agent registry's first search path is cwd-relative
+/// (`./.claude/agents`, `./.opencode/agents`, `./opencode.json`,
+/// `./.codex/agents`), and cargo runs integration tests with cwd set to
+/// the manifest directory — so an isolated `HOME` alone does not isolate
+/// target discovery. A developer whose checkout contains a `.claude/`
+/// directory (which `.gitignore` ignores, so it is invisible to git) makes
+/// `claude` resolve as installed and fails the default-target tests.
+///
+/// This is deliberately not folded into `run()`: `dispatch_instrumentation`
+/// runs `thoughts status`, which resolves the current repo from cwd and
+/// needs the real one.
+pub fn run_in(xdg: &Path, cwd: &Path, args: &[&str]) -> std::process::Output {
+    run_inner(xdg, Some(cwd), args)
+}
+
+fn run_inner(xdg: &Path, cwd: Option<&Path>, args: &[&str]) -> std::process::Output {
     let mut cmd = Command::new(hyprlayer_bin());
+    if let Some(cwd) = cwd {
+        cmd.current_dir(cwd);
+    }
     cmd.args(args)
         .env("XDG_CONFIG_HOME", xdg)
         .env("HOME", xdg)

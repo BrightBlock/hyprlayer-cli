@@ -109,7 +109,104 @@ Run `hyprlayer storage info --json` from inside a project to see the resolved ba
 | [`/founder_mode`](https://brightblock.ai/hyprlayer/commands/founder-mode/) | Retroactively create a JIRA ticket and PR |
 | [`/cost_estimate`](https://brightblock.ai/hyprlayer/commands/cost-estimate/) | Estimate development costs |
 
-Most commands have [`_nt` and `_generic` variants](https://brightblock.ai/hyprlayer/reference/variants/).
+The `_nt` and `_generic` command variants have been folded into their parents. A repo
+with no thoughts backend, or a request asking for the codebase on its own terms, now
+skips the steps that read or write prior context — see the `Prior context` judgment in
+`research_codebase`, `create_plan`, and `iterate_plan`.
+
+## Orchestration
+
+Some skills carry their sub-agent wiring as data — an `orchestration:` block — instead of prose. `hyprlayer orchestrate` validates and schedules that block. It is a **validator and a planner, not an execution engine**: it never spawns an agent or runs a step.
+
+```bash
+hyprlayer orchestrate check   <skill.md>...             # six mechanical checks, exit 0/1
+hyprlayer orchestrate compile <skill.md> --areas N       # the wave schedule, as JSON on stdout
+hyprlayer orchestrate grammar                            # the `when:` guard grammar
+```
+
+`check` never executes anything — no `exit0` probing, no PATH lookups, no config reads — which is what makes it safe to run from a hook or an editor on every keystroke. `compile` may probe live state (`exit0(...)` commands, `available()` PATH lookups, the effective storage backend) to resolve a step's `when:` guard; pass `--no-probe` to pin every fact explicitly instead and skip execution entirely.
+
+Both leaves validate against a **target harness's agent namespace** — `claude`, `opencode`, or `codex` — because the same skill file is often read by more than one. This matters because **OpenCode reads `~/.claude/skills/` directly**: a skill authored for Claude Code is loaded and executed by OpenCode with no action from the author, against a smaller agent registry. `check` defaults to every harness installed on the machine so an author sees the portability gap before it becomes a spawn-time failure; `compile` takes exactly one target, since a compiled plan is executed by a single harness.
+
+Worked example, from a checkout of this repo, against a real shipped skill's block:
+
+```bash
+hyprlayer orchestrate check claude/skills/research_codebase/SKILL.md --target claude --agents-dir claude/agents
+hyprlayer orchestrate compile claude/skills/research_codebase/SKILL.md --target claude --agents-dir claude/agents \
+  --areas 4 --request "map the PTY stack" > plan.json
+```
+
+`check` exits 0 with four `warn:` lines, all of the "examples cannot be
+evaluated statically" kind — guards that need a live probe. `compile` reports
+15 steps → 9 waves → 7 spawns.
+
+Those are the numbers for a checkout whose commits are all pushed. `compile`
+resolves guards against the repo as it stands, so the schedule moves with it:
+with unpushed commits, `permalinks` (`exit0(git merge-base --is-ancestor HEAD
+@{u})`) is skipped and you get 9 waves → 8. Pin the probes to compare runs
+across different repo states:
+
+```bash
+hyprlayer orchestrate compile claude/skills/research_codebase/SKILL.md --target claude --agents-dir claude/agents \
+  --areas 4 --request "map the PTY stack" \
+  --fact 'backend=git' --fact 'exit0(git merge-base --is-ancestor HEAD @{u})=true' --fact 'exit0(test -d thoughts)=true'
+```
+
+`plan.json` is a diffable artifact: the same block, repo state, request text, and fanout count produce byte-identical output across process restarts, keyed by a `planHash` that changes whenever the target, the schedule, or any resolved fact changes.
+
+## Agent bundles
+
+The skills, agents, and hooks hyprlayer installs into `~/.claude/` (or
+`~/.config/opencode/`, or VS Code's `User/`) ship as per-harness assets attached
+to each GitHub release — `hyprlayer-assets-<harness>-<version>.tar.gz`.
+
+From **1.6.0** the bundle is pinned to a release version rather than tracking
+`master`. `hyprlayer ai configure` and `hyprlayer ai reinstall` download the
+asset matching the running binary, verify its SHA256 against the digest GitHub
+publishes for that asset, and refuse to install on a mismatch. Once the
+installed version matches the wanted one, the 24-hour startup check performs no
+network I/O at all.
+
+### Choosing a version
+
+```bash
+hyprlayer ai versions                      # releases carrying a bundle for your harness
+hyprlayer ai versions --json --limit 20
+hyprlayer ai reinstall --version 1.6.0     # pin to a version and install it
+hyprlayer ai reinstall --unpin             # back to the binary's own bundle
+```
+
+A pin survives binary upgrades, so a bundle that regresses can be held back
+until it is fixed. `hyprlayer ai status` reports `assetsVersion`, `pinnedVersion`
+and `binaryVersion` so the skew is visible. A pin is refused if its bundle needs
+a newer CLI than the one running.
+
+`ai versions` is the only new API call, it runs on demand rather than at
+startup, and its result is cached for an hour — repeated calls do not spend the
+unauthenticated rate-limit budget.
+
+### Your edits are kept
+
+Installs no longer overwrite files you have changed. Each install records the
+manifest it wrote, so the next one can tell its own files from yours: a file
+whose contents match neither the incoming version nor what we last installed is
+left alone and reported. Files a previous bundle owned and the new one dropped
+are removed, but only when they still match what we recorded — anything you
+edited stays.
+
+The first install after upgrading from a pre-1.6.0 hyprlayer has no such record
+and cannot prove which files are yours, so it writes the new bundle but saves
+what it replaces alongside as `<name>.hyprlayer-backup`. Merge anything you want
+to keep back, then delete those files; later installs skip the overwrite
+outright and take no backups.
+
+### Frozen legacy trees
+
+The `claude/`, `copilot/`, and `opencode/` directories at the repo root are
+**frozen** and exist only to serve CLIs older than 1.6.0, whose download paths
+are compiled in and cannot be retargeted. Live skill and agent work happens in
+`assets/`, which is where the release bundles are cut from. See
+[assets/FROZEN.md](assets/FROZEN.md).
 
 ## Configuration
 

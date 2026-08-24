@@ -1,7 +1,7 @@
 [package]
 name = "hyprlayer"
 
-version = "1.5.9"
+version = "1.6.0"
 edition = "2024"
 
 [dependencies]
@@ -30,6 +30,18 @@ wait-timeout = "0.2"
 # replaces ~30 rate-limited Contents API calls per install.
 tar = "0.4"
 flate2 = "1"
+# YAML 1.2 with a marked tree: `MarkedYaml` carries a `.span` on every node, so
+# `orchestrate check` can report file:line:col. yaml-rust2 (this crate's
+# predecessor) has no marked tree; serde_yaml is archived. Pinned exactly
+# because saphyr is pre-1.0 — every 0.0.x bump is semver-breaking.
+saphyr = "=0.0.12"
+# The `matches(field, "re")` leaf of the `when:` grammar needs a real engine.
+# ASCII-only and dependency-light; sufficient for guard patterns.
+regex-lite = "0.1"
+# Codex subagents are TOML (`~/.codex/agents/*.toml`), not markdown, so
+# the agent-name check needs a TOML reader to cover that target. Stable
+# 1.x and serde-based, unlike the YAML situation.
+toml = "1.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -1,0 +1,55 @@
+# Frozen legacy trees
+
+The root `claude/`, `copilot/`, and `opencode/` trees in this repository are
+**frozen**, not live. They exist only to serve pre-1.6.0 clients, whose
+download paths hardcode `claude`/`copilot`/`opencode` at the repo root
+(`repo_dir()`, `src/agents.rs:113-119`) and cannot be retargeted without
+shipping a new binary.
+
+All new skill, agent, and hook work happens in `assets/claude/`,
+`assets/copilot/`, `assets/opencode/`. The root trees are never edited again.
+
+## Freeze point
+
+```
+3253eacedc83659790f00f40dec74f84e49beb56
+2026-08-20T16:33:10-05:00
+Add named subagents for plan/build/ship stages (#31)
+```
+
+This is `origin/master` HEAD at the time of the freeze (2026-08-23), **not**
+this branch's HEAD. This branch had already added declarative skill content
+(`hyprlayer orchestrate check`/`compile` invocations, which pre-1.6.0 binaries
+do not have) and deleted eight skills (`ci_commit`, `ci_describe_pr`,
+`create_plan_nt`, `create_plan_generic`, `describe_pr_nt`, `iterate_plan_nt`,
+`research_codebase_nt`, `research_codebase_generic`, and their `opencode`
+equivalents) relative to `origin/master`. Freezing at this branch's state
+would have pushed both changes onto every pre-1.6.0 client within 24h via the
+existing auto-refresh (`src/version.rs:377-407`): the declarative skills
+reference a command group (`orchestrate`) those binaries lack, and
+`sync_tree` never deletes, so the removed skills would linger on disk forever
+rather than actually going away.
+
+Freezing at `origin/master` instead means pre-1.6.0 clients keep receiving
+exactly what they receive today — including the nine named subagents added
+in this same commit, which a stale local `master` ref would have silently
+dropped (`git rev-parse master` resolved to `4c5cf37` in at least one
+worktree at freeze time; `origin/master` is authoritative here).
+
+## Verifying the freeze
+
+`tests/frozen_legacy_trees.rs` asserts the root trees remain byte-identical
+to the SHA above via `git diff --quiet <sha> -- claude/ copilot/ opencode/`.
+It is pinned to this recorded SHA, not to `origin/master`, so it keeps
+holding as `master` advances past the freeze point.
+
+## Making a deliberate change to a frozen tree
+
+Don't, except to fix something actively broken for pre-1.6.0 clients. If you
+must, update the SHA recorded here in the same commit as the tree change, so
+the freeze guard reflects the new baseline rather than failing forever.
+
+## Removal
+
+See "Sunsetting the legacy trees" in
+`thoughts/shared/plans/2026-08-23-versioned-release-asset-bundles.md`.

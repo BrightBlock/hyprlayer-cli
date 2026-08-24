@@ -540,6 +540,23 @@ pub struct HyprlayerConfig {
     pub last_agent_check: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agents_installed_sha: Option<String>,
+    /// Assets bundle version the last install resolved to — the pin when one
+    /// was set, otherwise the binary's own version. It records what the
+    /// install was *for*, not necessarily what served it: a legacy-tree
+    /// fallback records it too, or a dev build with no matching release
+    /// would reinstall on every startup.
+    ///
+    /// `None` on a config written before 1.6.0, which is what makes the
+    /// first 1.6.0 run install once and then settle (see
+    /// `assets_need_refresh`). The bundle that actually landed is recorded
+    /// in `<dest>/.hyprlayer-manifest.json`, not here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agents_installed_version: Option<String>,
+    /// Explicit assets version pin. Takes precedence over the binary's own
+    /// version and survives binary upgrades, so a bundle that regressed can
+    /// be held back until it is fixed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agents_pinned_version: Option<String>,
     #[serde(default)]
     pub disable_update_check: bool,
     /// Enables silent startup auto-update for direct-swap install methods.
@@ -562,6 +579,8 @@ impl Default for HyprlayerConfig {
             last_version_check: None,
             last_agent_check: None,
             agents_installed_sha: None,
+            agents_installed_version: None,
+            agents_pinned_version: None,
             disable_update_check: false,
             auto_update: false,
             copilot_deprecation_warned: false,
@@ -782,6 +801,38 @@ impl HyprlayerConfig {
         self.ai.get_or_insert_with(AiConfig::default)
     }
 
+    /// The assets bundle version this config should be running: the pin when
+    /// one is set, otherwise the binary's own version.
+    pub fn desired_assets_version(&self) -> &str {
+        crate::agents::resolve_assets_version(self.agents_pinned_version.as_deref())
+    }
+
+    /// Whether the recorded assets differ from the desired ones, and an
+    /// install is therefore due.
+    ///
+    /// Pure: freshness is a string comparison against what the last install
+    /// recorded, so the settled case costs no network I/O at all. A config
+    /// written before 1.6.0 carries only `agents_installed_sha` and so reads
+    /// as unknown here — exactly one install, after which
+    /// `record_assets_version` makes this `false` and keeps it there.
+    pub fn assets_need_refresh(&self) -> bool {
+        crate::version::should_reinstall(
+            self.agents_installed_version.as_deref(),
+            self.desired_assets_version(),
+        )
+    }
+
+    /// Record that an install for `version` completed.
+    ///
+    /// Clearing `last_agent_check` is load-bearing: with freshness decided by
+    /// version rather than by a timer, that anchor is only a backoff for a
+    /// refresh that *failed*, and leaving it set would make the next binary
+    /// upgrade wait out the 24h window before picking up its own bundle.
+    pub fn record_assets_version(&mut self, version: &str) {
+        self.agents_installed_version = Some(version.to_string());
+        self.last_agent_check = None;
+    }
+
     /// Migrate a v1 config (no version field) to a v2-shaped intermediate
     /// representation. The result is fed straight into `migrate_v2` to land
     /// on the live v3 shape — v1 is never deserialized into the live types.
@@ -868,6 +919,10 @@ impl HyprlayerConfig {
             last_version_check: v2.last_version_check,
             last_agent_check: v2.last_agent_check,
             agents_installed_sha: v2.agents_installed_sha,
+            // v2 predates versioned bundles, so there is nothing to carry
+            // over: the first 1.6.0 run treats this as unknown and installs.
+            agents_installed_version: None,
+            agents_pinned_version: None,
             disable_update_check: v2.disable_update_check,
             auto_update: false,
             copilot_deprecation_warned: false,
@@ -992,6 +1047,8 @@ mod tests {
             last_version_check: Some(1700000000),
             last_agent_check: Some(1700000000),
             agents_installed_sha: Some("abc123def456".to_string()),
+            agents_installed_version: Some("1.6.0".to_string()),
+            agents_pinned_version: Some("1.5.9".to_string()),
             disable_update_check: true,
             auto_update: true,
             copilot_deprecation_warned: true,
@@ -1010,6 +1067,8 @@ mod tests {
         assert_eq!(loaded.last_version_check, Some(1700000000));
         assert_eq!(loaded.last_agent_check, Some(1700000000));
         assert_eq!(loaded.agents_installed_sha.as_deref(), Some("abc123def456"));
+        assert_eq!(loaded.agents_installed_version.as_deref(), Some("1.6.0"));
+        assert_eq!(loaded.agents_pinned_version.as_deref(), Some("1.5.9"));
         assert!(loaded.disable_update_check);
         assert!(loaded.auto_update);
         assert!(loaded.copilot_deprecation_warned);
@@ -1176,6 +1235,123 @@ mod tests {
         assert_eq!(cfg.version, Some(4));
         assert!(cfg.last_agent_check.is_none());
         assert!(cfg.agents_installed_sha.is_none());
+
+        fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    /// The 1.6.0 migration: a config written by an older CLI records only
+    /// `agentsInstalledSha`, so the assets version reads as unknown and the
+    /// first run installs. The stabilisation is the part that matters — a
+    /// resolution that stayed stale after recording would reinstall the
+    /// bundle on every startup, forever — so the decision is run repeatedly
+    /// and must fire exactly once.
+    #[test]
+    fn sha_only_config_migrates_to_one_install_then_stabilises() {
+        let temp_dir = std::env::temp_dir().join("hyprlayer_test_assets_version_migration");
+        fs::create_dir_all(&temp_dir).unwrap();
+        let config_path = temp_dir.join("config.json");
+
+        let legacy_json = r#"{
+            "version": 4,
+            "lastVersionCheck": 1700000000,
+            "lastAgentCheck": 1700000001,
+            "agentsInstalledSha": "abc123def456"
+        }"#;
+        fs::write(&config_path, legacy_json).unwrap();
+
+        let mut cfg = HyprlayerConfig::load(&config_path).unwrap();
+        assert!(
+            cfg.agents_installed_version.is_none(),
+            "the field post-dates this config, so it must default to unknown"
+        );
+
+        let mut installs = 0;
+        for _ in 0..5 {
+            if cfg.assets_need_refresh() {
+                installs += 1;
+                let version = cfg.desired_assets_version().to_string();
+                cfg.record_assets_version(&version);
+            }
+        }
+
+        assert_eq!(
+            installs, 1,
+            "the migration must install once and be a no-op thereafter"
+        );
+        assert_eq!(
+            cfg.agents_installed_version.as_deref(),
+            Some(env!("CARGO_PKG_VERSION"))
+        );
+        assert_eq!(
+            cfg.agents_installed_sha.as_deref(),
+            Some("abc123def456"),
+            "the legacy SHA is retained for the frozen-tree fallback"
+        );
+        assert!(
+            cfg.last_agent_check.is_none(),
+            "a completed refresh clears the failed-refresh backoff anchor"
+        );
+
+        // And it survives the round-trip to disk: reloading must not
+        // resurrect the unknown state.
+        cfg.save(&config_path).unwrap();
+        let reloaded = HyprlayerConfig::load(&config_path).unwrap();
+        assert!(!reloaded.assets_need_refresh());
+
+        fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    /// A pin is the whole point of the field: it must beat the binary's own
+    /// version, and it must make an install-of-the-binary-version look stale.
+    #[test]
+    fn desired_assets_version_prefers_the_pin() {
+        let mut cfg = HyprlayerConfig::default();
+        assert_eq!(cfg.desired_assets_version(), env!("CARGO_PKG_VERSION"));
+
+        cfg.record_assets_version(env!("CARGO_PKG_VERSION"));
+        assert!(!cfg.assets_need_refresh());
+
+        cfg.agents_pinned_version = Some("1.5.9-pinned".to_string());
+        assert_eq!(cfg.desired_assets_version(), "1.5.9-pinned");
+        assert!(
+            cfg.assets_need_refresh(),
+            "setting a pin makes the installed bundle stale immediately"
+        );
+
+        cfg.record_assets_version("1.5.9-pinned");
+        assert!(!cfg.assets_need_refresh());
+
+        // Clearing the pin sends it back to the binary's bundle, which is
+        // once again a change that needs installing.
+        cfg.agents_pinned_version = None;
+        assert!(cfg.assets_need_refresh());
+    }
+
+    /// A pin outlives a binary upgrade: the recorded version tracks the pin,
+    /// so a newer binary does not quietly pull its own bundle over the top.
+    #[test]
+    fn a_pin_survives_a_binary_upgrade() {
+        let temp_dir = std::env::temp_dir().join("hyprlayer_test_assets_pin_survives");
+        fs::create_dir_all(&temp_dir).unwrap();
+        let config_path = temp_dir.join("config.json");
+
+        let mut cfg = HyprlayerConfig {
+            agents_pinned_version: Some("1.4.0".to_string()),
+            ..Default::default()
+        };
+        cfg.record_assets_version("1.4.0");
+        cfg.save(&config_path).unwrap();
+
+        // A binary of any version reads the same file back and still wants
+        // the pinned bundle, not its own.
+        let reloaded = HyprlayerConfig::load(&config_path).unwrap();
+        assert_eq!(reloaded.agents_pinned_version.as_deref(), Some("1.4.0"));
+        assert_eq!(reloaded.desired_assets_version(), "1.4.0");
+        assert_ne!(reloaded.desired_assets_version(), env!("CARGO_PKG_VERSION"));
+        assert!(
+            !reloaded.assets_need_refresh(),
+            "the pinned bundle is already installed, whatever the binary version is"
+        );
 
         fs::remove_dir_all(&temp_dir).ok();
     }
