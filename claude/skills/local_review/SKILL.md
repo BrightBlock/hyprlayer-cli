@@ -61,7 +61,7 @@ orchestration:
       requires: [fetch, short-name]
       inline: true
       given:
-        - { value: repo-name,  src: 'basename "$PWD"' }
+        - { value: repo-name,  src: 'mappedName from hyprlayer storage info --json; if null, d=$(git rev-parse --path-format=absolute --git-common-dir) || exit 1; d=${d%/.git}; basename "${d%.git}" — the SOURCE repo, never basename "$PWD"' }
         - { value: short-name, src: "the short-name step" }
       run: git worktree add -b review/<branch> ~/hyprlayer/worktrees/<repo-name>/<short-name> origin/<branch>
       reject: exit0(test -e ~/hyprlayer/worktrees/<repo-name>/<short-name>) or not exit0(git rev-parse --verify origin/<branch>)
@@ -108,7 +108,7 @@ orchestration:
       requires: [worktree, deps]
       inline: true
       given:
-        - { value: repo-name, src: 'basename "$PWD" — the source repo, read before any cd' }
+        - { value: repo-name, src: 'mappedName from hyprlayer storage info --json; if null, d=$(git rev-parse --path-format=absolute --git-common-dir) || exit 1; d=${d%/.git}; basename "${d%.git}" — the SOURCE repo, read before any cd' }
         - { value: worktree,  src: "the worktree step: ~/hyprlayer/worktrees/<repo-name>/<short-name>" }
       run: cd <worktree> && hyprlayer thoughts init --directory <repo-name> --yes
       because: >
@@ -120,7 +120,28 @@ orchestration:
         name. Thoughts are keyed to the repo, so a worktree that registers
         itself as `eng-1696` gets its own empty thoughts tree instead of the
         repo's history — which looks like a working setup right up until you
-        search it. Ordered after `deps` because that is the order the setup
+        search it. That is why `repo-name` comes from `--git-common-dir` and
+        not from `basename "$PWD"`: this skill is normally invoked from
+        inside a worktree, where the cwd's basename IS the worktree's short
+        name, so the obvious spelling produces exactly the failure this
+        paragraph warns about. It cannot be left to the CLI's own default
+        either — `get_current_repo_path()` is `current_dir()` and
+        `get_repo_name_from_path()` is `file_name()`, so omitting
+        `--directory` under `--yes` picks the same wrong name silently.
+        `mappedName` is preferred over any path arithmetic because it is the
+        thoughts directory the source repo actually joined, and the two
+        diverge in practice: `sanitize_directory_name` turns `brightblock.ai`
+        into `brightblock_ai`, so a basename would name a directory that does
+        not exist. The git expression is the fallback for a source repo not
+        yet initialized. In it, `--path-format=absolute` is required and must
+        precede `--git-common-dir`, since the flag only affects options after
+        it: bare, it returns a relative `.git` in a non-worktree checkout. The
+        `|| exit 1` is equally load-bearing — `basename` swallows git's
+        non-zero exit, so outside a repo the older spelling returned the
+        string `.` with status 0, and `.` flows straight into
+        `--directory .`. Stripping the suffix rather than taking `dirname`
+        keeps bare repos and submodules right, where the common dir IS the
+        repo and `dirname` climbs one level too far. Ordered after `deps` because that is the order the setup
         runs in, and it runs even when `deps` failed.
 
     - id: report
