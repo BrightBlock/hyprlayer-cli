@@ -1,4 +1,4 @@
-//! Integration tests for `hyprlayer orchestrate check`. Seven deliberately
+//! Integration tests for `hyprlayer orchestrate check`. Eight deliberately
 //! broken fixtures, each inline (three to six lines whose content is the
 //! point), plus the positive case against the real, shipped
 //! `research_codebase` skill.
@@ -168,6 +168,22 @@ fn fanout_without_over_fails() {
     assert_eq!(code, 1, "stdout: {stdout}");
     assert!(
         stdout.contains("`fanout:` without `over:`"),
+        "stdout: {stdout}"
+    );
+}
+
+#[test]
+fn an_empty_one_of_fails_rather_than_planning_a_choice_with_no_candidates() {
+    let (_guard, xdg) = isolated_dirs();
+    let path = write_skill(
+        &xdg,
+        "empty-one-of.md",
+        "orchestration:\n  steps:\n    - id: a\n      agent: one-of\n",
+    );
+    let (stdout, _stderr, code) = check_output(&xdg, &path, &[]);
+    assert_eq!(code, 1, "stdout: {stdout}");
+    assert!(
+        stdout.contains("`agent: one-of` lists no agents"),
         "stdout: {stdout}"
     );
 }
