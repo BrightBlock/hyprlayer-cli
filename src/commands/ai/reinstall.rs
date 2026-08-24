@@ -23,7 +23,11 @@ pub fn reinstall(args: AiReinstallArgs) -> Result<()> {
         (agent_tool, ai_config.opencode_provider.clone())
     };
 
-    let outcome = agent_tool.install(opencode_provider.as_ref(), false)?;
+    let outcome = agent_tool.install(
+        opencode_provider.as_ref(),
+        hyprlayer_config.agents_pinned_version.as_deref(),
+        false,
+    )?;
     record_install(&mut hyprlayer_config, &config_path, outcome.sha)?;
     install_claude_hook_if_applicable(agent_tool, &hyprlayer_config);
     install_opencode_plugin_if_applicable(agent_tool, &hyprlayer_config);

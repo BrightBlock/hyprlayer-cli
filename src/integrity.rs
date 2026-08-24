@@ -89,6 +89,19 @@ pub fn verify_sha256(path: &Path, expected: &str) -> Result<(), IntegrityError> 
     }
 }
 
+/// In-memory counterpart of `verify_sha256`, for content the caller has
+/// already read. A malformed `expected` is `false` rather than an error:
+/// every caller is asking "are these bytes the ones the manifest recorded?",
+/// and a digest we can't parse can't be the answer to that.
+pub(crate) fn bytes_match_sha256(bytes: &[u8], expected: &str) -> bool {
+    let Some(expected_hex) = parse_sha256_digest(expected) else {
+        return false;
+    };
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex::encode(hasher.finalize()).eq_ignore_ascii_case(expected_hex)
+}
+
 /// Skips assets without a `digest`, with a non-`sha256:` algorithm, or with
 /// a malformed digest. Callers fail closed via `HashMap::get` returning None.
 pub fn digests_from_release_json(body: &str) -> HashMap<String, String> {
@@ -159,6 +172,31 @@ mod tests {
         let f = make_file(b"hello world\n");
         let prefixed = format!("sha256:{HELLO_WORLD_SHA}");
         assert!(verify_sha256(f.path(), &prefixed).is_ok());
+    }
+
+    #[test]
+    fn bytes_match_sha256_agrees_with_verify_sha256() {
+        let f = make_file(b"hello world\n");
+        assert!(bytes_match_sha256(b"hello world\n", HELLO_WORLD_SHA));
+        assert!(bytes_match_sha256(
+            b"hello world\n",
+            &format!("sha256:{HELLO_WORLD_SHA}")
+        ));
+        assert!(bytes_match_sha256(
+            b"hello world\n",
+            &HELLO_WORLD_SHA.to_ascii_uppercase()
+        ));
+        assert!(verify_sha256(f.path(), HELLO_WORLD_SHA).is_ok());
+    }
+
+    #[test]
+    fn bytes_match_sha256_rejects_other_content_and_bad_digests() {
+        assert!(!bytes_match_sha256(b"hello world", HELLO_WORLD_SHA));
+        assert!(!bytes_match_sha256(b"", HELLO_WORLD_SHA));
+        // A digest we can't parse is never a match — the caller is asking
+        // whether these bytes are the recorded ones, and this can't be it.
+        assert!(!bytes_match_sha256(b"hello world\n", "not-a-digest"));
+        assert!(!bytes_match_sha256(b"hello world\n", &"g".repeat(64)));
     }
 
     #[test]

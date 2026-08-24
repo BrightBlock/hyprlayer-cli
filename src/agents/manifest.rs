@@ -8,11 +8,9 @@
 //! the installer check completeness, leave user-modified files alone, and
 //! delete files a previous bundle owned that this one dropped.
 
-// The install path starts reading manifests in a later phase; the builder is
-// the only producer today. Drop this once `agents.rs` consumes it.
-#![allow(dead_code)]
-
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::{Component, Path, PathBuf};
 
 use crate::integrity::parse_sha256_digest;
 use crate::version::is_newer_version;
@@ -89,9 +87,67 @@ impl BundleManifest {
     /// Whether `cli_version` is new enough to install this bundle. Only the
     /// `major.minor.patch` core is compared (`version::is_newer_version`),
     /// so a prerelease of the floor version counts as supported.
+    ///
+    /// Consumed by `agents::verify_pin_is_supported`, which refuses a pinned
+    /// bundle this binary is too old for.
     pub fn supports_cli_version(&self, cli_version: &str) -> bool {
         !is_newer_version(&self.min_cli_version, cli_version)
     }
+
+    /// The recorded digests, keyed by normalised manifest path, for the
+    /// membership and hash lookups the install path runs per file. Entries
+    /// whose path is not a plain relative one (see `relative_key`) are
+    /// dropped: they name nothing we could have written, so nothing may be
+    /// matched against them.
+    pub fn digests(&self) -> HashMap<String, &str> {
+        self.files
+            .iter()
+            .filter_map(|entry| {
+                Some((relative_key(Path::new(&entry.path))?, entry.sha256.as_str()))
+            })
+            .collect()
+    }
+}
+
+/// Resolve a manifest path against `root`.
+///
+/// Manifest paths decide which files get deleted, so they get the same
+/// component-level vetting `archive::extract` applies to tar entries: plain
+/// relative components only — no `..`, no root or Windows prefix, not
+/// empty. `None` means the entry names something outside the harness
+/// directory, which the caller must treat as untouchable rather than guess
+/// at.
+pub fn resolve_under(root: &Path, path: &str) -> Option<PathBuf> {
+    let mut resolved = root.to_path_buf();
+    let mut components = 0;
+    for component in Path::new(path).components() {
+        match component {
+            // A `./` prefix is harmless.
+            Component::CurDir => {}
+            Component::Normal(part) => {
+                resolved.push(part);
+                components += 1;
+            }
+            _ => return None,
+        }
+    }
+    (components > 0).then_some(resolved)
+}
+
+/// The manifest-form key for a path relative to the harness root: `/`
+/// separated, because `scripts/build-asset-bundles.sh` always emits `/`
+/// while a path walked off a Windows disk arrives with `\`. `None` for
+/// anything `resolve_under` would also reject.
+pub fn relative_key(relative: &Path) -> Option<String> {
+    let mut parts: Vec<&str> = Vec::new();
+    for component in relative.components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(part) => parts.push(part.to_str()?),
+            _ => return None,
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("/"))
 }
 
 #[cfg(test)]
@@ -211,6 +267,92 @@ mod tests {
         manifest.files[0].sha256 = format!("sha256:{DIGEST_A}");
         let json = serde_json::to_string(&manifest).unwrap();
         assert!(BundleManifest::parse(&json).is_ok());
+    }
+
+    #[test]
+    fn digests_are_keyed_by_manifest_path() {
+        let manifest = sample();
+        let digests = manifest.digests();
+        assert_eq!(
+            digests.get("agents/cartographer.md").copied(),
+            Some(DIGEST_A)
+        );
+        assert_eq!(
+            digests.get("skills/create_plan/SKILL.md").copied(),
+            Some(DIGEST_B)
+        );
+        assert!(!digests.contains_key("agents/nope.md"));
+    }
+
+    /// An entry naming something outside the harness root must not be
+    /// lookup-able either — orphan removal decides what to delete from
+    /// exactly this map's key set.
+    #[test]
+    fn digests_drop_entries_with_unsafe_paths() {
+        let mut manifest = sample();
+        manifest.files[0].path = "../../.bashrc".to_string();
+        let digests = manifest.digests();
+        assert_eq!(digests.len(), 1);
+        assert!(digests.contains_key("skills/create_plan/SKILL.md"));
+    }
+
+    #[test]
+    fn resolve_under_joins_a_plain_relative_path() {
+        let root = Path::new("/tmp/dest");
+        assert_eq!(
+            resolve_under(root, "skills/create_plan/SKILL.md"),
+            Some(root.join("skills").join("create_plan").join("SKILL.md"))
+        );
+        assert_eq!(
+            resolve_under(root, "./agents/cartographer.md"),
+            Some(root.join("agents").join("cartographer.md"))
+        );
+    }
+
+    #[test]
+    fn resolve_under_rejects_escapes() {
+        let root = Path::new("/tmp/dest");
+        assert_eq!(resolve_under(root, "../outside.md"), None);
+        assert_eq!(resolve_under(root, "skills/../../outside.md"), None);
+        assert_eq!(resolve_under(root, "/etc/passwd"), None);
+        assert_eq!(resolve_under(root, ""), None);
+        assert_eq!(resolve_under(root, "."), None);
+    }
+
+    #[test]
+    fn relative_key_is_slash_separated() {
+        assert_eq!(
+            relative_key(&Path::new("skills").join("create_plan").join("SKILL.md")),
+            Some("skills/create_plan/SKILL.md".to_string())
+        );
+        assert_eq!(
+            relative_key(Path::new("./agents/cartographer.md")),
+            Some("agents/cartographer.md".to_string())
+        );
+        assert_eq!(relative_key(Path::new("")), None);
+        assert_eq!(relative_key(Path::new("../escape.md")), None);
+    }
+
+    /// The two helpers have to agree: whatever `relative_key` can name,
+    /// `resolve_under` must be able to resolve, or a file could be looked
+    /// up as owned and then be un-deletable (or vice versa).
+    #[test]
+    fn relative_key_and_resolve_under_agree() {
+        let root = Path::new("/tmp/dest");
+        for path in [
+            "settings.json",
+            "agents/cartographer.md",
+            "skills/create_plan/SKILL.md",
+            "../escape.md",
+            "/etc/passwd",
+            "",
+        ] {
+            assert_eq!(
+                relative_key(Path::new(path)).is_some(),
+                resolve_under(root, path).is_some(),
+                "disagreement on {path:?}"
+            );
+        }
     }
 
     #[test]
