@@ -1,10 +1,13 @@
-//! Single-request bundle download: fetch one gzipped repo archive from
-//! `codeload.github.com` and extract just one tool's subtree from it.
+//! Hardened tar.gz extraction for the two bundle shapes an install can
+//! come from: a per-harness release asset (`extract_bundle`, paths already
+//! relative to the harness root) and a whole-repo `codeload.github.com`
+//! tarball from which one tool's subtree is taken (`extract_subdir`).
 //!
-//! `codeload.github.com` is not on the REST core rate-limit bucket, so this
-//! replaces ~30 rate-limited Contents API calls per install with one plain
-//! HTTPS download plus local extraction. See `download_directory` in
-//! `agents.rs` for the API-based walk this augments and falls back to.
+//! `codeload.github.com` is not on the REST core rate-limit bucket, so the
+//! repo-tarball path replaces ~30 rate-limited Contents API calls per
+//! install with one plain HTTPS download plus local extraction. See
+//! `download_directory` in `agents.rs` for the API-based walk this augments
+//! and falls back to.
 
 use anyhow::{Context, Result};
 use flate2::read::GzDecoder;
@@ -16,10 +19,11 @@ use tar::Archive as TarArchive;
 use super::REPO;
 use crate::http;
 
-/// Full repo tarball is ~360 KB today. 64 MiB is two orders of magnitude
-/// of headroom and stops a hostile or misconfigured source from filling
-/// the temp dir before we ever open the archive.
-const MAX_ARCHIVE_BYTES: u64 = 64 * 1024 * 1024;
+/// Full repo tarball is ~360 KB today and a per-harness release bundle is
+/// smaller still. 64 MiB is two orders of magnitude of headroom and stops a
+/// hostile or misconfigured source from filling the temp dir before we ever
+/// open the archive.
+pub(crate) const MAX_ARCHIVE_BYTES: u64 = 64 * 1024 * 1024;
 
 pub(crate) fn codeload_url(git_ref: &str) -> String {
     format!("https://codeload.github.com/{REPO}/tar.gz/{git_ref}")
@@ -41,9 +45,39 @@ pub(crate) fn fetch_and_extract(repo_path: &str, git_ref: &str, dest: &Path) -> 
     extract_subdir(tmp.path(), repo_path, dest)
 }
 
+/// How the archive's leading path component is treated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RootHandling {
+    /// The archive wraps everything in exactly one root component, derived
+    /// from the first entry rather than hardcoded — codeload's prefix is
+    /// `hyprlayer-cli-master/` for a branch ref but `hyprlayer-cli-<sha>/`
+    /// for a SHA ref. Every subsequent entry must share it, and it is
+    /// stripped before matching `subdir`.
+    StripSingleRoot,
+    /// Entries are already relative to the bundle root, as in the
+    /// per-harness release assets `scripts/build-asset-bundles.sh` packs.
+    /// Nothing is stripped and no shared prefix is required.
+    NoRootComponent,
+}
+
 /// Extract every entry under `<root>/<subdir>/` into `dest`, stripping both
 /// the archive's single root component and `subdir`. Returns the file
-/// count.
+/// count. This is the codeload repo-tarball shape.
+pub(crate) fn extract_subdir(archive: &Path, subdir: &str, dest: &Path) -> Result<usize> {
+    extract(archive, dest, RootHandling::StripSingleRoot, Some(subdir))
+}
+
+/// Extract every entry of a release-asset bundle into `dest`. The bundle's
+/// paths are already relative to the harness root (`agents/foo.md`), so
+/// there is no root component to require or strip and no subtree to select
+/// — but every hardening rule in `extract` applies unchanged.
+pub(crate) fn extract_bundle(archive: &Path, dest: &Path) -> Result<usize> {
+    extract(archive, dest, RootHandling::NoRootComponent, None)
+}
+
+/// Shared extraction core behind `extract_subdir` and `extract_bundle`.
+/// `subdir` selects a subtree to extract (after any root stripping);
+/// `None` takes the whole archive.
 ///
 /// Every rule below is a rejection, not a skip, applied to *every* entry in
 /// the archive — not just the ones under `subdir` — because a bundle that
@@ -61,14 +95,17 @@ pub(crate) fn fetch_and_extract(repo_path: &str, git_ref: &str, dest: &Path) -> 
 ///   (`C:`). This is checked via `Component` variants rather than string
 ///   matching, so backslash separators or a bare leading `/` can't slip
 ///   through on any platform.
-/// - The archive must have exactly one root component, derived from the
-///   first entry rather than hardcoded — the prefix is
-///   `hyprlayer-cli-master/` for a branch ref but `hyprlayer-cli-<sha>/`
-///   for a SHA ref. Every subsequent entry must share it.
+/// - Under `RootHandling::StripSingleRoot`, the archive must have exactly
+///   one root component and every entry must share it.
 ///
 /// Entries outside `<root>/<subdir>/` are silently skipped once they've
 /// passed the checks above — that's just the other content in the repo.
-pub(crate) fn extract_subdir(archive: &Path, subdir: &str, dest: &Path) -> Result<usize> {
+fn extract(
+    archive: &Path,
+    dest: &Path,
+    root_handling: RootHandling,
+    subdir: Option<&str>,
+) -> Result<usize> {
     fs::create_dir_all(dest)
         .with_context(|| format!("Failed to create destination {}", dest.display()))?;
 
@@ -119,25 +156,36 @@ pub(crate) fn extract_subdir(archive: &Path, subdir: &str, dest: &Path) -> Resul
                 ),
             }
         }
-        let Some((root_component, rest)) = parts.split_first() else {
+        if parts.is_empty() {
             anyhow::bail!("archive entry has an empty path");
-        };
-        let root_component = root_component.to_string_lossy().into_owned();
-        match &root {
-            None => root = Some(root_component),
-            Some(expected) if *expected == root_component => {}
-            Some(expected) => anyhow::bail!(
-                "archive has multiple root components: expected {:?}, found {:?}",
-                expected,
-                root_component
-            ),
         }
 
-        // `rest` is everything after the archive's root component —
-        // compare it against `subdir`'s own components rather than joining
-        // into a `PathBuf` and calling `strip_prefix`, so this still works
-        // if `subdir` itself contains a path separator.
-        let subdir_parts: Vec<&str> = subdir.split('/').collect();
+        // Everything the entry contributes below the archive's own root.
+        let rest: &[std::ffi::OsString] = match root_handling {
+            RootHandling::StripSingleRoot => {
+                let (root_component, rest) = parts
+                    .split_first()
+                    .expect("parts is non-empty, checked above");
+                let root_component = root_component.to_string_lossy().into_owned();
+                match &root {
+                    None => root = Some(root_component),
+                    Some(expected) if *expected == root_component => {}
+                    Some(expected) => anyhow::bail!(
+                        "archive has multiple root components: expected {:?}, found {:?}",
+                        expected,
+                        root_component
+                    ),
+                }
+                rest
+            }
+            RootHandling::NoRootComponent => &parts,
+        };
+
+        // Compare `rest` against `subdir`'s own components rather than
+        // joining into a `PathBuf` and calling `strip_prefix`, so this still
+        // works if `subdir` itself contains a path separator. With no
+        // `subdir` the list is empty and every entry matches.
+        let subdir_parts: Vec<&str> = subdir.map(|s| s.split('/').collect()).unwrap_or_default();
         if rest.len() < subdir_parts.len()
             || !rest
                 .iter()
@@ -481,6 +529,152 @@ mod tests {
         let dest = tmp.path().join("dest");
         let count = extract_subdir(&archive, "claude", &dest).unwrap();
         assert_eq!(count, 0);
+        assert!(dest.is_dir());
+    }
+
+    /// A release-asset bundle has no `<repo>-<sha>/` wrapper: paths are
+    /// already relative to the harness root.
+    #[test]
+    fn extract_bundle_takes_root_relative_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = write_archive(
+            tmp.path(),
+            &[
+                TestEntry::Dir("agents/"),
+                TestEntry::File("agents/codebase-locator.md", b"locator"),
+                TestEntry::Dir("skills/"),
+                TestEntry::Dir("skills/code_review/"),
+                TestEntry::File("skills/code_review/SKILL.md", b"---\nname: cr\n---\n"),
+                TestEntry::File("manifest.json", b"{}"),
+            ],
+        );
+        let dest = tmp.path().join("dest");
+        let count = extract_bundle(&archive, &dest).unwrap();
+        assert_eq!(count, 3);
+        assert_eq!(
+            fs::read_to_string(dest.join("agents/codebase-locator.md")).unwrap(),
+            "locator"
+        );
+        assert_eq!(
+            fs::read_to_string(dest.join("skills/code_review/SKILL.md")).unwrap(),
+            "---\nname: cr\n---\n"
+        );
+        assert_eq!(
+            fs::read_to_string(dest.join("manifest.json")).unwrap(),
+            "{}"
+        );
+    }
+
+    /// The whole point of the second entry point: `extract_subdir` would
+    /// treat `agents` as the archive root and find nothing, so the bundle
+    /// path must not silently reuse it.
+    #[test]
+    fn extract_subdir_finds_nothing_in_a_root_relative_bundle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = write_archive(
+            tmp.path(),
+            &[TestEntry::File("agents/codebase-locator.md", b"locator")],
+        );
+        let dest = tmp.path().join("dest");
+        assert_eq!(extract_subdir(&archive, "claude", &dest).unwrap(), 0);
+    }
+
+    /// Multiple top-level directories are normal in a bundle — the
+    /// single-root rule must not apply to this entry point.
+    #[test]
+    fn extract_bundle_allows_multiple_top_level_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = write_archive(
+            tmp.path(),
+            &[
+                TestEntry::File("agents/a.md", b"a"),
+                TestEntry::File("skills/b/SKILL.md", b"b"),
+                TestEntry::File("settings.json", b"{}"),
+            ],
+        );
+        let dest = tmp.path().join("dest");
+        assert_eq!(extract_bundle(&archive, &dest).unwrap(), 3);
+    }
+
+    #[test]
+    fn extract_bundle_rejects_traversal_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = write_archive(
+            tmp.path(),
+            &[
+                TestEntry::File("agents/a.md", b"a"),
+                TestEntry::RawPathFile("../evil", b"pwned"),
+            ],
+        );
+        let dest = tmp.path().join("dest");
+        let err = extract_bundle(&archive, &dest).unwrap_err();
+        assert!(
+            err.to_string().contains("disallowed path component"),
+            "unexpected error: {err}"
+        );
+        assert!(!dest.parent().unwrap().join("evil").exists());
+    }
+
+    #[test]
+    fn extract_bundle_rejects_absolute_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = write_archive(
+            tmp.path(),
+            &[
+                TestEntry::File("agents/a.md", b"a"),
+                TestEntry::AbsoluteFile("/etc/passwd", b"pwned"),
+            ],
+        );
+        let dest = tmp.path().join("dest");
+        assert!(extract_bundle(&archive, &dest).is_err());
+        assert!(!dest.parent().unwrap().join("etc/passwd").exists());
+    }
+
+    #[test]
+    fn extract_bundle_rejects_symlink_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = write_archive(
+            tmp.path(),
+            &[TestEntry::Symlink("evil-link", "/etc/passwd")],
+        );
+        let dest = tmp.path().join("dest");
+        assert!(extract_bundle(&archive, &dest).is_err());
+    }
+
+    #[test]
+    fn extract_bundle_rejects_hardlink_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = write_archive(
+            tmp.path(),
+            &[
+                TestEntry::File("agents/real", b"data"),
+                TestEntry::HardLink("agents/evil-hardlink", "agents/real"),
+            ],
+        );
+        let dest = tmp.path().join("dest");
+        assert!(extract_bundle(&archive, &dest).is_err());
+    }
+
+    #[test]
+    fn extract_bundle_skips_pax_global_header() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = write_archive(
+            tmp.path(),
+            &[
+                TestEntry::GlobalPaxHeader(b"20 comment=whatever\n"),
+                TestEntry::File("agents/a.md", b"a"),
+            ],
+        );
+        let dest = tmp.path().join("dest");
+        assert_eq!(extract_bundle(&archive, &dest).unwrap(), 1);
+    }
+
+    #[test]
+    fn extract_bundle_empty_archive_yields_zero_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = write_archive(tmp.path(), &[]);
+        let dest = tmp.path().join("dest");
+        assert_eq!(extract_bundle(&archive, &dest).unwrap(), 0);
         assert!(dest.is_dir());
     }
 

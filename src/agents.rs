@@ -10,6 +10,7 @@ use std::path::{MAIN_SEPARATOR_STR as SEP, Path, PathBuf};
 use std::time::Duration;
 
 use crate::http;
+use crate::integrity;
 
 pub(crate) const REPO: &str = "BrightBlock/hyprlayer-cli";
 const BRANCH: &str = "master";
@@ -26,6 +27,20 @@ pub(crate) fn github_api_repo_url() -> String {
 
 pub(crate) fn github_release_download_base() -> String {
     format!("https://github.com/{REPO}/releases/download")
+}
+
+/// The bundle version an install should resolve to. Today that is always the
+/// running binary's own version, so a 1.6.0 CLI installs the 1.6.0 bundle and
+/// upgrading the binary is what moves the skills. The explicit pin that can
+/// override this is a later phase.
+fn desired_assets_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
+/// Release-asset file name for one harness at one version, as
+/// `scripts/build-asset-bundles.sh` emits it and `release.yml` attaches it.
+fn asset_name(harness: &str, version: &str) -> String {
+    format!("hyprlayer-assets-{harness}-{version}.tar.gz")
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -320,19 +335,7 @@ impl AgentTool {
         let staged = staging.path().join(self.repo_dir());
         self.fetch_into(&staged, git_ref, quiet)?;
 
-        // Refuse to touch the destination unless the staged bundle looks
-        // complete. Without this, a truncated download could overwrite a
-        // good install with a torn one.
-        if !self.is_installed_at(&staged) {
-            anyhow::bail!(
-                "Downloaded {} bundle is incomplete — refusing to install. \
-                 Run 'hyprlayer ai reinstall' to retry.",
-                self
-            );
-        }
-
-        fs::create_dir_all(&dest)?;
-        let changed = sync_tree(&staged, &dest)?;
+        let changed = self.install_staged(&staged, &dest)?;
 
         if matches!(self, AgentTool::OpenCode)
             && let Some(provider) = opencode_provider
@@ -349,40 +352,180 @@ impl AgentTool {
         Ok(InstallOutcome { sha, changed })
     }
 
-    /// Populate `staged` with this tool's bundle pinned to `git_ref`.
+    /// The post-fetch half of `install`: refuse to touch `dest` unless the
+    /// staged bundle looks complete, then sync only what differs. Without
+    /// the gate, a truncated download could overwrite a good install with a
+    /// torn one. Split out of `install` so the rollback guarantee is
+    /// testable without a network fetch.
+    fn install_staged(&self, staged: &Path, dest: &Path) -> Result<usize> {
+        if !self.is_installed_at(staged) {
+            anyhow::bail!(
+                "Downloaded {} bundle is incomplete — refusing to install. \
+                 Run 'hyprlayer ai reinstall' to retry.",
+                self
+            );
+        }
+
+        fs::create_dir_all(dest)?;
+        sync_tree(staged, dest)
+    }
+
+    /// Populate `staged` with this tool's bundle, trying each source in
+    /// turn and keeping the first that works.
     ///
-    /// Tries the single-request archive download first (zero REST API
-    /// requests, see `archive::fetch_and_extract`); on any failure — a
-    /// network hiccup, a codeload outage — falls back to the old
-    /// Contents-API walk so an archive-side outage doesn't block installs.
-    /// Both paths write into `staged`, so the Phase 4 completeness check
-    /// and rollback guarantee cover the fallback too: a rate-limited
-    /// fallback aborts cleanly instead of leaving a partial `dest`.
+    /// 1. The versioned release asset, verified against the SHA256 digest
+    ///    GitHub computed server-side. This is the bundle that matches the
+    ///    running binary.
+    /// 2. The single-request codeload archive of the frozen legacy tree at
+    ///    `git_ref` (zero REST API requests, see
+    ///    `archive::fetch_and_extract`).
+    /// 3. The old Contents-API walk, in case codeload itself is out.
+    ///
+    /// The asset step is allowed to fail softly — a dev build with no
+    /// matching release, a release predating the bundles, a mid-download
+    /// network drop, a digest mismatch — because a legacy-tree install is
+    /// still a working install. What it must never do is install an
+    /// *unverified* asset, so a release that advertises no digest for the
+    /// bundle drops through to the fallback rather than downloading it
+    /// anyway.
+    ///
+    /// Every source writes into `staged`, so the completeness check and
+    /// rollback guarantee in `install_staged` cover the fallbacks too: a
+    /// rate-limited fallback aborts cleanly instead of leaving a partial
+    /// `dest`.
     fn fetch_into(&self, staged: &Path, git_ref: &str, quiet: bool) -> Result<()> {
         if !quiet {
             println!("Downloading {} agent files...", self);
         }
-        match archive::fetch_and_extract(self.repo_dir(), git_ref, staged) {
-            Ok(count) => {
-                if !quiet {
-                    println!("  {:<60}", format!("Downloaded {count} files"));
-                }
-                return Ok(());
-            }
-            Err(e) => {
-                if !quiet {
-                    eprintln!("  Archive download failed ({e}); falling back to the GitHub API.");
-                }
-            }
-        }
 
-        let mut count = 0;
-        download_directory(self.repo_dir(), git_ref, staged, &mut count, quiet)?;
+        let version = desired_assets_version();
+        let sources: Vec<BundleSource<'_>> = vec![
+            (
+                format!("the v{version} release asset"),
+                Box::new(move |dest: &Path| self.fetch_asset_into(dest, version)),
+            ),
+            (
+                format!("the {BRANCH} repo archive"),
+                Box::new(move |dest: &Path| {
+                    archive::fetch_and_extract(self.repo_dir(), git_ref, dest)
+                }),
+            ),
+            (
+                format!("the GitHub API walk of {BRANCH}"),
+                Box::new(move |dest: &Path| {
+                    let mut count = 0;
+                    download_directory(self.repo_dir(), git_ref, dest, &mut count, quiet)?;
+                    Ok(count)
+                }),
+            ),
+        ];
+
+        let (label, count) = fetch_first_available(staged, sources, quiet)?;
         if !quiet {
-            println!("  {:<60}", format!("Downloaded {count} files"));
+            println!("  {:<60}", format!("Downloaded {count} files from {label}"));
         }
         Ok(())
     }
+
+    /// Download this tool's `hyprlayer-assets-<harness>-<version>.tar.gz`
+    /// from the release tagged `v<version>`, verify it against the release
+    /// API's per-asset SHA256 digest, and extract it into `staged`.
+    ///
+    /// Mirrors `direct_update` in `src/commands/self_update.rs`, which runs
+    /// the same fetch-digest-then-verify sequence for the binary itself.
+    fn fetch_asset_into(&self, staged: &Path, version: &str) -> Result<usize> {
+        let asset = asset_name(self.repo_dir(), version);
+        let tag = format!("v{version}");
+
+        let api_url = format!("{}/releases/tags/{tag}", github_api_repo_url());
+        let release_body =
+            http::get_text_capped(&api_url, Duration::from_secs(15), MAX_API_RESPONSE_BYTES)
+                .map_err(|e| anyhow::anyhow!("Unable to fetch release {tag} from GitHub: {e}"))?;
+        let expected = asset_digest_from_release(&release_body, &tag, &asset)?;
+
+        let tmp = tempfile::tempdir().context("Failed to create a temp dir for the bundle")?;
+        let archive_path = tmp.path().join(&asset);
+        let url = format!("{}/{tag}/{asset}", github_release_download_base());
+        http::download_file_capped(
+            &url,
+            &archive_path,
+            Duration::from_secs(30),
+            Some(archive::MAX_ARCHIVE_BYTES),
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to download {url}: {e}"))?;
+
+        verify_and_extract_bundle(&archive_path, &asset, &expected, staged)
+    }
+}
+
+/// One named way to populate a staging directory, used by `fetch_into`.
+type BundleSource<'a> = (String, Box<dyn FnOnce(&Path) -> Result<usize> + 'a>);
+
+/// Run `sources` in order and keep the first that succeeds, returning its
+/// label and file count.
+///
+/// `staged` is cleared before each attempt, so a source that fails partway
+/// through extraction can't leak files into the bundle the next source
+/// produces — the completeness gate in `install_staged` would otherwise be
+/// judging a mixture of two downloads.
+///
+/// The error from the *last* source is what propagates when every source
+/// fails, which keeps the Contents-API walk's rate-limit guidance (see
+/// `classify_github_error`) as the message the user actually sees.
+fn fetch_first_available(
+    staged: &Path,
+    sources: Vec<BundleSource<'_>>,
+    quiet: bool,
+) -> Result<(String, usize)> {
+    let mut last_error = None;
+    for (label, fetch) in sources {
+        if staged.exists() {
+            fs::remove_dir_all(staged)
+                .with_context(|| format!("Failed to clear staging dir {}", staged.display()))?;
+        }
+        match fetch(staged) {
+            Ok(count) => return Ok((label, count)),
+            Err(e) => {
+                if !quiet {
+                    eprintln!("  Fetching {label} failed ({e}); trying the next source.");
+                }
+                last_error = Some(e);
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("No bundle download sources are configured")))
+}
+
+/// Pick the SHA256 digest the release advertises for `asset`.
+///
+/// Pure — no I/O — so the "this release carries no bundle for me" case that
+/// triggers the legacy fallback is directly unit-testable. A release with no
+/// digest for the asset is an error rather than an unverified download: the
+/// caller falls back to the frozen legacy tree, which is an older bundle but
+/// not an unverified one.
+fn asset_digest_from_release(release_body: &str, tag: &str, asset: &str) -> Result<String> {
+    integrity::digests_from_release_json(release_body)
+        .remove(asset)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "GitHub release `{tag}` exposes no SHA256 digest for asset `{asset}`. \
+                 Refusing to install an unverified bundle."
+            )
+        })
+}
+
+/// Verify a downloaded bundle against `expected` and, only then, extract it
+/// into `staged`. Split from the download so the digest-mismatch path is
+/// testable without a network fetch.
+fn verify_and_extract_bundle(
+    archive_path: &Path,
+    asset: &str,
+    expected: &str,
+    staged: &Path,
+) -> Result<usize> {
+    integrity::verify_sha256(archive_path, expected)
+        .with_context(|| format!("Integrity check failed for `{asset}`"))?;
+    archive::extract_bundle(archive_path, staged)
 }
 
 /// Result of a successful `AgentTool::install`.
@@ -774,6 +917,345 @@ mod tests {
         let dest = temp.path().join("dest");
         fs::create_dir_all(&dest).unwrap();
         assert_eq!(sync_tree(&src, &dest).unwrap(), 0);
+    }
+
+    /// Real digests from the `v1.6.0-rc.1` prerelease that Phase 3 cut, so
+    /// the fixture below is the shape GitHub actually returns rather than an
+    /// invented one.
+    const RC_CLAUDE_DIGEST: &str =
+        "42292288c4a5fc6c7f765489da159ceef5c70d0705c2c9d65d999df7bb6c60cd";
+    const RC_COPILOT_DIGEST: &str =
+        "d4b730a0bb9755e2bd6aa763ef5e9b24bd1644feec1eae90ca08285a26ea5575";
+
+    /// A `/releases/tags/<tag>` body carrying the three bundles plus the
+    /// binaries, abridged to the fields we read.
+    fn release_json_with_all_bundles() -> String {
+        format!(
+            r#"{{
+                "tag_name": "v1.6.0-rc.1",
+                "assets": [
+                    {{ "name": "hyprlayer-x86_64-unknown-linux-gnu", "digest": "sha256:{RC_COPILOT_DIGEST}" }},
+                    {{ "name": "hyprlayer-assets-claude-1.6.0-rc.1.tar.gz",   "digest": "sha256:{RC_CLAUDE_DIGEST}" }},
+                    {{ "name": "hyprlayer-assets-copilot-1.6.0-rc.1.tar.gz",  "digest": "sha256:{RC_COPILOT_DIGEST}" }},
+                    {{ "name": "hyprlayer-assets-opencode-1.6.0-rc.1.tar.gz", "digest": "sha256:{RC_CLAUDE_DIGEST}" }}
+                ]
+            }}"#
+        )
+    }
+
+    /// Build a minimal but *installable* Claude bundle in the release-asset
+    /// shape: paths relative to the harness root, both sentinels present, a
+    /// `manifest.json` alongside. Returns the tarball path.
+    fn write_bundle_archive(dir: &Path) -> PathBuf {
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+
+        let entries: [(&str, &[u8]); 3] = [
+            ("agents/codebase-locator.md", b"---\nname: locator\n---\n"),
+            (
+                "skills/code_review/SKILL.md",
+                b"---\nname: code_review\n---\n",
+            ),
+            ("manifest.json", b"{\"version\":\"1.6.0\"}"),
+        ];
+
+        let mut bytes: Vec<u8> = Vec::new();
+        {
+            let enc = GzEncoder::new(&mut bytes, Compression::default());
+            let mut builder = tar::Builder::new(enc);
+            for (path, data) in entries {
+                let mut header = tar::Header::new_gnu();
+                header.set_entry_type(tar::EntryType::Regular);
+                header.set_path(path).unwrap();
+                header.set_size(data.len() as u64);
+                header.set_mode(0o644);
+                header.set_cksum();
+                builder.append(&header, data).unwrap();
+            }
+            builder.into_inner().unwrap().finish().unwrap();
+        }
+
+        let path = dir.join("hyprlayer-assets-claude-1.6.0.tar.gz");
+        fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    fn sha256_of(path: &Path) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(fs::read(path).unwrap());
+        hex::encode(hasher.finalize())
+    }
+
+    #[test]
+    fn asset_name_matches_the_builder_output() {
+        assert_eq!(
+            asset_name("claude", "1.6.0"),
+            "hyprlayer-assets-claude-1.6.0.tar.gz"
+        );
+        assert_eq!(
+            asset_name(AgentTool::OpenCode.repo_dir(), "1.6.0-rc.1"),
+            "hyprlayer-assets-opencode-1.6.0-rc.1.tar.gz"
+        );
+    }
+
+    #[test]
+    fn desired_assets_version_is_the_running_binary_version() {
+        assert_eq!(desired_assets_version(), env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn asset_digest_from_release_picks_this_harness_bundle() {
+        let body = release_json_with_all_bundles();
+        let digest = asset_digest_from_release(
+            &body,
+            "v1.6.0-rc.1",
+            "hyprlayer-assets-claude-1.6.0-rc.1.tar.gz",
+        )
+        .unwrap();
+        assert_eq!(digest, RC_CLAUDE_DIGEST);
+    }
+
+    /// The fallback trigger: a release exists but carries no bundle for this
+    /// harness/version (a pre-Phase-3 release, or a dev build whose version
+    /// was never tagged).
+    #[test]
+    fn asset_digest_from_release_missing_asset_is_an_error() {
+        let body = release_json_with_all_bundles();
+        let err =
+            asset_digest_from_release(&body, "v1.6.0-rc.1", "hyprlayer-assets-claude-9.9.9.tar.gz")
+                .unwrap_err();
+        let text = err.to_string();
+        assert!(
+            text.contains("hyprlayer-assets-claude-9.9.9.tar.gz"),
+            "{text}"
+        );
+        assert!(text.contains("v1.6.0-rc.1"), "{text}");
+    }
+
+    /// Fail closed: an asset GitHub advertises without a digest must not be
+    /// downloaded unverified.
+    #[test]
+    fn asset_digest_from_release_undigested_asset_is_an_error() {
+        let body = r#"{ "assets": [ { "name": "hyprlayer-assets-claude-1.6.0.tar.gz" } ] }"#;
+        let err = asset_digest_from_release(body, "v1.6.0", "hyprlayer-assets-claude-1.6.0.tar.gz")
+            .unwrap_err();
+        assert!(err.to_string().contains("unverified"), "{err}");
+    }
+
+    #[test]
+    fn asset_digest_from_release_handles_a_404_body() {
+        let err = asset_digest_from_release(
+            r#"{"message":"Not Found"}"#,
+            "v9.9.9",
+            "hyprlayer-assets-claude-9.9.9.tar.gz",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("v9.9.9"), "{err}");
+    }
+
+    /// Positive control for `asset_digest_mismatch_aborts_and_leaves_dest_untouched`:
+    /// the very same archive and destination, with the digest GitHub would
+    /// have reported, installs cleanly. Without this the mismatch test could
+    /// pass on an archive that was never installable in the first place.
+    #[test]
+    fn verified_bundle_extracts_and_installs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = write_bundle_archive(tmp.path());
+        let staged = tmp.path().join("staged");
+        let dest = tmp.path().join("dest");
+        fs::create_dir_all(&dest).unwrap();
+        fs::write(dest.join("settings.json"), "user data").unwrap();
+
+        let expected = format!("sha256:{}", sha256_of(&archive));
+        let count = verify_and_extract_bundle(
+            &archive,
+            "hyprlayer-assets-claude-1.6.0.tar.gz",
+            &expected,
+            &staged,
+        )
+        .unwrap();
+        assert_eq!(count, 3);
+        assert!(
+            AgentTool::Claude.is_installed_at(&staged),
+            "the fixture bundle must satisfy the completeness gate"
+        );
+
+        let changed = AgentTool::Claude.install_staged(&staged, &dest).unwrap();
+        assert_eq!(changed, 3);
+        assert!(dest.join("skills/code_review/SKILL.md").is_file());
+        assert!(dest.join("agents/codebase-locator.md").is_file());
+        assert_eq!(
+            fs::read_to_string(dest.join("settings.json")).unwrap(),
+            "user data"
+        );
+    }
+
+    #[test]
+    fn asset_digest_mismatch_aborts_and_leaves_dest_untouched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = write_bundle_archive(tmp.path());
+        let staged = tmp.path().join("staged");
+        let dest = tmp.path().join("dest");
+        fs::create_dir_all(&dest).unwrap();
+        fs::write(dest.join("settings.json"), "user data").unwrap();
+
+        let wrong = "0".repeat(64);
+        let err = verify_and_extract_bundle(
+            &archive,
+            "hyprlayer-assets-claude-1.6.0.tar.gz",
+            &wrong,
+            &staged,
+        )
+        .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("Integrity check failed"),
+            "{err:#}"
+        );
+        assert!(
+            !staged.exists(),
+            "a bundle that fails verification must never be extracted"
+        );
+
+        // Nothing staged means the completeness gate refuses before `dest`
+        // is opened at all — the rollback guarantee.
+        let gate = AgentTool::Claude
+            .install_staged(&staged, &dest)
+            .unwrap_err();
+        assert!(gate.to_string().contains("incomplete"), "{gate}");
+        assert_eq!(
+            walk_files(&dest).unwrap(),
+            vec![dest.join("settings.json")],
+            "a rejected bundle must leave dest byte-identical"
+        );
+        assert_eq!(
+            fs::read_to_string(dest.join("settings.json")).unwrap(),
+            "user data"
+        );
+    }
+
+    #[test]
+    fn fetch_first_available_falls_back_when_the_asset_is_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = tmp.path().join("staged");
+
+        let sources: Vec<BundleSource<'_>> = vec![
+            (
+                "the v9.9.9 release asset".to_string(),
+                Box::new(|_: &Path| {
+                    anyhow::bail!(
+                        "GitHub release `v9.9.9` exposes no SHA256 digest for asset \
+                         `hyprlayer-assets-claude-9.9.9.tar.gz`."
+                    )
+                }),
+            ),
+            (
+                "the master repo archive".to_string(),
+                Box::new(|dest: &Path| {
+                    touch(&dest.join("agents/codebase-locator.md"));
+                    touch(&dest.join("skills/code_review/SKILL.md"));
+                    Ok(2)
+                }),
+            ),
+        ];
+
+        let (label, count) = fetch_first_available(&staged, sources, true).unwrap();
+        assert_eq!(label, "the master repo archive");
+        assert_eq!(count, 2);
+        assert!(
+            AgentTool::Claude.is_installed_at(&staged),
+            "the fallback's output is what gets staged"
+        );
+    }
+
+    #[test]
+    fn fetch_first_available_prefers_the_first_working_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = tmp.path().join("staged");
+
+        let sources: Vec<BundleSource<'_>> = vec![
+            (
+                "the release asset".to_string(),
+                Box::new(|dest: &Path| {
+                    touch(&dest.join("from-asset.md"));
+                    Ok(1)
+                }),
+            ),
+            (
+                "the master repo archive".to_string(),
+                Box::new(|_: &Path| panic!("later sources must not run after a success")),
+            ),
+        ];
+
+        let (label, count) = fetch_first_available(&staged, sources, true).unwrap();
+        assert_eq!(label, "the release asset");
+        assert_eq!(count, 1);
+        assert!(staged.join("from-asset.md").is_file());
+    }
+
+    /// A source that fails partway through extraction must not leave files
+    /// behind for the next source to be judged on — the completeness gate
+    /// would otherwise pass on a mixture of two downloads.
+    #[test]
+    fn fetch_first_available_discards_a_failed_sources_partial_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = tmp.path().join("staged");
+
+        let sources: Vec<BundleSource<'_>> = vec![
+            (
+                "the release asset".to_string(),
+                Box::new(|dest: &Path| {
+                    touch(&dest.join("agents/half-written.md"));
+                    anyhow::bail!("connection reset mid-extraction")
+                }),
+            ),
+            (
+                "the master repo archive".to_string(),
+                Box::new(|dest: &Path| {
+                    touch(&dest.join("agents/complete.md"));
+                    Ok(1)
+                }),
+            ),
+        ];
+
+        fetch_first_available(&staged, sources, true).unwrap();
+        assert_eq!(
+            walk_files(&staged).unwrap(),
+            vec![staged.join("agents/complete.md")],
+            "the failed source's leftovers must not survive into the fallback"
+        );
+    }
+
+    /// The last source is the Contents-API walk, whose error carries the
+    /// rate-limit guidance; that's the message the user must end up seeing.
+    #[test]
+    fn fetch_first_available_propagates_the_last_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = tmp.path().join("staged");
+
+        let sources: Vec<BundleSource<'_>> = vec![
+            (
+                "the release asset".to_string(),
+                Box::new(|_: &Path| anyhow::bail!("no such release")),
+            ),
+            (
+                "the master repo archive".to_string(),
+                Box::new(|_: &Path| anyhow::bail!("codeload unreachable")),
+            ),
+            (
+                "the GitHub API walk".to_string(),
+                Box::new(|_: &Path| anyhow::bail!("GitHub API rate limit exceeded")),
+            ),
+        ];
+
+        let err = fetch_first_available(&staged, sources, true).unwrap_err();
+        assert!(err.to_string().contains("rate limit"), "{err}");
+    }
+
+    #[test]
+    fn fetch_first_available_with_no_sources_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(fetch_first_available(&tmp.path().join("staged"), vec![], true).is_err());
     }
 
     #[test]

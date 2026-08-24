@@ -1,7 +1,8 @@
 //! Release-artifact SHA256 verification against GitHub's per-asset `digest`
 //! field (`"sha256:<hex>"`, computed server-side, on the public API).
-
-#![allow(dead_code)]
+//!
+//! Two callers: `self_update` verifying a replacement binary, and `agents`
+//! verifying a downloaded release-asset bundle before extracting it.
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
