@@ -26,7 +26,7 @@ When invoked with a branch name or PR number:
 
 4. **Set up the worktree**:
    - Fetch latest from origin: `git fetch origin`
-   - Create worktree: `git worktree add -b review/BRANCHNAME ~/wt/$REPO_NAME/SHORT_NAME origin/BRANCHNAME`
+   - Create worktree: `git worktree add -b review/BRANCHNAME ~/hyprlayer/worktrees/$REPO_NAME/SHORT_NAME origin/BRANCHNAME`
 
 5. **Configure the worktree**:
     - Detect and run the appropriate setup command:
@@ -54,5 +54,5 @@ When invoked with a branch name or PR number:
 ```
 
 This will:
-- Fetch from origin and create worktree at `~/wt/$REPO_NAME/eng-1696`
+- Fetch from origin and create worktree at `~/hyprlayer/worktrees/$REPO_NAME/eng-1696`
 - Set up the environment

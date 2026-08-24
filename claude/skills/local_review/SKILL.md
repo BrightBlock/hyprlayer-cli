@@ -8,7 +8,7 @@ disable-model-invocation: true
 # Local Review
 
 Set up a throwaway git worktree for reviewing someone else's branch: resolve the
-branch, cut the worktree under `~/wt/<repo>/<short-name>`, install whatever this
+branch, cut the worktree under `~/hyprlayer/worktrees/<repo>/<short-name>`, install whatever this
 repo needs, initialize thoughts inside it, and hand back the path so a new
 Claude Code session can be started there.
 
@@ -44,7 +44,8 @@ orchestration:
         - { value: branch, src: "gh pr view -q .headRefName, or the argument verbatim when it was not a PR number" }
       produces: short-name
       judgment: >
-        Is the derived name unique under `~/wt/<repo-name>/`, and will it still
+        Is the derived name unique under `~/hyprlayer/worktrees/<repo-name>/`, and
+        will it still
         be legible in a week? See "The short worktree name" below.
 
     - id: fetch
@@ -62,8 +63,8 @@ orchestration:
       given:
         - { value: repo-name,  src: 'basename "$PWD"' }
         - { value: short-name, src: "the short-name step" }
-      run: git worktree add -b review/<branch> ~/wt/<repo-name>/<short-name> origin/<branch>
-      reject: exit0(test -e ~/wt/<repo-name>/<short-name>) or not exit0(git rev-parse --verify origin/<branch>)
+      run: git worktree add -b review/<branch> ~/hyprlayer/worktrees/<repo-name>/<short-name> origin/<branch>
+      reject: exit0(test -e ~/hyprlayer/worktrees/<repo-name>/<short-name>) or not exit0(git rev-parse --verify origin/<branch>)
       because: >
         Two preconditions with two different remedies, which is why they are
         checked before the command rather than read out of its exit code. A path
@@ -108,7 +109,7 @@ orchestration:
       inline: true
       given:
         - { value: repo-name, src: 'basename "$PWD" — the source repo, read before any cd' }
-        - { value: worktree,  src: "the worktree step: ~/wt/<repo-name>/<short-name>" }
+        - { value: worktree,  src: "the worktree step: ~/hyprlayer/worktrees/<repo-name>/<short-name>" }
       run: cd <worktree> && hyprlayer thoughts init --directory <repo-name> --yes
       because: >
         The `cd` is load-bearing, not decoration: this initializes thoughts in
@@ -153,7 +154,7 @@ conventions:
     - { if: "a *.sln or *.csproj file", run: dotnet restore }
     - { if: none of the above,   run: skip dependency setup }
 
-  worktree-path:   ~/wt/<repo-name>/<short-name>
+  worktree-path:   ~/hyprlayer/worktrees/<repo-name>/<short-name>
   worktree-branch: review/<branch>
 
 usage:
@@ -169,7 +170,8 @@ in another shape (`1696-add-feature`, `fix/ENG_1696`) or a second branch for a
 ticket that already has a worktree. Both are yours to notice. A collision does
 not surface until `git worktree add` fails, after the fetch and after you have
 told the user what you are about to do; a name with no ticket in it makes
-`~/wt/<repo>/` unreadable within a week, which is exactly when a reviewer needs
+`~/hyprlayer/worktrees/<repo>/` unreadable within a week, which is exactly
+when a reviewer needs
 to find the tree again.
 
 **Which setup command the repo wants.** The ordered list is a heuristic about
