@@ -535,3 +535,67 @@ fn a_declared_retry_is_reported_on_its_step_without_moving_the_spawn_count() {
         }
     }
 }
+
+/// `check` reports a delegation naming no agent as check 6, but `compile`
+/// never runs `check` — so scheduling has to stop on its own, or a direct
+/// `compile` emits a plan whose `agentCandidates` is `[]` while `spawns`
+/// counts 1: an unresolved choice with nothing to choose from. All four
+/// spellings of the defect are one rule, and the message matches `check`'s
+/// so the two surfaces do not disagree about the same block.
+#[test]
+fn compile_rejects_a_delegation_that_names_no_agent() {
+    let (_guard, xdg) = isolated_dirs();
+    let claude_agents = repo_root().join("claude/agents");
+    let cases = [
+        (
+            "one-of-bare.md",
+            "    - id: a\n      agent: one-of\n",
+            "`agent: one-of` lists no agents",
+        ),
+        (
+            "one-of-empty.md",
+            "    - id: a\n      agent: one-of []\n",
+            "`agent: one-of` lists no agents",
+        ),
+        (
+            "fanout-one-of.md",
+            "    - id: a\n      fanout: one-of\n      over: areas\n",
+            "`fanout: one-of` lists no agents",
+        ),
+        (
+            "agent-empty.md",
+            "    - id: a\n      agent: \"\"\n",
+            "`agent:` names no agent",
+        ),
+    ];
+    for (name, step, expected) in cases {
+        let path = xdg.join(name);
+        std::fs::write(
+            &path,
+            format!("---\nname: x\n---\n\n```yaml\norchestration:\n  steps:\n{step}```\n"),
+        )
+        .unwrap();
+        let out = run(
+            &xdg,
+            &[
+                "orchestrate",
+                "compile",
+                path.to_str().unwrap(),
+                "--target",
+                "claude",
+                "--agents-dir",
+                claude_agents.to_str().unwrap(),
+                "--fanout",
+                "areas=2",
+            ],
+        );
+        assert!(!out.status.success(), "{name} compiled: {out:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains(expected), "{name} stderr: {stderr}");
+        assert!(
+            out.stdout.is_empty(),
+            "{name} emitted a plan anyway: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+}
