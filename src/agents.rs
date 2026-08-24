@@ -228,15 +228,26 @@ impl AgentTool {
     /// directories but missing newly added files reports not-installed, so
     /// `configure --no-force` re-runs and provisions the new bundle. Bump
     /// these whenever we ship a top-level file existing users should pick up.
+    ///
+    /// **Scope, since 1.6.0**: as a completeness gate this now governs only
+    /// the frozen-legacy-tree fallback. An asset install carries a
+    /// `manifest.json` and is gated on that instead — every listed file
+    /// present and hashing correctly — which is a far stronger check than
+    /// two hardcoded paths. This remains the gate for the `master`-tree
+    /// fallback, which has no manifest, and remains the "is anything
+    /// installed here" probe for both. See `install_staged`.
     fn is_installed_at(&self, dest: &Path) -> bool {
         match self {
             // This sentinel doubles as the staged-download completeness
-            // gate (`is_installed_at` failing here after a staged fetch is
-            // a hard `bail!`, not a soft warning). It may therefore only
-            // ever name long-lived, load-bearing files that ship on every
-            // release — never a file from a branch not yet on `master`,
-            // or reverting that file turns a benign rollback into every
-            // user's next `ai configure`/`ai reinstall` failing outright.
+            // gate for the legacy fallback (`is_installed_at` failing there
+            // after a staged fetch is a hard `bail!`, not a soft warning).
+            // It may therefore only ever name long-lived, load-bearing
+            // files that ship on every release — never a file from a branch
+            // not yet on `master`, or reverting that file turns a benign
+            // rollback into every user's next `ai configure`/`ai reinstall`
+            // failing outright. The frozen trees make that hazard mostly
+            // historical: they no longer change. Both paths below are
+            // present in the freeze and in every asset bundle.
             Self::Claude => {
                 dest.join("skills/code_review/SKILL.md").is_file()
                     && dest.join("agents/codebase-locator.md").is_file()
