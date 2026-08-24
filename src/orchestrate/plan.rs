@@ -5,7 +5,7 @@
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::orchestrate::block::Block;
+use crate::orchestrate::block::{Block, Step};
 use crate::orchestrate::eval::{FactValue, Resolved};
 use crate::orchestrate::schedule::{GuardRecord, Schedule, SkippedStep, SpawnMode};
 use crate::orchestrate::target::Target;
@@ -31,6 +31,7 @@ pub fn build(
                     "agentCandidates": spawn_candidates(&s.spawns),
                     "over": spawn_over(&s.spawns),
                     "spawns": s.spawns.count(),
+                    "retry": retry_json(s.step),
                 })).collect::<Vec<_>>(),
             })
         })
@@ -132,6 +133,23 @@ fn spawn_over(spawns: &SpawnMode) -> Value {
     match spawns {
         SpawnMode::Fanout { over, .. } => json!(over),
         _ => Value::Null,
+    }
+}
+
+/// `retry: {step, max}` is declared data, reported and never followed —
+/// so it is emitted on the step that DECLARES it, naming its target, and
+/// is deliberately absent from `totalSpawns`. A retry is contingent on a
+/// failure the compiler cannot predict; folding a worst case into the
+/// scheduled count would make the enumeration ("map x4, history x1, ...")
+/// false and turn a plan into a ceiling. A reader budgeting for the worst
+/// case reads `max` here and the target step's own `spawns`.
+fn retry_json(step: &Step) -> Value {
+    match &step.retry {
+        Some(r) => json!({
+            "step": r.step.as_ref().map(|s| s.value.clone()),
+            "max": r.max,
+        }),
+        None => Value::Null,
     }
 }
 

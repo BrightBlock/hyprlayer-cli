@@ -45,7 +45,10 @@ pub struct GivenEntry {
 pub struct Retry {
     pub pos: Pos,
     pub step: Option<Spanned<String>>,
-    pub max_is_integer: bool,
+    /// `None` when `max:` is absent or not an integer — which is check 3's
+    /// second finding. A `Some` here is both "well-formed" and the value
+    /// the plan reports.
+    pub max: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -238,15 +241,14 @@ fn retry(node: &MarkedYaml, fence_line: usize) -> Option<Retry> {
             pos: pos_of(n, fence_line),
         })
     });
-    let max_is_integer = r
+    let max = r
         .data
         .as_mapping_get("max")
-        .and_then(|n| n.data.as_integer())
-        .is_some();
+        .and_then(|n| n.data.as_integer());
     Some(Retry {
         pos: pos_of(r, fence_line),
         step,
-        max_is_integer,
+        max,
     })
 }
 
