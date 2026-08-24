@@ -1,6 +1,6 @@
 ---
 name: adversarial-reviewer
-description: Adversarial code reviewer running on gpt-5-codex. Spawn this agent to find ways a diff will fail in production — edge cases, race conditions, security holes, resource leaks, silent corruption. Read-only. Used by /code_review.
+description: Adversarial code reviewer running on gpt-5.3-codex. Spawn this agent to find ways a diff will fail in production — edge cases, race conditions, security holes, resource leaks, silent corruption. Read-only. Used by /code_review.
 tools: ['read', 'search']
 ---
 

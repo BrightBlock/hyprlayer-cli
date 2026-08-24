@@ -78,28 +78,32 @@ impl OpenCodeProvider {
 
     pub fn default_sonnet_model(&self) -> &str {
         match self {
-            Self::GithubCopilot => "github-copilot/claude-sonnet-4.5",
-            Self::Anthropic => "anthropic/claude-sonnet-4-5",
-            Self::Abacus => "abacus/claude-sonnet-4-6",
+            Self::GithubCopilot => "github-copilot/claude-sonnet-5",
+            Self::Anthropic => "anthropic/claude-sonnet-5",
+            Self::Abacus => "abacus/claude-sonnet-5",
         }
     }
 
     pub fn default_opus_model(&self) -> &str {
         match self {
-            Self::GithubCopilot => "github-copilot/claude-opus-4.5",
-            Self::Anthropic => "anthropic/claude-opus-4-5",
-            Self::Abacus => "abacus/claude-opus-4-6",
+            Self::GithubCopilot => "github-copilot/claude-opus-5",
+            Self::Anthropic => "anthropic/claude-opus-5",
+            Self::Abacus => "abacus/claude-opus-5",
         }
     }
 
-    /// Abacus routes to its highest-reasoning codex variant for a true
-    /// cross-model second opinion; GitHub Copilot uses gpt-5-codex (the
-    /// codex variant exposed through Copilot Chat); Anthropic stays on
-    /// claude-opus-4-5 because the Anthropic API is Claude-only.
+    /// Abacus and GitHub Copilot route to their highest-reasoning codex
+    /// variant for a true cross-model second opinion; Anthropic stays on
+    /// claude-opus-5 because the Anthropic API is Claude-only.
+    ///
+    /// Model ids are the ones opencode resolves through the models.dev
+    /// registry, so a rename upstream shows up here as an unresolvable
+    /// model rather than a silent downgrade — `gpt-5-codex` was dropped
+    /// from Copilot's catalog, which is why it is `gpt-5.3-codex` now.
     pub fn default_adversarial_model(&self) -> &str {
         match self {
-            Self::GithubCopilot => "github-copilot/gpt-5-codex",
-            Self::Anthropic => "anthropic/claude-opus-4-5",
+            Self::GithubCopilot => "github-copilot/gpt-5.3-codex",
+            Self::Anthropic => "anthropic/claude-opus-5",
             Self::Abacus => "abacus/gpt-5.3-codex-xhigh",
         }
     }
@@ -1443,15 +1447,15 @@ mod tests {
     fn opencode_provider_sonnet_models() {
         assert_eq!(
             OpenCodeProvider::GithubCopilot.default_sonnet_model(),
-            "github-copilot/claude-sonnet-4.5"
+            "github-copilot/claude-sonnet-5"
         );
         assert_eq!(
             OpenCodeProvider::Anthropic.default_sonnet_model(),
-            "anthropic/claude-sonnet-4-5"
+            "anthropic/claude-sonnet-5"
         );
         assert_eq!(
             OpenCodeProvider::Abacus.default_sonnet_model(),
-            "abacus/claude-sonnet-4-6"
+            "abacus/claude-sonnet-5"
         );
     }
 
@@ -1459,15 +1463,15 @@ mod tests {
     fn opencode_provider_opus_models() {
         assert_eq!(
             OpenCodeProvider::GithubCopilot.default_opus_model(),
-            "github-copilot/claude-opus-4.5"
+            "github-copilot/claude-opus-5"
         );
         assert_eq!(
             OpenCodeProvider::Anthropic.default_opus_model(),
-            "anthropic/claude-opus-4-5"
+            "anthropic/claude-opus-5"
         );
         assert_eq!(
             OpenCodeProvider::Abacus.default_opus_model(),
-            "abacus/claude-opus-4-6"
+            "abacus/claude-opus-5"
         );
     }
 
@@ -1475,11 +1479,11 @@ mod tests {
     fn opencode_provider_adversarial_models() {
         assert_eq!(
             OpenCodeProvider::GithubCopilot.default_adversarial_model(),
-            "github-copilot/gpt-5-codex"
+            "github-copilot/gpt-5.3-codex"
         );
         assert_eq!(
             OpenCodeProvider::Anthropic.default_adversarial_model(),
-            "anthropic/claude-opus-4-5"
+            "anthropic/claude-opus-5"
         );
         assert_eq!(
             OpenCodeProvider::Abacus.default_adversarial_model(),
@@ -1511,7 +1515,7 @@ mod tests {
         assert!(updated);
 
         let result = fs::read_to_string(&file_path).unwrap();
-        assert!(result.contains("model: github-copilot/claude-sonnet-4.5"));
+        assert!(result.contains("model: github-copilot/claude-sonnet-5"));
         assert!(!result.contains("{{SONNET_MODEL}}"));
 
         fs::remove_dir_all(&temp_dir).ok();
@@ -1530,7 +1534,7 @@ mod tests {
         assert!(updated);
 
         let result = fs::read_to_string(&file_path).unwrap();
-        assert!(result.contains("model: abacus/claude-opus-4-6"));
+        assert!(result.contains("model: abacus/claude-opus-5"));
         assert!(!result.contains("{{OPUS_MODEL}}"));
 
         fs::remove_dir_all(&temp_dir).ok();
@@ -1606,10 +1610,10 @@ mod tests {
         assert_eq!(count, 2); // Only files with placeholders
 
         let agent = fs::read_to_string(agents_dir.join("analyzer.md")).unwrap();
-        assert!(agent.contains("model: github-copilot/claude-sonnet-4.5"));
+        assert!(agent.contains("model: github-copilot/claude-sonnet-5"));
 
         let research = fs::read_to_string(commands_dir.join("research.md")).unwrap();
-        assert!(research.contains("model: github-copilot/claude-opus-4.5"));
+        assert!(research.contains("model: github-copilot/claude-opus-5"));
 
         fs::remove_dir_all(&temp_dir).ok();
     }
@@ -1639,7 +1643,7 @@ mod tests {
         assert!(!adversarial.contains("{{ADVERSARIAL_MODEL}}"));
 
         let analyzer = fs::read_to_string(agents_dir.join("analyzer.md")).unwrap();
-        assert!(analyzer.contains("model: abacus/claude-sonnet-4-6"));
+        assert!(analyzer.contains("model: abacus/claude-sonnet-5"));
 
         fs::remove_dir_all(&temp_dir).ok();
     }
@@ -1859,8 +1863,8 @@ mod tests {
         update_opencode_models(&temp_dir, &OpenCodeProvider::Anthropic).unwrap();
 
         let result = fs::read_to_string(commands_dir.join("test.md")).unwrap();
-        assert!(result.contains("model: anthropic/claude-sonnet-4-5"));
-        assert!(result.contains("opus: anthropic/claude-opus-4-5"));
+        assert!(result.contains("model: anthropic/claude-sonnet-5"));
+        assert!(result.contains("opus: anthropic/claude-opus-5"));
 
         fs::remove_dir_all(&temp_dir).ok();
     }

@@ -1,5 +1,5 @@
 ---
-description: Adversarial review of the current branch's diff. Spawns @adversarial-reviewer on gpt-5-codex for a cross-model second opinion.
+description: Adversarial review of the current branch's diff. Spawns @adversarial-reviewer on gpt-5.3-codex for a cross-model second opinion.
 agent: agent
 ---
 
@@ -19,7 +19,7 @@ hyprlayer telemetry skill-end --skill code_review --session <token>
 
 # Code Review (Adversarial)
 
-Drive an adversarial review of the current branch's diff. Spawns the `@adversarial-reviewer` agent with a fresh context window running on `gpt-5-codex` for a true cross-model second opinion.
+Drive an adversarial review of the current branch's diff. Spawns the `@adversarial-reviewer` agent with a fresh context window running on `gpt-5.3-codex` for a true cross-model second opinion.
 
 ## Arguments
 
@@ -107,7 +107,7 @@ The agent's output is the body of the review — present it verbatim in Step 3.
 First line tells the user which model the agent ran on:
 
 ```
-tier: copilot subagent (gpt-5-codex, cross-model)
+tier: copilot subagent (gpt-5.3-codex, cross-model)
 ```
 
 Then the review body verbatim. No banners, no separator characters, no decoration.

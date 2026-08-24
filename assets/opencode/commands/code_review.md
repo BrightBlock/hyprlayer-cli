@@ -8,9 +8,9 @@ subtask: false
 
 Drive an adversarial review of the current branch's diff. Spawns the `adversarial-reviewer` subagent with a fresh context window. The subagent's model is configured at install time per your OpenCode provider:
 
-- **Abacus** → `gpt-5-codex` (true cross-model second opinion)
-- **GitHub Copilot** → `gpt-5-codex` (true cross-model second opinion)
-- **Anthropic** → `claude-opus-4-5` (same family, fresh context — Anthropic's API is Claude-only)
+- **Abacus** → `gpt-5.3-codex-xhigh` (true cross-model second opinion)
+- **GitHub Copilot** → `gpt-5.3-codex` (true cross-model second opinion)
+- **Anthropic** → `claude-opus-5` (same family, fresh context — Anthropic's API is Claude-only)
 
 ## Arguments
 
