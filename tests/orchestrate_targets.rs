@@ -172,6 +172,73 @@ fn exit_is_one_when_any_single_target_has_an_error() {
     assert_eq!(out.status.code(), Some(1));
 }
 
+/// `exit_is_one_when_any_single_target_has_an_error` runs the two targets
+/// in separate invocations, so it never exercises the aggregation at
+/// `src/commands/orchestrate/check.rs`: a regression rewriting `ok` from
+/// "no target has errors" to "any target passed" leaves it green. This
+/// drives both targets through one invocation instead.
+///
+/// `--agents-dir` requires exactly one target, so both registries are
+/// installed for real under the isolated `HOME`.
+#[test]
+fn exit_is_one_when_one_of_two_targets_in_one_invocation_has_an_error() {
+    let (_guard, xdg) = isolated_dirs();
+    let path = write_skill(&xdg, "x.md", CARTOGRAPHER_STEP);
+
+    let claude_dest = xdg.join(".claude").join("agents");
+    std::fs::create_dir_all(&claude_dest).unwrap();
+    for entry in std::fs::read_dir(repo_root().join("claude/agents"))
+        .unwrap()
+        .flatten()
+    {
+        std::fs::copy(entry.path(), claude_dest.join(entry.file_name())).unwrap();
+    }
+    let opencode_dest = xdg.join(".config").join("opencode").join("agents");
+    std::fs::create_dir_all(&opencode_dest).unwrap();
+    for entry in std::fs::read_dir(repo_root().join("opencode/agents"))
+        .unwrap()
+        .flatten()
+    {
+        std::fs::copy(entry.path(), opencode_dest.join(entry.file_name())).unwrap();
+    }
+
+    let out = run_in(
+        &xdg,
+        &xdg,
+        &[
+            "orchestrate",
+            "check",
+            path.to_str().unwrap(),
+            "--json",
+            "--target",
+            "claude",
+            "--target",
+            "opencode",
+        ],
+    );
+    // One invocation, one exit code: claude resolves `cartographer` and
+    // opencode does not, so the run must fail even though a target passed.
+    assert_eq!(out.status.code(), Some(1), "out: {out:?}");
+
+    let d: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(d["ok"], false, "payload: {d}");
+    let file = &d["files"][0];
+    assert_eq!(file["ok"], false, "payload: {d}");
+    let targets = file["targets"].as_array().expect("targets[]");
+    assert_eq!(targets.len(), 2, "payload: {d}");
+    let ok_by_target: Vec<(&str, bool)> = targets
+        .iter()
+        .map(|t| {
+            (
+                t["target"].as_str().unwrap(),
+                t["ok"].as_bool().expect("ok flag"),
+            )
+        })
+        .collect();
+    assert!(ok_by_target.contains(&("claude", true)), "payload: {d}");
+    assert!(ok_by_target.contains(&("opencode", false)), "payload: {d}");
+}
+
 #[test]
 fn no_installed_target_warns_and_skips_check_six() {
     let (_guard, xdg) = isolated_dirs();
