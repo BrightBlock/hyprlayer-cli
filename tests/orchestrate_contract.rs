@@ -251,6 +251,44 @@ fn plan_hash_is_a_sha256_hex_string_with_the_sha256_prefix() {
     );
 }
 
+/// `plan_hash_is_a_sha256_hex_string_with_the_sha256_prefix` pins the
+/// shape and `the_same_argv_produces_the_same_bytes...` pins determinism,
+/// but neither pins what the digest is *of* — a regression hashing the
+/// source path, or a constant, satisfies both. This recomputes it from
+/// the emitted plan the way an outside consumer would: drop `planHash`,
+/// re-serialize, sha256. That is what makes the artifact independently
+/// verifiable rather than merely stable, which is the claim README makes
+/// for it.
+///
+/// `serde_json::Map` is a `BTreeMap` here (no `preserve_order` feature),
+/// so `to_string` is key-sorted and canonical — the recompute needs no
+/// separate canonicalization step.
+#[test]
+fn the_plan_hash_is_the_digest_of_the_plan_with_plan_hash_removed() {
+    use sha2::{Digest, Sha256};
+
+    let (_guard, xdg) = isolated_dirs();
+    let d = compile_json(&xdg, "claude");
+    let emitted = d["planHash"].as_str().expect("planHash").to_string();
+
+    let mut without = d.clone();
+    without
+        .as_object_mut()
+        .expect("plan is an object")
+        .remove("planHash")
+        .expect("planHash must be present before removal");
+
+    let compact = serde_json::to_string(&without).unwrap();
+    let mut hasher = Sha256::new();
+    hasher.update(compact.as_bytes());
+    let recomputed = format!("sha256:{}", hex::encode(hasher.finalize()));
+
+    assert_eq!(
+        emitted, recomputed,
+        "planHash is not the digest of the rest of the plan"
+    );
+}
+
 #[test]
 fn the_same_block_compiled_for_two_targets_has_two_different_hashes() {
     let (_guard, xdg) = isolated_dirs();
