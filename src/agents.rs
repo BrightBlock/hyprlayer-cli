@@ -53,7 +53,10 @@ pub(crate) fn resolve_assets_version(pinned: Option<&str>) -> &str {
 
 /// Release-asset file name for one harness at one version, as
 /// `scripts/build-asset-bundles.sh` emits it and `release.yml` attaches it.
-fn asset_name(harness: &str, version: &str) -> String {
+///
+/// Also what `ai versions` matches release assets against, to keep the
+/// listed versions to the ones that can actually be installed.
+pub(crate) fn asset_name(harness: &str, version: &str) -> String {
     format!("hyprlayer-assets-{harness}-{version}.tar.gz")
 }
 
@@ -298,22 +301,50 @@ impl AgentTool {
         }
     }
 
-    pub fn status_json(&self, config: &crate::config::AiConfig) -> serde_json::Value {
-        match self {
-            Self::OpenCode => serde_json::json!({
-                "agentTool": self.to_string(),
-                "installed": self.is_installed(),
-                "location": self.dest_display(),
-                "opencodeProvider": config.opencode_provider.as_ref().map(|p| p.to_string()),
-                "opencodeSonnetModel": config.opencode_sonnet_model.clone(),
-                "opencodeOpusModel": config.opencode_opus_model.clone(),
-            }),
-            Self::Claude | Self::Copilot => serde_json::json!({
-                "agentTool": self.to_string(),
-                "installed": self.is_installed(),
-                "location": self.dest_display(),
-            }),
+    /// The machine-readable half of `print_status`.
+    ///
+    /// Takes both halves of the config because the harness block and the
+    /// bundle versions live at different levels: `ai` is the already-narrowed
+    /// `AiConfig` of the configured tool, `config` the surrounding
+    /// `HyprlayerConfig` that records which assets version is installed and
+    /// whether it is pinned.
+    ///
+    /// `assetsVersion` is what the last install recorded — `null` on a config
+    /// written before 1.6.0, which has no version to report — and
+    /// `binaryVersion` is this binary's own. The desktop reads the skew
+    /// between the three to decide whether to offer a rollback.
+    pub fn status_json(
+        &self,
+        ai: &crate::config::AiConfig,
+        config: &crate::config::HyprlayerConfig,
+    ) -> serde_json::Value {
+        let mut value = serde_json::json!({
+            "agentTool": self.to_string(),
+            "installed": self.is_installed(),
+            "location": self.dest_display(),
+            "assetsVersion": config.agents_installed_version,
+            "pinnedVersion": config.agents_pinned_version,
+            "binaryVersion": env!("CARGO_PKG_VERSION"),
+        });
+
+        if matches!(self, Self::OpenCode)
+            && let Some(map) = value.as_object_mut()
+        {
+            map.insert(
+                "opencodeProvider".to_string(),
+                serde_json::json!(ai.opencode_provider.as_ref().map(|p| p.to_string())),
+            );
+            map.insert(
+                "opencodeSonnetModel".to_string(),
+                serde_json::json!(ai.opencode_sonnet_model),
+            );
+            map.insert(
+                "opencodeOpusModel".to_string(),
+                serde_json::json!(ai.opencode_opus_model),
+            );
         }
+
+        value
     }
 
     /// Download agent files from GitHub and install to the destination.

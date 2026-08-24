@@ -1,6 +1,7 @@
 pub mod configure;
 pub mod reinstall;
 pub mod status;
+pub mod versions;
 
 use anyhow::Result;
 use std::path::Path;
