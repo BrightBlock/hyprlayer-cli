@@ -51,7 +51,7 @@ impl From<io::Error> for IntegrityError {
 
 /// Accepts a bare 64-char hex digest or the `sha256:<hex>` form. Returns
 /// the bare-hex slice on success.
-fn parse_sha256_digest(raw: &str) -> Option<&str> {
+pub(crate) fn parse_sha256_digest(raw: &str) -> Option<&str> {
     let hex = raw.strip_prefix("sha256:").unwrap_or(raw);
     if hex.len() == 64 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
         Some(hex)

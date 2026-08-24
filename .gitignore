@@ -3,6 +3,9 @@
 /tools
 /dashboards
 
+# Release asset bundles built by `scripts/build-asset-bundles.sh`.
+/dist
+
 # Local Claude Code state — settings, worktrees, etc. Never committed.
 .claude/
 
