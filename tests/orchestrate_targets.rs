@@ -9,7 +9,7 @@ mod common;
 
 use std::path::{Path, PathBuf};
 
-use common::{isolated_dirs, run};
+use common::{isolated_dirs, run_in};
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -25,7 +25,7 @@ fn write_skill(dir: &Path, name: &str, orchestration_body: &str) -> PathBuf {
 }
 
 fn json_of(xdg: &Path, args: &[&str]) -> serde_json::Value {
-    let out = run(xdg, args);
+    let out = run_in(xdg, xdg, args);
     serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
         panic!(
             "expected valid JSON, got error {e}\nstdout: {}",
@@ -47,7 +47,8 @@ fn a_claude_only_agent_is_an_error_for_opencode() {
     let path = write_skill(&xdg, "x.md", CARTOGRAPHER_STEP);
 
     let claude_agents = repo_root().join("claude/agents");
-    let out = run(
+    let out = run_in(
+        &xdg,
         &xdg,
         &[
             "orchestrate",
@@ -65,7 +66,8 @@ fn a_claude_only_agent_is_an_error_for_opencode() {
     );
 
     let opencode_agents = repo_root().join("opencode/agents");
-    let out = run(
+    let out = run_in(
+        &xdg,
         &xdg,
         &[
             "orchestrate",
@@ -138,7 +140,8 @@ fn exit_is_one_when_any_single_target_has_an_error() {
     let opencode_agents = repo_root().join("opencode/agents");
 
     // claude alone: clean.
-    let out = run(
+    let out = run_in(
+        &xdg,
         &xdg,
         &[
             "orchestrate",
@@ -153,7 +156,8 @@ fn exit_is_one_when_any_single_target_has_an_error() {
     assert!(out.status.success());
 
     // opencode alone: fails (cartographer doesn't exist there).
-    let out = run(
+    let out = run_in(
+        &xdg,
         &xdg,
         &[
             "orchestrate",
@@ -199,7 +203,8 @@ fn agents_dir_with_multiple_targets_is_an_error_naming_the_fix() {
     let (_guard, xdg) = isolated_dirs();
     let path = write_skill(&xdg, "x.md", CARTOGRAPHER_STEP);
     let claude_agents = repo_root().join("claude/agents");
-    let out = run(
+    let out = run_in(
+        &xdg,
         &xdg,
         &[
             "orchestrate",
@@ -265,7 +270,8 @@ fn agents_dir_does_not_make_a_target_count_as_installed() {
     .unwrap();
 
     let path = write_skill(&xdg, "x.md", CARTOGRAPHER_STEP);
-    let out = run(
+    let out = run_in(
+        &xdg,
         &xdg,
         &[
             "orchestrate",
@@ -330,7 +336,8 @@ fn a_repeated_target_still_allows_agents_dir() {
     let (_guard, xdg) = isolated_dirs();
     let path = write_skill(&xdg, "x.md", CARTOGRAPHER_STEP);
     let claude_agents = repo_root().join("claude/agents");
-    let out = run(
+    let out = run_in(
+        &xdg,
         &xdg,
         &[
             "orchestrate",
