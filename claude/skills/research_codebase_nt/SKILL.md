@@ -1,0 +1,112 @@
+---
+name: research_codebase_nt
+description: Document codebase as-is without evaluation or recommendations, no-thoughts variant (omits thoughts-locator/thoughts-analyzer agents). Use when the user asks to map a codebase that does not use the standard thoughts directory. Read-only; produces a research artifact via the active storage backend.
+model: opus
+allowed-tools: Bash, Read, Grep, Glob, Agent, Write, Edit, Skill
+---
+
+# Research Codebase
+
+You are tasked with conducting comprehensive research across the codebase to answer user questions by spawning parallel sub-agents and synthesizing their findings.
+
+## Storage backend dispatch
+
+Read `~/.claude/skills/_thoughts/storage-backend.md` and follow it for where to save the artifact. Read `~/.claude/skills/_thoughts/required-metadata.md` for the schema-required fields and the backend-specific title format. For this command: artifact type is `research`; the title is derived from the research question.
+
+## Documentarian rules
+
+Read `~/.claude/skills/_thoughts/documentarian-rules.md` and apply it to yourself AND every sub-agent you spawn. This skill documents the codebase as-is — no recommendations, no critiques.
+
+## Initial Setup:
+
+When this command is invoked, respond with:
+```
+I'm ready to research the codebase. Please provide your research question or area of interest, and I'll analyze it thoroughly by exploring relevant components and connections.
+```
+
+Then wait for the user's research query.
+
+## Steps to follow after receiving the research query:
+
+1. **Read any directly mentioned files first:**
+   - If the user mentions specific files (tickets, docs, JSON), read them FULLY first
+   - **IMPORTANT**: Use the Read tool WITHOUT limit/offset parameters to read entire files
+   - **CRITICAL**: Read these files yourself in the main context before spawning any sub-tasks
+   - This ensures you have full context before decomposing the research
+
+2. **Analyze and decompose the research question:**
+   - Break down the user's query into composable research areas
+   - Take time to ultrathink about the underlying patterns, connections, and architectural implications the user might be seeking
+   - Identify specific components, patterns, or concepts to investigate
+   - Create a research plan using TodoWrite to track all subtasks
+   - Consider which directories, files, or architectural patterns are relevant
+
+3. **Spawn parallel sub-agent tasks for comprehensive research:**
+   - Read `~/.claude/skills/_thoughts/subagent-guide.md` for the catalog and spawning rules.
+   - Default to one `cartographer` per research area, spawned in parallel — each returns a document-ready section with `file:line` references. Use the narrow `codebase-*` agents for single targeted questions.
+   - For this skill (no-thoughts variant), also available: web research (only if the user explicitly asks) and JIRA (if relevant). Do NOT use the thoughts directory agents or the `archivist`.
+   - Documentarian rules (already loaded above) apply to every sub-agent you spawn.
+
+4. **Wait for all sub-agents to complete and synthesize findings:**
+   - IMPORTANT: Wait for ALL sub-agent tasks to complete before proceeding
+   - Compile all sub-agent results
+   - Prioritize live codebase findings as primary source of truth
+   - Connect findings across different components
+   - Include specific file paths and line numbers for reference
+   - Highlight patterns, connections, and architectural decisions
+   - Answer the user's specific questions with concrete evidence
+
+5. **Gather metadata for the research document:**
+   - Collect: current date/time (ISO with timezone), git commit hash, branch name, repository name, researcher name (from `hyprlayer thoughts config --json` or `git config user.name`).
+   - Determine the artifact title per the backend-specific rule in `~/.claude/skills/_thoughts/required-metadata.md`.
+   - Destination is resolved by the storage backend dispatch:
+     - For `git`/`obsidian`: `thoughts/shared/research/<title>.md`
+     - For `notion`/`anytype`: a database row / object with `type: research`
+
+6. **Generate research document:**
+   - Read `~/.claude/skills/_thoughts/templates/research.md` for the body structure.
+   - Populate every placeholder using the metadata from step 5. Skip the `Historical Context (from thoughts/)` section — this skill does not use the thoughts directory.
+
+7. **Add GitHub permalinks (if applicable):**
+   - Read `~/.claude/skills/_thoughts/permalinks.md` and follow it.
+
+8. **Present findings:**
+   - For `backend: git`, also run `hyprlayer thoughts sync`. Skip for `obsidian`/`notion`/`anytype`.
+   - Present a concise summary of findings to the user
+   - Include key file references for easy navigation
+   - Ask if they have follow-up questions or need clarification
+
+9. **Handle follow-up questions:**
+   - If the user has follow-up questions, append to the same research document (edit the file for `git`/`obsidian`; use `mcp__notion__update-page` / `mcp__anytype__API-update-object` for notion/anytype)
+   - Update the `last_updated` and `last_updated_by` fields (frontmatter or properties)
+   - Add `last_updated_note: "Added follow-up research for [brief description]"`
+   - Add a new section: `## Follow-up Research [timestamp]`
+   - Spawn new sub-agents as needed for additional investigation
+   - For `backend: git`, sync again after updates
+
+## Important notes:
+- Always use parallel Task agents to maximize efficiency and minimize context usage
+- Always run fresh codebase research - never rely solely on existing research documents
+- Focus on finding concrete file paths and line numbers for developer reference
+- Research documents should be self-contained with all necessary context
+- Each sub-agent prompt should be specific and focused on read-only documentation operations
+- Document cross-component connections and how systems interact
+- Include temporal context (when the research was conducted)
+- Link to GitHub when possible for permanent references
+- Keep the main agent focused on synthesis, not deep file reading
+- Have sub-agents document examples and usage patterns as they exist
+- **CRITICAL**: You and all sub-agents are documentarians, not evaluators
+- **REMEMBER**: Document what IS, not what SHOULD BE
+- **NO RECOMMENDATIONS**: Only describe the current state of the codebase
+- **File reading**: Always read mentioned files FULLY (no limit/offset) before spawning sub-tasks
+- **Critical ordering**: Follow the numbered steps exactly
+  - ALWAYS read mentioned files first before spawning sub-tasks (step 1)
+  - ALWAYS wait for all sub-agents to complete before synthesizing (step 4)
+  - ALWAYS gather metadata before writing the document (step 5 before step 6)
+  - NEVER write the research document with placeholder values
+- **Frontmatter consistency**:
+  - Always include frontmatter at the beginning of research documents
+  - Keep frontmatter fields consistent across all research documents
+  - Update frontmatter when adding follow-up research
+  - Use snake_case for multi-word field names (e.g., `last_updated`, `git_commit`)
+  - Tags should be relevant to the research topic and components studied

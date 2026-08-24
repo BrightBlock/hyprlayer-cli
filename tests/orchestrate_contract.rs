@@ -17,11 +17,11 @@ fn repo_root() -> PathBuf {
 }
 
 fn fixture() -> PathBuf {
-    repo_root().join("claude/skills/research_codebase/SKILL.md")
+    repo_root().join("assets/claude/skills/research_codebase/SKILL.md")
 }
 
 fn claude_agents() -> PathBuf {
-    repo_root().join("claude/agents")
+    repo_root().join("assets/claude/agents")
 }
 
 /// `--agents-dir` requires exactly one target, so exercising two targets
@@ -37,7 +37,7 @@ fn install_agent_registries(xdg: &Path) {
 
     let opencode_dest = xdg.join(".config").join("opencode").join("agents");
     std::fs::create_dir_all(&opencode_dest).unwrap();
-    for entry in std::fs::read_dir(repo_root().join("opencode/agents"))
+    for entry in std::fs::read_dir(repo_root().join("assets/opencode/agents"))
         .unwrap()
         .flatten()
     {

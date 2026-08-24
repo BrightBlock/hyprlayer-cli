@@ -1,6 +1,6 @@
 # PR description dispatch
 
-This is the shared protocol for the `describe_pr` skills. They produce a PR description body that is passed to `gh pr edit --body-file` and (where the backend supports it) also persisted as a typed thoughts artifact.
+This is the shared protocol for the `describe_pr` and `ci_describe_pr` skills. Both produce a PR description body that is passed to `gh pr edit --body-file` and (where the backend supports it) also persisted as a typed thoughts artifact.
 
 The skill that loaded this file already knows the PR `{number}` and `{pr_title}`.
 

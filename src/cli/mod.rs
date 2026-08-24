@@ -77,6 +77,7 @@ impl Cli {
                 AiCommands::Configure(_) => "ai.configure",
                 AiCommands::Status(_) => "ai.status",
                 AiCommands::Reinstall(_) => "ai.reinstall",
+                AiCommands::Versions(_) => "ai.versions",
             },
             Cli::Storage { command } => match command {
                 StorageCommands::Info(_) => "storage.info",
@@ -168,6 +169,7 @@ impl Cli {
                 AiCommands::Configure(a) => &a.config,
                 AiCommands::Status(a) => &a.config,
                 AiCommands::Reinstall(a) => &a.config,
+                AiCommands::Versions(a) => &a.config,
             }),
             Cli::Storage { command } => Some(match command {
                 StorageCommands::Info(a) => &a.config,
@@ -207,6 +209,7 @@ pub enum AiCommands {
     Configure(AiConfigureArgs),
     Status(AiStatusArgs),
     Reinstall(AiReinstallArgs),
+    Versions(AiVersionsArgs),
 }
 
 #[derive(Subcommand, Debug)]

@@ -182,9 +182,19 @@ pub(crate) fn is_newer_version(a: &str, b: &str) -> bool {
     parse(a) > parse(b)
 }
 
-/// No cached SHA always counts as stale.
-fn should_reinstall(installed_sha: Option<&str>, latest_sha: &str) -> bool {
-    installed_sha != Some(latest_sha)
+/// Whether the assets on disk need replacing, decided purely by comparing
+/// the version the last install recorded against the one we want.
+///
+/// Takes both versions as arguments and touches nothing else, so the
+/// settled case — the overwhelmingly common one — reaches no network at
+/// all. This replaces the pre-1.6.0 shape, which resolved `master` HEAD
+/// over the wire before it could answer.
+///
+/// `None` (a config written before 1.6.0, or an install that never
+/// recorded one) always counts as stale, which is what makes the first
+/// 1.6.0 run install exactly once.
+pub(crate) fn should_reinstall(installed_version: Option<&str>, desired_version: &str) -> bool {
+    installed_version != Some(desired_version)
 }
 
 /// What `check_release_in` did, so `run_startup_checks` can persist state
@@ -342,6 +352,19 @@ fn should_notify(current: &str, latest_for_method: Option<&str>) -> bool {
     }
 }
 
+/// Startup auto-refresh of the agent bundle.
+///
+/// Freshness is a version comparison against what the last install recorded
+/// (`assets_need_refresh`), not a timer and not a `master` HEAD lookup: an
+/// already-current install costs no network I/O, and a binary upgrade — or a
+/// newly set pin — refreshes on the very next run instead of waiting out a
+/// 24h window.
+///
+/// `last_agent_check` survives as the backoff for a refresh that *failed*.
+/// Without it, an unreachable GitHub would mean a download attempt on every
+/// single command; with it, a failure costs one attempt per day. A
+/// successful refresh clears the anchor (`record_assets_version`), so it
+/// never delays the next legitimately-stale refresh.
 fn reinstall_agents_in(cfg: &mut config::HyprlayerConfig, now: i64) -> bool {
     // Auto-reinstall only refreshes an existing install — it never
     // bootstraps a new one for a user who has not run `ai configure`.
@@ -356,36 +379,56 @@ fn reinstall_agents_in(cfg: &mut config::HyprlayerConfig, now: i64) -> bool {
     }
     let opencode_provider = ai.opencode_provider.clone();
 
-    if should_skip_due_to_throttle(cfg.last_agent_check.unwrap_or(0), now, CHECK_INTERVAL_SECS) {
-        return false;
+    let mut changed = false;
+
+    if cfg.assets_need_refresh()
+        && !should_skip_due_to_throttle(cfg.last_agent_check.unwrap_or(0), now, CHECK_INTERVAL_SECS)
+    {
+        // Bump the anchor *before* the attempt, so a failure that never
+        // reaches `record_assets_version` still backs off.
+        cfg.last_agent_check = Some(now);
+        let desired = cfg.desired_assets_version().to_string();
+        try_refresh_agents(cfg, tool, opencode_provider.as_ref(), &desired);
+        changed = true;
     }
-    cfg.last_agent_check = Some(now);
 
-    try_refresh_agents(cfg, tool, opencode_provider.as_ref());
-
+    // Independent of the refresh: a Copilot user whose bundle is already
+    // current still has to be told the harness is going away.
     if tool == agents::AgentTool::Copilot && !cfg.copilot_deprecation_warned {
         eprintln!(
             "Note: Copilot support in hyprlayer is deprecated and will be removed in a\n\
              future release. To switch to Claude Code or OpenCode, run `hyprlayer ai configure`."
         );
         cfg.copilot_deprecation_warned = true;
+        changed = true;
     }
 
-    true
+    changed
 }
 
+/// Install the bundle for `desired_version` and record that we did.
+///
+/// The caller has already decided a refresh is due, so there is no
+/// freshness lookup here — in particular no `master` ref advertisement
+/// before the decision, which is what the pre-1.6.0 shape did on every
+/// throttled check.
+///
+/// `desired_version` is recorded on success whichever source served the
+/// install. The release asset is the normal one, but a dev build or a
+/// release predating the bundles falls back to the frozen legacy tree
+/// (`agents::fetch_into`); recording only on the asset path would leave
+/// those users stale-by-definition and reinstalling on every startup.
 fn try_refresh_agents(
     cfg: &mut config::HyprlayerConfig,
     tool: agents::AgentTool,
     opencode_provider: Option<&agents::OpenCodeProvider>,
+    desired_version: &str,
 ) {
-    let Ok(latest_sha) = agents::fetch_master_sha() else {
-        return;
-    };
-    if !should_reinstall(cfg.agents_installed_sha.as_deref(), &latest_sha) {
-        return;
-    }
-    match tool.install(opencode_provider, true) {
+    match tool.install(
+        opencode_provider,
+        cfg.agents_pinned_version.as_deref(),
+        true,
+    ) {
         Ok(outcome) => {
             if outcome.changed > 0 {
                 eprintln!(
@@ -393,9 +436,12 @@ fn try_refresh_agents(
                     tool, outcome.changed
                 );
             }
+            // Still cached for the legacy fallback, which has no bundle
+            // version of its own.
             if let Some(sha) = outcome.sha {
                 cfg.agents_installed_sha = Some(sha);
             }
+            cfg.record_assets_version(desired_version);
         }
         Err(e) => eprintln!(
             "Failed to update agent files: {}. Run 'hyprlayer ai reinstall' to retry.",
@@ -466,12 +512,94 @@ mod tests {
         assert!(!is_newer_version("nightly", "1.0.0"));
     }
 
+    /// The freshness truth table, now over bundle versions rather than
+    /// `master` SHAs. Note what is *not* here: any source of truth beyond
+    /// the two arguments. The comparison cannot reach the network, which is
+    /// what makes the settled case free.
     #[test]
     fn should_reinstall_truth_table() {
-        assert!(should_reinstall(None, "abc"));
-        assert!(!should_reinstall(Some("abc"), "abc"));
-        assert!(should_reinstall(Some("abc"), "def"));
-        assert!(should_reinstall(Some(""), "abc"));
+        // Mismatch reinstalls, match no-ops.
+        assert!(should_reinstall(Some("1.6.0"), "1.6.1"));
+        assert!(!should_reinstall(Some("1.6.0"), "1.6.0"));
+        // Downgrades are mismatches too — pinning back to an older bundle
+        // has to install it, not decide it is already new enough.
+        assert!(should_reinstall(Some("1.6.1"), "1.6.0"));
+        // Exact strings, not semver cores: a prerelease pin is a different
+        // bundle from the release of the same version and must be fetched.
+        assert!(should_reinstall(Some("1.6.0-rc.1"), "1.6.0"));
+
+        // Unknown — a config written before 1.6.0, or an install that never
+        // recorded — is always stale, which is the migration trigger.
+        assert!(should_reinstall(None, "1.6.0"));
+        assert!(should_reinstall(Some(""), "1.6.0"));
+    }
+
+    /// A binary upgrade must move the skills on the *next* run, not a day
+    /// later: with freshness decided by version, `last_agent_check` is only
+    /// a backoff for a failed refresh, and a successful one clears it.
+    #[test]
+    fn a_binary_upgrade_refreshes_without_waiting_out_the_throttle() {
+        let now: i64 = 2_000_000_000;
+
+        // A refresh that succeeded an hour ago — well inside the window.
+        let mut cfg = config::HyprlayerConfig {
+            last_agent_check: Some(now - 3600),
+            ..Default::default()
+        };
+        cfg.record_assets_version("1.6.0");
+
+        assert!(
+            !should_reinstall(cfg.agents_installed_version.as_deref(), "1.6.0"),
+            "same version: nothing to do, and nothing fetched to find that out"
+        );
+        assert!(
+            should_reinstall(cfg.agents_installed_version.as_deref(), "1.6.1"),
+            "the upgraded binary wants its own bundle"
+        );
+        assert!(
+            !should_skip_due_to_throttle(
+                cfg.last_agent_check.unwrap_or(0),
+                now,
+                CHECK_INTERVAL_SECS
+            ),
+            "a successful refresh must clear the anchor, or the upgrade waits 24h"
+        );
+    }
+
+    /// The other half: a refresh that *failed* leaves the anchor set and no
+    /// recorded version, so it stays stale but retries once a day instead of
+    /// on every command.
+    #[test]
+    fn a_failed_refresh_backs_off_for_a_day() {
+        let now: i64 = 2_000_000_000;
+
+        // `reinstall_agents_in` bumps the anchor before attempting; the
+        // install then errored, so no version was recorded.
+        let cfg = config::HyprlayerConfig {
+            last_agent_check: Some(now),
+            ..Default::default()
+        };
+
+        assert!(should_reinstall(
+            cfg.agents_installed_version.as_deref(),
+            "1.6.0"
+        ));
+        assert!(
+            should_skip_due_to_throttle(
+                cfg.last_agent_check.unwrap(),
+                now + 60,
+                CHECK_INTERVAL_SECS
+            ),
+            "a minute later: no retry"
+        );
+        assert!(
+            !should_skip_due_to_throttle(
+                cfg.last_agent_check.unwrap(),
+                now + CHECK_INTERVAL_SECS,
+                CHECK_INTERVAL_SECS
+            ),
+            "a day later: retry"
+        );
     }
 
     #[test]

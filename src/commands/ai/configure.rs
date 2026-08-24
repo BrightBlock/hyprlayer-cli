@@ -27,7 +27,11 @@ pub fn configure(args: AiConfigureArgs) -> Result<()> {
                 .as_ref()
                 .and_then(|ai| ai.opencode_provider.as_ref())
                 .cloned();
-            let outcome = agent.install(opencode_provider.as_ref(), false)?;
+            let outcome = agent.install(
+                opencode_provider.as_ref(),
+                hyprlayer_config.agents_pinned_version.as_deref(),
+                false,
+            )?;
             record_install(&mut hyprlayer_config, &config_path, outcome.sha)?;
             lifecycle::apply_side_effects(&mut hyprlayer_config, &config_path)?;
             install_claude_hook_if_applicable(agent, &hyprlayer_config);
@@ -68,7 +72,11 @@ pub fn configure(args: AiConfigureArgs) -> Result<()> {
         .as_ref()
         .and_then(|ai| ai.opencode_provider.as_ref())
         .cloned();
-    let outcome = agent_tool.install(opencode_provider_ref.as_ref(), false)?;
+    let outcome = agent_tool.install(
+        opencode_provider_ref.as_ref(),
+        hyprlayer_config.agents_pinned_version.as_deref(),
+        false,
+    )?;
     record_install(&mut hyprlayer_config, &config_path, outcome.sha)?;
 
     lifecycle::apply_side_effects(&mut hyprlayer_config, &config_path)?;

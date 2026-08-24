@@ -34,8 +34,8 @@ const PINS: [&str; 6] = [
 ];
 
 fn compile_json(xdg: &Path, extra: &[&str]) -> serde_json::Value {
-    let fixture = repo_root().join("claude/skills/research_codebase/SKILL.md");
-    let claude_agents = repo_root().join("claude/agents");
+    let fixture = repo_root().join("assets/claude/skills/research_codebase/SKILL.md");
+    let claude_agents = repo_root().join("assets/claude/agents");
     let mut args = vec![
         "orchestrate",
         "compile",
@@ -191,8 +191,8 @@ fn a_one_of_agent_is_one_spawn_with_an_unresolved_choice() {
 #[test]
 fn a_fanout_with_no_size_binding_is_an_error_naming_the_flag() {
     let (_guard, xdg) = isolated_dirs();
-    let fixture = repo_root().join("claude/skills/research_codebase/SKILL.md");
-    let claude_agents = repo_root().join("claude/agents");
+    let fixture = repo_root().join("assets/claude/skills/research_codebase/SKILL.md");
+    let claude_agents = repo_root().join("assets/claude/agents");
     let mut args = vec![
         "orchestrate",
         "compile",
@@ -218,8 +218,8 @@ fn a_fanout_with_no_size_binding_is_an_error_naming_the_flag() {
 #[test]
 fn two_identical_invocations_produce_byte_identical_stdout() {
     let (_guard, xdg) = isolated_dirs();
-    let fixture = repo_root().join("claude/skills/research_codebase/SKILL.md");
-    let claude_agents = repo_root().join("claude/agents");
+    let fixture = repo_root().join("assets/claude/skills/research_codebase/SKILL.md");
+    let claude_agents = repo_root().join("assets/claude/agents");
     let mut args = vec![
         "orchestrate",
         "compile",

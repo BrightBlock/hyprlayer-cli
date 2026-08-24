@@ -77,15 +77,35 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      # The per-harness skill/agent bundles ship as release assets so installed
+      # CLIs can pin to a version instead of tracking master HEAD. Cut from the
+      # live `assets/` tree, never the frozen root trees (see assets/FROZEN.md).
+      # The builder verifies every manifest digest by extracting and re-hashing,
+      # so a torn bundle fails the release rather than shipping.
+      - name: Build agent asset bundles
+        run: |
+          bash scripts/build-asset-bundles.sh "${GITHUB_REF_NAME#v}"
+          mkdir -p artifacts
+          cp dist/hyprlayer-assets-*.tar.gz artifacts/
+
       - name: Create release
         uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
+          # A semver prerelease always carries a `-` (v1.6.0-rc.1). Flagging it
+          # keeps it out of `/releases/latest`, which is what the CLI's own
+          # update check polls (`src/version_source.rs:33`) — an unflagged
+          # prerelease would otherwise be offered to every installed user.
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: artifacts/*
 
   update-winget:
     name: Update WinGet
     needs: release
+    # Package managers publish to end users, so they follow full releases only.
+    # A semver prerelease carries a `-`; those are for testing the release
+    # pipeline and must not reach WinGet, Homebrew, Scoop or the AUR.
+    if: ${{ !contains(github.ref_name, '-') }}
     runs-on: windows-latest
     steps:
       - name: Publish to Windows Package Manager
@@ -98,6 +118,10 @@ jobs:
   update-homebrew:
     name: Update Homebrew Tap
     needs: release
+    # Package managers publish to end users, so they follow full releases only.
+    # A semver prerelease carries a `-`; those are for testing the release
+    # pipeline and must not reach WinGet, Homebrew, Scoop or the AUR.
+    if: ${{ !contains(github.ref_name, '-') }}
     runs-on: ubuntu-latest
     steps:
       - name: Extract SHA256 digests from release API
@@ -169,6 +193,10 @@ jobs:
   update-scoop:
     name: Update Scoop
     needs: release
+    # Package managers publish to end users, so they follow full releases only.
+    # A semver prerelease carries a `-`; those are for testing the release
+    # pipeline and must not reach WinGet, Homebrew, Scoop or the AUR.
+    if: ${{ !contains(github.ref_name, '-') }}
     runs-on: ubuntu-latest
     steps:
       - name: Extract SHA256 digest from release API
@@ -220,6 +248,10 @@ jobs:
   update-aur:
     name: Update AUR
     needs: release
+    # Package managers publish to end users, so they follow full releases only.
+    # A semver prerelease carries a `-`; those are for testing the release
+    # pipeline and must not reach WinGet, Homebrew, Scoop or the AUR.
+    if: ${{ !contains(github.ref_name, '-') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

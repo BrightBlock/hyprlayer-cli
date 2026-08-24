@@ -1,6 +1,7 @@
 pub mod configure;
 pub mod reinstall;
 pub mod status;
+pub mod versions;
 
 use anyhow::Result;
 use std::path::Path;
@@ -11,13 +12,18 @@ use crate::commands::telemetry::opencode_plugin;
 use crate::config::HyprlayerConfig;
 use crate::telemetry;
 
-/// Persist the SHA after a successful `AgentTool::install` and clear
-/// `last_agent_check` so the next startup-time check re-evaluates
-/// immediately instead of waiting for the throttle window.
+/// Persist what a successful `AgentTool::install` produced: the SHA, and the
+/// assets version the install resolved to.
+///
+/// Recording the version is what stops the startup auto-refresh from
+/// immediately reinstalling on top of an explicit `ai configure` /
+/// `ai reinstall` — that check compares exactly this field against
+/// `desired_assets_version`. `record_assets_version` also clears
+/// `last_agent_check`, the failed-refresh backoff.
 ///
 /// `sha = None` (commits API was unreachable) leaves the cached SHA
-/// untouched but still clears the throttle, so the next startup check
-/// will retry the SHA fetch.
+/// untouched; the install itself still happened, so the version is recorded
+/// either way.
 pub(crate) fn record_install(
     config: &mut HyprlayerConfig,
     config_path: &Path,
@@ -27,7 +33,8 @@ pub(crate) fn record_install(
     if sha.is_some() {
         config.agents_installed_sha = sha;
     }
-    config.last_agent_check = None;
+    let version = config.desired_assets_version().to_string();
+    config.record_assets_version(&version);
     config.save(config_path)?;
 
     spool_install_event(config, sha_for_event.as_deref());

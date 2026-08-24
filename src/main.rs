@@ -21,7 +21,10 @@ use cli::{
     AiCommands, CodexCommands, OrchestrateCommands, ProfileCommands, StorageCommands,
     TelemetryCommands, TelemetryHookAction, ThoughtsCommands,
 };
-use commands::ai::{configure as ai_configure, reinstall as ai_reinstall, status as ai_status};
+use commands::ai::{
+    configure as ai_configure, reinstall as ai_reinstall, status as ai_status,
+    versions as ai_versions,
+};
 use commands::codex::stream as codex_stream;
 use commands::orchestrate::check as orchestrate_check;
 use commands::orchestrate::compile as orchestrate_compile;
@@ -97,6 +100,7 @@ fn dispatch(cli: cli::Cli) -> Result<()> {
             AiCommands::Configure(args) => ai_configure::configure(args)?,
             AiCommands::Status(args) => ai_status::status(args)?,
             AiCommands::Reinstall(args) => ai_reinstall::reinstall(args)?,
+            AiCommands::Versions(args) => ai_versions::versions(args)?,
         },
         cli::Cli::Storage { command } => match command {
             StorageCommands::Info(args) => storage_info::info(args)?,

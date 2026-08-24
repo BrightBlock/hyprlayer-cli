@@ -7,300 +7,120 @@ allowed-tools: Bash, Read, Grep, Glob, Agent, Write, Edit, Skill, mcp__claude_ai
 
 # Research Codebase
 
-Answer a research question about the codebase by mapping its areas in parallel and
-synthesizing the maps into a thoughts artifact. You and every agent you spawn are
-documentarians: describe what IS, never what SHOULD BE.
+You are tasked with conducting comprehensive research across the codebase to answer user questions by spawning parallel sub-agents and synthesizing their findings.
 
-```yaml
-loads:
-  - orchestration-runtime      # how to execute this block — read before anything
-  - storage-backend            # where the artifact is saved
-  - required-metadata          # schema fields + backend-specific title format
-  - documentarian-rules        # binds you and every agent you spawn
-  - templates/research         # the artifact body structure
+## Storage backend dispatch
 
-constraints: [documentarian]   # binds you and every agent you spawn
+Read `~/.claude/skills/_thoughts/storage-backend.md` and follow it for where to save the artifact. Read `~/.claude/skills/_thoughts/required-metadata.md` for the schema-required fields and the backend-specific title format. For this command: artifact type is `research`; the title is derived from the research question.
 
-on-empty-invocation: >
-  I'm ready to research the codebase. Please provide your research question or
-  area of interest, and I'll analyze it thoroughly by exploring relevant
-  components and connections.
+## Documentarian rules
 
-artifact:
-  type: research
-  title-from: research-question
-  destination:                 # resolved by storage-backend; restated for legibility
-    git-or-obsidian:   thoughts/shared/research/<title>.md
-    notion-or-anytype: database row / object with type=research
+Read `~/.claude/skills/_thoughts/documentarian-rules.md` and apply it to yourself AND every sub-agent you spawn. This skill documents the codebase as-is — no recommendations, no critiques.
 
-delegation:                    # binds every sub-agent prompt this skill writes
-  read-only: true              # no spawned agent writes, edits, or runs a mutating command
-  scope: one specific, focused question per prompt — never "look into X"
-# This variant sets no `constraints:` file, so the read-only rule lives here
-# instead: say it in every prompt you spawn, the same way a constraint would
-# be said. Persistence is `owns:`, never delegated.
+## Initial Setup:
 
-orchestration:
-  owns: [decomposition, synthesis, persistence, sync]
-
-  steps:
-    - id: read-mentioned
-      inline: true
-      reject: matches(read-call, "limit|offset")
-      because: >
-        Full context before decomposing. A sub-agent summary is not a
-        substitute for having read the ticket yourself, and a partial read is
-        not a substitute for the whole file.
-
-    - id: decompose
-      requires: [read-mentioned]
-      inline: true
-      produces: areas
-      track-with: TodoWrite
-      judgment: >
-        What are the composable areas of this question, and which exact
-        directories does each one own? See "Decomposing" below.
-
-    - id: map
-      requires: [decompose]
-      fanout: cartographer
-      over: areas
-      given:
-        - { value: repo-root,            src: pwd }
-        - { value: exact-directories,    src: "the survey you ran in decompose" }
-        - { value: boundary-vs-siblings, src: "the area list decompose produced" }
-      ask: [how-it-works, what-it-connects-to, conventions, usage-examples, gaps]
-      reject: not matches(exact-directories, "/")
-      because: >
-        Each cartographer returns a document-ready section with file:line refs.
-        That is the body of `write`, so you synthesize maps, not raw search
-        output. Ask for examples and usage patterns, not just definitions. The
-        reject rule is the mechanical half of "never a generic area" — it
-        catches "the backend", not a real path aimed at the wrong area, which
-        stays your judgment.
-
-    - id: history
-      requires: [decompose]
-      when: exit0(test -d thoughts) or backend == notion or backend == anytype
-      when-examples:
-        match:
-          - "the project has a thoughts/ directory at the repo root"
-          - "backend == notion, where the trail lives in the database"
-        no-match: ["backend == git and the tree keeps no thoughts directory"]
-      agent: archivist
-      given: [{ value: topic, src: "the user's request, verbatim" }]
-      ask: [what-was-decided, what-shipped, what-is-open, what-superseded-what]
-      judgment: >
-        Does this research want the prior trail? See "Prior context" below.
-      because: >
-        The guard only proves a trail exists. `notion`/`anytype` have no
-        thoughts/ directory to test, so a bare `test -d thoughts` would skip
-        the users with the richest trail; when the tree is the store, cover
-        all of thoughts/, not just research/. With `thoughts-lookup` these are
-        the only steps reading prior context; skipping both is the whole of a
-        no-thoughts run.
-
-    - id: thoughts-lookup
-      requires: [decompose]
-      when: backend == git or backend == obsidian
-      when-examples:
-        match:    ["backend == git", "backend == obsidian"]
-        no-match: ["backend == notion", "backend == anytype"]
-      agent: one-of [thoughts-locator, thoughts-analyzer]
-      judgment: >
-        Same call as `history`, plus: locator to find what exists, analyzer to
-        pull facts from a document you can already name. See "Prior context".
-      because: >
-        Narrow lookups against a filesystem thoughts directory, for one
-        specific fact rather than a synthesized trail — that is what the
-        archivist is for. Both agents read files, so notion/anytype have
-        nothing for them.
-
-    - id: targeted
-      requires: [decompose]
-      agent: one-of [codebase-locator, codebase-analyzer, codebase-pattern-finder]
-      judgment: >
-        Is any part of this one narrow question rather than an area needing a
-        map, and which of the three narrow agents fits it? See "Choosing the
-        narrow agent" below.
-
-    - id: web
-      requires: [decompose]
-      when: matches(request, "search the web|look online|latest docs|upstream")
-      when-examples:
-        match:    ["search the web for the spec", "check the latest docs"]
-        no-match: ["how does our indexer work", "map the PTY stack"]
-      agent: web-search-researcher
-      given: [{ value: question, src: "the user's request, verbatim" }]
-      ask: [answer-with-links]
-      because: external research is opt-in — never inferred from the topic.
-
-    - id: tickets
-      requires: [decompose]
-      when: matches(request, "[A-Z]{2,}-\d+") and not matches(request, "(ADR|RFC|CVE|ISO|PR|SHA|UTF)-\d+")
-      when-examples:
-        match:    ["fix ENG-1478", "see PROJ-22 for context"]
-        no-match: ["per ADR-0002", "RFC-1234 says", "CVE-2021-44228", "no ticket here"]
-      agent: one-of [jira-ticket-reader, jira-searcher]
-
-    - id: verify-results
-      requires: [map, history, targeted, web, tickets]
-      inline: true
-      retry: { step: map, max: 1 }
-      judgment: >
-        Does any report contradict another, or contradict something you
-        checked yourself? Cross-check claims two agents both touch, and
-        spot-check load-bearing constants against the tree. If one is wrong,
-        spawn a follow-up rather than averaging them.
-      because: >
-        Every agent step above is a barrier for this one: nothing is
-        synthesized until all of them have returned.
-
-    - id: metadata
-      requires: [verify-results]
-      inline: true
-      given:
-        - { value: date-iso,   src: "date -Iseconds" }
-        - { value: git-commit, src: "git rev-parse HEAD" }
-        - { value: branch,     src: "git branch --show-current" }
-        - { value: repo-name,  src: 'mappedName from hyprlayer storage info --json (already fetched below for backend); if null, d=$(git rev-parse --path-format=absolute --git-common-dir) || exit 1; d=${d%/.git}; basename "${d%.git}" — the SOURCE repo; --show-toplevel returns the worktree' }
-        - { value: researcher, src: "hyprlayer thoughts config --json, else git config user.name" }
-        - { value: backend,    src: "hyprlayer storage info --json" }
-      reject: exists(unresolved-placeholder)
-      because: >
-        Gathered before writing, never after. A document written with
-        placeholder metadata ships with placeholders.
-
-    - id: write
-      requires: [metadata]
-      inline: true
-      given:
-        - { value: template, src: "_thoughts/templates/research.md" }
-        - { value: findings, src: "the verified agent reports" }
-      apply: [path-rewrite, frontmatter, citations]
-      sections-when:
-        # The `history` STEP, not its guard: no trail read, no section. A
-        # heading over an empty body claims the trail was searched and bare.
-        historical-context: history-ran
-      judgment: >
-        How do the maps connect? See "Synthesizing" below — this step is the
-        one the sub-agents cannot do for you.
-      because: >
-        The document is self-contained either way — one with no
-        historical-context section is not incomplete, just sourced entirely
-        from the live tree.
-
-    - id: permalinks
-      requires: [write]
-      when: exit0(git merge-base --is-ancestor HEAD @{u})
-      when-examples:
-        match:    ["HEAD is reachable from the upstream ref"]
-        no-match: ["HEAD has unpushed commits"]
-      inline: true
-      follows: permalinks
-      because: >
-        An unpushed commit's permalink 404s. A passing guard is not optional:
-        skip it only if the user said to, and say that you did.
-
-    - id: sync
-      requires: [write, permalinks]
-      when: backend == git
-      when-examples:
-        match:    ["backend == git"]
-        no-match: ["backend == notion"]
-      inline: true
-      run: hyprlayer thoughts sync
-      because: >
-        Original step 8 comes after step 7 for a reason: `permalinks` rewrites
-        the artifact body, and syncing first pushes the pre-permalink version.
-        The ordering has to be in `requires:` — requiring only `write` puts
-        both in one wave. If `permalinks` skips, this still runs: a skipped
-        step satisfies whatever required it.
-
-    - id: present
-      requires: [write, permalinks]
-      inline: true
-      because: >
-        A concise summary with key file references, then ask for follow-up
-        questions. The document is self-contained; the message is the way in.
-        `permalinks` is required so the summary is not handed over while the
-        links are still being written into the document it points at — the
-        original orders permalinks before this, and a skipped `permalinks`
-        satisfies this edge anyway.
-
-    - id: follow-up
-      requires: [present]
-      judgment: >
-        Is this a clarifying question about the doc just written, or a
-        brand-new research topic? Only the former extends this artifact.
-      inline: true
-      appends-to: same-artifact
-      updates: [last_updated, last_updated_by, last_updated_note]
-      adds-section: "## Follow-up Research [timestamp]"
-      re-runs: [map, targeted, sync]
-      because: >
-        Follow-up extends the artifact; it does not start a new one. Spawn
-        fresh agents for whatever the follow-up actually needs, and re-run
-        `sync` afterwards when the backend is git.
-
-conventions:
-
-  path-rewrite:
-    applies-to: thoughts-paths
-    strip: "searchable/"
-    preserve: all-other-segments
-    reject: matches(before, "/allison/") and not matches(after, "/allison/")
-    examples:
-      - thoughts/searchable/allison/old_stuff/notes.md → thoughts/allison/old_stuff/notes.md
-      - thoughts/searchable/shared/prs/123.md         → thoughts/shared/prs/123.md
-      - thoughts/searchable/global/shared/templates.md → thoughts/global/shared/templates.md
-
-  frontmatter:
-    field-case: matches(field, "^[a-z0-9_]+$")
-    tags-from: [topic, components-studied]
-    typed-properties-instead-of-body: backend == notion or backend == anytype
-
-  citations:
-    every-claim: file:line
-    primary-source: live-codebase
-    secondary-source: thoughts
+When this command is invoked, respond with:
+```
+I'm ready to research the codebase. Please provide your research question or area of interest, and I'll analyze it thoroughly by exploring relevant components and connections.
 ```
 
-## Judgment
+Then wait for the user's research query.
 
-**Prior context.** The guard proves a trail exists; only the request says whether this
-research wants one. Skip `history` and `thoughts-lookup` when the user asks for the
-codebase on its own terms — "fresh eyes", "just the code", "without the prior
-research". Silent request and a trail exists: read it, and say so in the summary.
-Reach for `thoughts-lookup` on top of `history` when you need one fact out of a named
-document rather than the whole trail.
+## Steps to follow after receiving the research query:
 
-The error is asymmetric. An unwanted trail contaminates the finding — the research
-comes back agreeing with the last document rather than the tree, and that reads as
-corroboration. An excluded one costs a re-run.
+1. **Read any directly mentioned files first:**
+   - If the user mentions specific files (tickets, docs, JSON), read them FULLY first
+   - **IMPORTANT**: Use the Read tool WITHOUT limit/offset parameters to read entire files
+   - **CRITICAL**: Read these files yourself in the main context before spawning any sub-tasks
+   - This ensures you have full context before decomposing the research
 
-**Decomposing.** Break the query into composable areas. Look past the literal
-question to the patterns and connections behind it. Your area list bounds what the
-research can find; miss a dimension and the document comes back thorough about the
-wrong things.
+2. **Analyze and decompose the research question:**
+   - Break down the user's query into composable research areas
+   - Take time to ultrathink about the underlying patterns, connections, and architectural implications the user might be seeking
+   - Identify specific components, patterns, or concepts to investigate
+   - Create a research plan using TodoWrite to track all subtasks
+   - Consider which directories, files, or architectural patterns are relevant
 
-**Naming an area's directories.** "The CLI" is `src/`; "the daemon" is `hld/`. The
-reject rule catches a missing path, not a plausible wrong one. Hand a cartographer
-the wrong directory and you get a confident, well-cited map of the wrong code, which
-is harder to catch than an empty one.
+3. **Spawn parallel sub-agent tasks for comprehensive research:**
+   - Read `~/.claude/skills/_thoughts/subagent-guide.md` for the catalog and spawning rules.
+   - **Default to one `cartographer` per research area, spawned in parallel.** Each returns a document-ready section for its area (where the code lives, how it works, what it connects to, conventions, gaps) with `file:line` references — that is the body of step 6, so you are synthesizing maps rather than raw search output. Give each one its area and the exact directories it covers; never a generic term like "the backend".
+   - Reach for `codebase-locator` / `codebase-analyzer` / `codebase-pattern-finder` directly only for a single targeted question that doesn't warrant a whole section.
+   - Use `archivist` for the prior paper trail on the topic (it covers every backend and returns a synthesized briefing); `thoughts-locator` / `thoughts-analyzer` remain available for narrow `git`/`obsidian` lookups.
+   - Also relevant when applicable: web research (only if the user explicitly asks) and JIRA.
+   - Documentarian rules (already loaded above) apply to every sub-agent you spawn. The `cartographer` and `archivist` already enforce them; say it anyway to the general-purpose agents.
 
-**Choosing the narrow agent.** Past the per-area maps the block offers exactly
-three: `codebase-locator` to find where a thing lives, `codebase-analyzer` to read
-how one already-located thing works, `codebase-pattern-finder` to collect existing
-examples of a shape. Pick one only for a question narrow enough that a whole mapped
-section would be waste. A cartographer on a single lookup wastes a context; a narrow
-agent on a whole area returns search output instead of a section; and a narrow agent
-aimed at something this project does not have comes back empty and costs you a
-wave.
+4. **Wait for all sub-agents to complete and synthesize findings:**
+   - IMPORTANT: Wait for ALL sub-agent tasks to complete before proceeding
+   - Compile all sub-agent results (both codebase and thoughts findings)
+   - Prioritize live codebase findings as primary source of truth
+   - Use thoughts/ findings as supplementary historical context
+   - Connect findings across different components
+   - Include specific file paths and line numbers for reference
+   - Verify all thoughts/ paths are correct (e.g., thoughts/allison/ not thoughts/shared/ for personal files)
+   - Highlight patterns, connections, and architectural decisions
+   - Answer the user's specific questions with concrete evidence
 
-**Synthesizing.** Live codebase findings are the primary source of truth; thoughts
-findings, where the project keeps any, are supplementary historical context. Run the
-research fresh every time rather than leaning on an existing research document. When
-sources disagree, the tree wins and the disagreement is itself a finding. Weight how
-systems interact over any single component's internals: no sub-agent can see the
-connections between maps, which is why you do this step yourself.
+5. **Gather metadata for the research document:**
+   - Collect: current date/time (ISO with timezone), git commit hash, branch name, repository name, researcher name (from `hyprlayer thoughts config --json` or `git config user.name`).
+   - Determine the artifact title per the backend-specific rule in `~/.claude/skills/_thoughts/required-metadata.md`: kebab-case dated slug (e.g. `2025-01-08-authentication-flow`) for `git`/`obsidian`; normal human-readable heading (e.g. `Authentication flow`) for `notion`/`anytype`.
+   - Destination is resolved by the storage backend dispatch at the top of this command:
+     - For `git`/`obsidian`: `thoughts/shared/research/<title>.md`
+     - For `notion`/`anytype`: a database row / object with `type: research`
+
+6. **Generate research document:**
+   - Read `~/.claude/skills/_thoughts/templates/research.md` for the body structure.
+   - Populate every placeholder using the metadata from step 5. Include the `Historical Context (from thoughts/)` section with references like `thoughts/shared/something.md`; paths exclude `searchable/` even if found there.
+
+7. **Add GitHub permalinks (if applicable):**
+   - Read `~/.claude/skills/_thoughts/permalinks.md` and follow it.
+
+8. **Sync (git only) and present findings:**
+   - For `backend: git`, run `hyprlayer thoughts sync`. Skip this step for `obsidian`/`notion`/`anytype`.
+   - Present a concise summary of findings to the user
+   - Include key file references for easy navigation
+   - Ask if they have follow-up questions or need clarification
+
+9. **Handle follow-up questions:**
+   - If the user has follow-up questions, append to the same research document (edit the file for `git`/`obsidian`; use `mcp__notion__update-page` / `mcp__anytype__API-update-object` for notion/anytype)
+   - Update the frontmatter / properties field `last_updated` and `last_updated_by` to reflect the update
+   - Add `last_updated_note: "Added follow-up research for [brief description]"` to frontmatter (git/obsidian) or a dedicated property (notion/anytype)
+   - Add a new section: `## Follow-up Research [timestamp]`
+   - Spawn new sub-agents as needed for additional investigation
+   - For `backend: git`, sync again after updates
+
+## Important notes:
+- Always use parallel Task agents to maximize efficiency and minimize context usage
+- Always run fresh codebase research - never rely solely on existing research documents
+- The thoughts/ directory provides historical context to supplement live findings
+- Focus on finding concrete file paths and line numbers for developer reference
+- Research documents should be self-contained with all necessary context
+- Each sub-agent prompt should be specific and focused on read-only documentation operations
+- Document cross-component connections and how systems interact
+- Include temporal context (when the research was conducted)
+- Link to GitHub when possible for permanent references
+- Keep the main agent focused on synthesis, not deep file reading
+- Have sub-agents document examples and usage patterns as they exist
+- Explore all of thoughts/ directory, not just research subdirectory
+- **CRITICAL**: You and all sub-agents are documentarians, not evaluators
+- **REMEMBER**: Document what IS, not what SHOULD BE
+- **NO RECOMMENDATIONS**: Only describe the current state of the codebase
+- **File reading**: Always read mentioned files FULLY (no limit/offset) before spawning sub-tasks
+- **Critical ordering**: Follow the numbered steps exactly
+  - ALWAYS read mentioned files first before spawning sub-tasks (step 1)
+  - ALWAYS wait for all sub-agents to complete before synthesizing (step 4)
+  - ALWAYS gather metadata before writing the document (step 5 before step 6)
+  - NEVER write the research document with placeholder values
+- **Path handling**: The thoughts/searchable/ directory contains hard links for searching
+  - Always document paths by removing ONLY "searchable/" - preserve all other subdirectories
+  - Examples of correct transformations:
+    - `thoughts/searchable/allison/old_stuff/notes.md` → `thoughts/allison/old_stuff/notes.md`
+    - `thoughts/searchable/shared/prs/123.md` → `thoughts/shared/prs/123.md`
+    - `thoughts/searchable/global/shared/templates.md` → `thoughts/global/shared/templates.md`
+  - NEVER change allison/ to shared/ or vice versa - preserve the exact directory structure
+  - This ensures paths are correct for editing and navigation
+- **Frontmatter consistency**:
+  - Always include frontmatter at the beginning of research documents
+  - Keep frontmatter fields consistent across all research documents
+  - Update frontmatter when adding follow-up research
+  - Use snake_case for multi_word field names (e.g., `last_updated`, `git_commit`)
+  - Tags should be relevant to the research topic and components studied

@@ -1,4 +1,5 @@
 pub(crate) mod archive;
+pub(crate) mod manifest;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -8,10 +9,22 @@ use std::io::Write;
 use std::path::{MAIN_SEPARATOR_STR as SEP, Path, PathBuf};
 use std::time::Duration;
 
+use self::manifest::{BundleManifest, MANIFEST_FILE_NAME};
 use crate::http;
+use crate::integrity;
 
 pub(crate) const REPO: &str = "BrightBlock/hyprlayer-cli";
 const BRANCH: &str = "master";
+
+/// Record of the bundle currently installed in a harness directory, written
+/// after every successful asset install. It is the previous-state the next
+/// install diffs against: which files are ours, and what they hashed to when
+/// we put them there.
+///
+/// Distinct from the bundle's own `manifest.json`, which never reaches
+/// `dest` — see `install_staged`. Dotted so it stays out of the harness's
+/// own file globs.
+const INSTALLED_MANIFEST_FILE: &str = ".hyprlayer-manifest.json";
 
 /// GitHub Contents/commits API responses for a single directory listing run
 /// a few KB. 1 MiB is two orders of magnitude of headroom and stops a
@@ -25,6 +38,26 @@ pub(crate) fn github_api_repo_url() -> String {
 
 pub(crate) fn github_release_download_base() -> String {
     format!("https://github.com/{REPO}/releases/download")
+}
+
+/// The bundle version an install should resolve to: the explicit pin when
+/// one is set, otherwise the running binary's own version — so an unpinned
+/// CLI installs its matching bundle and upgrading the binary is what moves
+/// the skills, while a pin survives that upgrade.
+///
+/// The single place this resolution happens; `HyprlayerConfig::
+/// desired_assets_version` delegates here rather than restating it.
+pub(crate) fn resolve_assets_version(pinned: Option<&str>) -> &str {
+    pinned.unwrap_or(env!("CARGO_PKG_VERSION"))
+}
+
+/// Release-asset file name for one harness at one version, as
+/// `scripts/build-asset-bundles.sh` emits it and `release.yml` attaches it.
+///
+/// Also what `ai versions` matches release assets against, to keep the
+/// listed versions to the ones that can actually be installed.
+pub(crate) fn asset_name(harness: &str, version: &str) -> String {
+    format!("hyprlayer-assets-{harness}-{version}.tar.gz")
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -62,28 +95,32 @@ impl OpenCodeProvider {
 
     pub fn default_sonnet_model(&self) -> &str {
         match self {
-            Self::GithubCopilot => "github-copilot/claude-sonnet-4.5",
-            Self::Anthropic => "anthropic/claude-sonnet-4-5",
-            Self::Abacus => "abacus/claude-sonnet-4-6",
+            Self::GithubCopilot => "github-copilot/claude-sonnet-5",
+            Self::Anthropic => "anthropic/claude-sonnet-5",
+            Self::Abacus => "abacus/claude-sonnet-5",
         }
     }
 
     pub fn default_opus_model(&self) -> &str {
         match self {
-            Self::GithubCopilot => "github-copilot/claude-opus-4.5",
-            Self::Anthropic => "anthropic/claude-opus-4-5",
-            Self::Abacus => "abacus/claude-opus-4-6",
+            Self::GithubCopilot => "github-copilot/claude-opus-5",
+            Self::Anthropic => "anthropic/claude-opus-5",
+            Self::Abacus => "abacus/claude-opus-5",
         }
     }
 
-    /// Abacus routes to its highest-reasoning codex variant for a true
-    /// cross-model second opinion; GitHub Copilot uses gpt-5-codex (the
-    /// codex variant exposed through Copilot Chat); Anthropic stays on
-    /// claude-opus-4-5 because the Anthropic API is Claude-only.
+    /// Abacus and GitHub Copilot route to their highest-reasoning codex
+    /// variant for a true cross-model second opinion; Anthropic stays on
+    /// claude-opus-5 because the Anthropic API is Claude-only.
+    ///
+    /// Model ids are the ones opencode resolves through the models.dev
+    /// registry, so a rename upstream shows up here as an unresolvable
+    /// model rather than a silent downgrade — `gpt-5-codex` was dropped
+    /// from Copilot's catalog, which is why it is `gpt-5.3-codex` now.
     pub fn default_adversarial_model(&self) -> &str {
         match self {
-            Self::GithubCopilot => "github-copilot/gpt-5-codex",
-            Self::Anthropic => "anthropic/claude-opus-4-5",
+            Self::GithubCopilot => "github-copilot/gpt-5.3-codex",
+            Self::Anthropic => "anthropic/claude-opus-5",
             Self::Abacus => "abacus/gpt-5.3-codex-xhigh",
         }
     }
@@ -191,15 +228,26 @@ impl AgentTool {
     /// directories but missing newly added files reports not-installed, so
     /// `configure --no-force` re-runs and provisions the new bundle. Bump
     /// these whenever we ship a top-level file existing users should pick up.
+    ///
+    /// **Scope, since 1.6.0**: as a completeness gate this now governs only
+    /// the frozen-legacy-tree fallback. An asset install carries a
+    /// `manifest.json` and is gated on that instead — every listed file
+    /// present and hashing correctly — which is a far stronger check than
+    /// two hardcoded paths. This remains the gate for the `master`-tree
+    /// fallback, which has no manifest, and remains the "is anything
+    /// installed here" probe for both. See `install_staged`.
     fn is_installed_at(&self, dest: &Path) -> bool {
         match self {
             // This sentinel doubles as the staged-download completeness
-            // gate (`is_installed_at` failing here after a staged fetch is
-            // a hard `bail!`, not a soft warning). It may therefore only
-            // ever name long-lived, load-bearing files that ship on every
-            // release — never a file from a branch not yet on `master`,
-            // or reverting that file turns a benign rollback into every
-            // user's next `ai configure`/`ai reinstall` failing outright.
+            // gate for the legacy fallback (`is_installed_at` failing there
+            // after a staged fetch is a hard `bail!`, not a soft warning).
+            // It may therefore only ever name long-lived, load-bearing
+            // files that ship on every release — never a file from a branch
+            // not yet on `master`, or reverting that file turns a benign
+            // rollback into every user's next `ai configure`/`ai reinstall`
+            // failing outright. The frozen trees make that hazard mostly
+            // historical: they no longer change. Both paths below are
+            // present in the freeze and in every asset bundle.
             Self::Claude => {
                 dest.join("skills/code_review/SKILL.md").is_file()
                     && dest.join("agents/codebase-locator.md").is_file()
@@ -264,22 +312,50 @@ impl AgentTool {
         }
     }
 
-    pub fn status_json(&self, config: &crate::config::AiConfig) -> serde_json::Value {
-        match self {
-            Self::OpenCode => serde_json::json!({
-                "agentTool": self.to_string(),
-                "installed": self.is_installed(),
-                "location": self.dest_display(),
-                "opencodeProvider": config.opencode_provider.as_ref().map(|p| p.to_string()),
-                "opencodeSonnetModel": config.opencode_sonnet_model.clone(),
-                "opencodeOpusModel": config.opencode_opus_model.clone(),
-            }),
-            Self::Claude | Self::Copilot => serde_json::json!({
-                "agentTool": self.to_string(),
-                "installed": self.is_installed(),
-                "location": self.dest_display(),
-            }),
+    /// The machine-readable half of `print_status`.
+    ///
+    /// Takes both halves of the config because the harness block and the
+    /// bundle versions live at different levels: `ai` is the already-narrowed
+    /// `AiConfig` of the configured tool, `config` the surrounding
+    /// `HyprlayerConfig` that records which assets version is installed and
+    /// whether it is pinned.
+    ///
+    /// `assetsVersion` is what the last install recorded — `null` on a config
+    /// written before 1.6.0, which has no version to report — and
+    /// `binaryVersion` is this binary's own. The desktop reads the skew
+    /// between the three to decide whether to offer a rollback.
+    pub fn status_json(
+        &self,
+        ai: &crate::config::AiConfig,
+        config: &crate::config::HyprlayerConfig,
+    ) -> serde_json::Value {
+        let mut value = serde_json::json!({
+            "agentTool": self.to_string(),
+            "installed": self.is_installed(),
+            "location": self.dest_display(),
+            "assetsVersion": config.agents_installed_version,
+            "pinnedVersion": config.agents_pinned_version,
+            "binaryVersion": env!("CARGO_PKG_VERSION"),
+        });
+
+        if matches!(self, Self::OpenCode)
+            && let Some(map) = value.as_object_mut()
+        {
+            map.insert(
+                "opencodeProvider".to_string(),
+                serde_json::json!(ai.opencode_provider.as_ref().map(|p| p.to_string())),
+            );
+            map.insert(
+                "opencodeSonnetModel".to_string(),
+                serde_json::json!(ai.opencode_sonnet_model),
+            );
+            map.insert(
+                "opencodeOpusModel".to_string(),
+                serde_json::json!(ai.opencode_opus_model),
+            );
         }
+
+        value
     }
 
     /// Download agent files from GitHub and install to the destination.
@@ -302,9 +378,15 @@ impl AgentTool {
     /// resolution is unreachable because `hyprlayer ai configure` /
     /// `ai reinstall` must continue to work by falling back to the
     /// `master` branch name.
+    ///
+    /// `pinned_version` is the caller's `agentsPinnedVersion`, if any: it
+    /// selects which release asset to fetch and, because a pinned bundle may
+    /// have been cut for a newer CLI than this one, is what
+    /// `verify_pin_is_supported` gates on.
     pub fn install(
         &self,
         opencode_provider: Option<&OpenCodeProvider>,
+        pinned_version: Option<&str>,
         quiet: bool,
     ) -> Result<InstallOutcome> {
         let dest = self.dest_dir()?;
@@ -317,21 +399,13 @@ impl AgentTool {
 
         let staging = tempfile::tempdir().context("Failed to create a staging directory")?;
         let staged = staging.path().join(self.repo_dir());
-        self.fetch_into(&staged, git_ref, quiet)?;
+        self.fetch_into(&staged, git_ref, pinned_version, quiet)?;
 
-        // Refuse to touch the destination unless the staged bundle looks
-        // complete. Without this, a truncated download could overwrite a
-        // good install with a torn one.
-        if !self.is_installed_at(&staged) {
-            anyhow::bail!(
-                "Downloaded {} bundle is incomplete — refusing to install. \
-                 Run 'hyprlayer ai reinstall' to retry.",
-                self
-            );
+        let report = self.install_staged(&staged, &dest, pinned_version)?;
+        if !quiet {
+            report.print();
         }
-
-        fs::create_dir_all(&dest)?;
-        let changed = sync_tree(&staged, &dest)?;
+        let changed = report.changed;
 
         if matches!(self, AgentTool::OpenCode)
             && let Some(provider) = opencode_provider
@@ -348,40 +422,228 @@ impl AgentTool {
         Ok(InstallOutcome { sha, changed })
     }
 
-    /// Populate `staged` with this tool's bundle pinned to `git_ref`.
+    /// The post-fetch half of `install`: refuse to touch `dest` unless the
+    /// staged bundle looks complete, then sync only what differs. Without
+    /// the gate, a truncated download could overwrite a good install with a
+    /// torn one. Split out of `install` so the rollback guarantee is
+    /// testable without a network fetch.
     ///
-    /// Tries the single-request archive download first (zero REST API
-    /// requests, see `archive::fetch_and_extract`); on any failure — a
-    /// network hiccup, a codeload outage — falls back to the old
-    /// Contents-API walk so an archive-side outage doesn't block installs.
-    /// Both paths write into `staged`, so the Phase 4 completeness check
-    /// and rollback guarantee cover the fallback too: a rate-limited
-    /// fallback aborts cleanly instead of leaving a partial `dest`.
-    fn fetch_into(&self, staged: &Path, git_ref: &str, quiet: bool) -> Result<()> {
-        if !quiet {
-            println!("Downloading {} agent files...", self);
-        }
-        match archive::fetch_and_extract(self.repo_dir(), git_ref, staged) {
-            Ok(count) => {
-                if !quiet {
-                    println!("  {:<60}", format!("Downloaded {count} files"));
-                }
-                return Ok(());
+    /// A staged release asset carries a `manifest.json`, and that is what
+    /// drives everything: completeness (every listed file present and
+    /// hashing to what was recorded), which files in `dest` are ours to
+    /// overwrite, and which of the previous bundle's files are now orphans.
+    /// The legacy `master`-tree fallback has no manifest, so it keeps the
+    /// hardcoded sentinel gate and the historical additive-only sync.
+    fn install_staged(
+        &self,
+        staged: &Path,
+        dest: &Path,
+        pinned_version: Option<&str>,
+    ) -> Result<SyncReport> {
+        let bundle = read_staged_manifest(staged)?;
+        match &bundle {
+            Some(manifest) => {
+                verify_pin_is_supported(manifest, pinned_version)?;
+                verify_staged_completeness(*self, staged, manifest)?;
+                // The manifest describes the bundle rather than being one
+                // of the files it owns — the builder leaves it out of
+                // `files` — so drop it from the staged tree before the
+                // sync. `dest` gets the record under
+                // `.hyprlayer-manifest.json`; a stray `manifest.json` in
+                // `~/.claude` would be ours by nobody's reckoning, and
+                // orphan removal could never clean it up.
+                let path = staged.join(MANIFEST_FILE_NAME);
+                fs::remove_file(&path)
+                    .with_context(|| format!("Failed to remove {}", path.display()))?;
             }
-            Err(e) => {
-                if !quiet {
-                    eprintln!("  Archive download failed ({e}); falling back to the GitHub API.");
+            None => {
+                if !self.is_installed_at(staged) {
+                    anyhow::bail!(
+                        "Downloaded {} bundle is incomplete — refusing to install. \
+                         Run 'hyprlayer ai reinstall' to retry.",
+                        self
+                    );
                 }
             }
         }
 
-        let mut count = 0;
-        download_directory(self.repo_dir(), git_ref, staged, &mut count, quiet)?;
+        let previous = read_installed_manifest(dest);
+
+        fs::create_dir_all(dest)?;
+        let mut report = sync_tree(staged, dest, previous.as_ref())?;
+
+        if let Some(manifest) = &bundle {
+            if let Some(previous) = &previous {
+                report.removed = remove_orphans(dest, previous, manifest);
+            }
+            write_installed_manifest(dest, manifest)?;
+        }
+
+        Ok(report)
+    }
+
+    /// Populate `staged` with this tool's bundle, trying each source in
+    /// turn and keeping the first that works.
+    ///
+    /// 1. The versioned release asset, verified against the SHA256 digest
+    ///    GitHub computed server-side. This is the bundle that matches the
+    ///    running binary.
+    /// 2. The single-request codeload archive of the frozen legacy tree at
+    ///    `git_ref` (zero REST API requests, see
+    ///    `archive::fetch_and_extract`).
+    /// 3. The old Contents-API walk, in case codeload itself is out.
+    ///
+    /// The asset step is allowed to fail softly — a dev build with no
+    /// matching release, a release predating the bundles, a mid-download
+    /// network drop, a digest mismatch — because a legacy-tree install is
+    /// still a working install. What it must never do is install an
+    /// *unverified* asset, so a release that advertises no digest for the
+    /// bundle drops through to the fallback rather than downloading it
+    /// anyway.
+    ///
+    /// Every source writes into `staged`, so the completeness check and
+    /// rollback guarantee in `install_staged` cover the fallbacks too: a
+    /// rate-limited fallback aborts cleanly instead of leaving a partial
+    /// `dest`.
+    fn fetch_into(
+        &self,
+        staged: &Path,
+        git_ref: &str,
+        pinned_version: Option<&str>,
+        quiet: bool,
+    ) -> Result<()> {
         if !quiet {
-            println!("  {:<60}", format!("Downloaded {count} files"));
+            println!("Downloading {} agent files...", self);
+        }
+
+        let version = resolve_assets_version(pinned_version);
+        let sources: Vec<BundleSource<'_>> = vec![
+            (
+                format!("the v{version} release asset"),
+                Box::new(move |dest: &Path| self.fetch_asset_into(dest, version)),
+            ),
+            (
+                format!("the {BRANCH} repo archive"),
+                Box::new(move |dest: &Path| {
+                    archive::fetch_and_extract(self.repo_dir(), git_ref, dest)
+                }),
+            ),
+            (
+                format!("the GitHub API walk of {BRANCH}"),
+                Box::new(move |dest: &Path| {
+                    let mut count = 0;
+                    download_directory(self.repo_dir(), git_ref, dest, &mut count, quiet)?;
+                    Ok(count)
+                }),
+            ),
+        ];
+
+        let (label, count) = fetch_first_available(staged, sources, quiet)?;
+        if !quiet {
+            println!("  {:<60}", format!("Downloaded {count} files from {label}"));
         }
         Ok(())
     }
+
+    /// Download this tool's `hyprlayer-assets-<harness>-<version>.tar.gz`
+    /// from the release tagged `v<version>`, verify it against the release
+    /// API's per-asset SHA256 digest, and extract it into `staged`.
+    ///
+    /// Mirrors `direct_update` in `src/commands/self_update.rs`, which runs
+    /// the same fetch-digest-then-verify sequence for the binary itself.
+    fn fetch_asset_into(&self, staged: &Path, version: &str) -> Result<usize> {
+        let asset = asset_name(self.repo_dir(), version);
+        let tag = format!("v{version}");
+
+        let api_url = format!("{}/releases/tags/{tag}", github_api_repo_url());
+        let release_body =
+            http::get_text_capped(&api_url, Duration::from_secs(15), MAX_API_RESPONSE_BYTES)
+                .map_err(|e| anyhow::anyhow!("Unable to fetch release {tag} from GitHub: {e}"))?;
+        let expected = asset_digest_from_release(&release_body, &tag, &asset)?;
+
+        let tmp = tempfile::tempdir().context("Failed to create a temp dir for the bundle")?;
+        let archive_path = tmp.path().join(&asset);
+        let url = format!("{}/{tag}/{asset}", github_release_download_base());
+        http::download_file_capped(
+            &url,
+            &archive_path,
+            Duration::from_secs(30),
+            Some(archive::MAX_ARCHIVE_BYTES),
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to download {url}: {e}"))?;
+
+        verify_and_extract_bundle(&archive_path, &asset, &expected, staged)
+    }
+}
+
+/// One named way to populate a staging directory, used by `fetch_into`.
+type BundleSource<'a> = (String, Box<dyn FnOnce(&Path) -> Result<usize> + 'a>);
+
+/// Run `sources` in order and keep the first that succeeds, returning its
+/// label and file count.
+///
+/// `staged` is cleared before each attempt, so a source that fails partway
+/// through extraction can't leak files into the bundle the next source
+/// produces — the completeness gate in `install_staged` would otherwise be
+/// judging a mixture of two downloads.
+///
+/// The error from the *last* source is what propagates when every source
+/// fails, which keeps the Contents-API walk's rate-limit guidance (see
+/// `classify_github_error`) as the message the user actually sees.
+fn fetch_first_available(
+    staged: &Path,
+    sources: Vec<BundleSource<'_>>,
+    quiet: bool,
+) -> Result<(String, usize)> {
+    let mut last_error = None;
+    for (label, fetch) in sources {
+        if staged.exists() {
+            fs::remove_dir_all(staged)
+                .with_context(|| format!("Failed to clear staging dir {}", staged.display()))?;
+        }
+        match fetch(staged) {
+            Ok(count) => return Ok((label, count)),
+            Err(e) => {
+                if !quiet {
+                    eprintln!("  Fetching {label} failed ({e}); trying the next source.");
+                }
+                last_error = Some(e);
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("No bundle download sources are configured")))
+}
+
+/// Pick the SHA256 digest the release advertises for `asset`.
+///
+/// Pure — no I/O — so the "this release carries no bundle for me" case that
+/// triggers the legacy fallback is directly unit-testable. A release with no
+/// digest for the asset is an error rather than an unverified download: the
+/// caller falls back to the frozen legacy tree, which is an older bundle but
+/// not an unverified one.
+fn asset_digest_from_release(release_body: &str, tag: &str, asset: &str) -> Result<String> {
+    integrity::digests_from_release_json(release_body)
+        .remove(asset)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "GitHub release `{tag}` exposes no SHA256 digest for asset `{asset}`. \
+                 Refusing to install an unverified bundle."
+            )
+        })
+}
+
+/// Verify a downloaded bundle against `expected` and, only then, extract it
+/// into `staged`. Split from the download so the digest-mismatch path is
+/// testable without a network fetch.
+fn verify_and_extract_bundle(
+    archive_path: &Path,
+    asset: &str,
+    expected: &str,
+    staged: &Path,
+) -> Result<usize> {
+    integrity::verify_sha256(archive_path, expected)
+        .with_context(|| format!("Integrity check failed for `{asset}`"))?;
+    archive::extract_bundle(archive_path, staged)
 }
 
 /// Result of a successful `AgentTool::install`.
@@ -396,14 +658,92 @@ pub struct InstallOutcome {
     pub changed: usize,
 }
 
+/// What an install did to `dest`, beyond the file count `InstallOutcome`
+/// reports. Paths are manifest-form keys, relative to the harness root.
+#[derive(Debug, Default)]
+struct SyncReport {
+    /// Files actually written (created or overwritten).
+    changed: usize,
+    /// Files left alone because the bytes in `dest` are the user's work,
+    /// not the previous bundle's.
+    preserved: Vec<String>,
+    /// Files deleted because the previous bundle owned them and this one
+    /// dropped them. Always empty without a previous manifest.
+    removed: Vec<String>,
+    /// Files copied aside before being overwritten, because there was no
+    /// previous manifest to prove they were ours. Only ever non-empty on
+    /// the first manifest install over an existing tree.
+    backed_up: Vec<String>,
+}
+
+impl SyncReport {
+    /// One line per file we deliberately did not overwrite and per orphan
+    /// removed. Both are decisions the user should be able to see: an
+    /// install that skipped their edited `settings.json`, or deleted a
+    /// skill they still had, must not do it silently.
+    fn print(&self) {
+        for path in &self.preserved {
+            println!("  {:<60}", format!("Kept your modified {path}"));
+        }
+        for path in &self.removed {
+            println!(
+                "  {:<60}",
+                format!("Removed {path} (no longer in this bundle)")
+            );
+        }
+        for path in &self.backed_up {
+            println!(
+                "  {:<60}",
+                format!("Saved your {path} as {path}{BACKUP_SUFFIX}")
+            );
+        }
+    }
+}
+
+/// Suffix for the copy taken of a pre-existing file the first manifest
+/// install has to overwrite. Deliberately not a dotfile: the user is meant
+/// to notice it and either merge it back or delete it.
+const BACKUP_SUFFIX: &str = ".hyprlayer-backup";
+
+/// Append `suffix` to the whole file name, extension included, so
+/// `settings.json` becomes `settings.json.hyprlayer-backup`. `with_extension`
+/// would replace `.json` instead and collide across sibling files.
+fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(suffix);
+    path.with_file_name(name)
+}
+
 /// Copy every file from `src` into `dest`, creating parent directories as
 /// needed, but writing a file only when it's missing from `dest` or its
 /// bytes differ from what's already there. Never deletes anything from
 /// `dest` that isn't present in `src` — `dest` (e.g. `~/.claude`) holds the
-/// user's own files alongside ours, so install stays additive-and-overwrite
-/// rather than a mirror. Returns the number of files actually written.
-fn sync_tree(src: &Path, dest: &Path) -> Result<usize> {
-    let mut changed = 0;
+/// user's own files alongside ours, so the sync stays
+/// additive-and-overwrite rather than a mirror; dropping a file the
+/// previous bundle owned is `remove_orphans`' job.
+///
+/// `previous` is the manifest the last install recorded. A file in `dest`
+/// whose bytes match neither the incoming file nor the digest `previous`
+/// recorded for that path is the user's work: it is left alone and
+/// reported. That is what stops the bundled `settings.json` clobbering
+/// `~/.claude/settings.json` on every install.
+///
+/// With no `previous` — a legacy `master`-tree install, or the first
+/// manifest install on top of a pre-1.6.0 one — there is no way to tell our
+/// own files from the user's. Skipping every differing file would leave
+/// every pre-1.6.0 user frozen on the bundle they already have, so the
+/// overwrite proceeds, but a differing file is first copied aside to
+/// `<name>.hyprlayer-backup`. The user keeps their bytes either way, and
+/// the manifest that install writes is what lets the *next* one skip the
+/// overwrite outright.
+///
+/// An existing backup is not overwritten a second time: re-running an
+/// install must not bury the original copy under one taken from the bundle
+/// content we just wrote.
+fn sync_tree(src: &Path, dest: &Path, previous: Option<&BundleManifest>) -> Result<SyncReport> {
+    let owned = previous.map(|manifest| manifest.digests());
+    let mut report = SyncReport::default();
+
     for path in walk_files(src)? {
         let relative = path
             .strip_prefix(src)
@@ -412,9 +752,42 @@ fn sync_tree(src: &Path, dest: &Path) -> Result<usize> {
 
         let new_bytes =
             fs::read(&path).with_context(|| format!("Failed to read {}", path.display()))?;
-        let unchanged = fs::read(&dest_path).is_ok_and(|existing| existing == new_bytes);
-        if unchanged {
-            continue;
+
+        if let Ok(existing) = fs::read(&dest_path) {
+            if existing == new_bytes {
+                continue;
+            }
+            let key = manifest::relative_key(relative);
+            match &owned {
+                Some(owned) => {
+                    let ours = key
+                        .as_deref()
+                        .and_then(|key| owned.get(key).copied())
+                        .is_some_and(|recorded| integrity::bytes_match_sha256(&existing, recorded));
+                    if !ours {
+                        report
+                            .preserved
+                            .push(key.unwrap_or_else(|| relative.display().to_string()));
+                        continue;
+                    }
+                }
+                // Nothing proves this file is ours, so keep a copy of the
+                // user's bytes before the overwrite goes through.
+                None => {
+                    let backup = append_suffix(&dest_path, BACKUP_SUFFIX);
+                    if !backup.exists() {
+                        match fs::write(&backup, &existing) {
+                            Ok(()) => report
+                                .backed_up
+                                .push(key.unwrap_or_else(|| relative.display().to_string())),
+                            Err(e) => eprintln!(
+                                "warning: could not back up {} before overwriting it: {e}",
+                                dest_path.display()
+                            ),
+                        }
+                    }
+                }
+            }
         }
 
         if let Some(parent) = dest_path.parent() {
@@ -423,9 +796,194 @@ fn sync_tree(src: &Path, dest: &Path) -> Result<usize> {
         }
         fs::write(&dest_path, &new_bytes)
             .with_context(|| format!("Failed to write {}", dest_path.display()))?;
-        changed += 1;
+        report.changed += 1;
     }
-    Ok(changed)
+
+    Ok(report)
+}
+
+/// Delete the files the previous bundle owned that this one dropped.
+///
+/// A file is removed only when all three of these hold:
+///
+/// 1. `previous` — the manifest the last install recorded — lists it, so we
+///    are the ones who put it there;
+/// 2. `next` does not list it, so it is genuinely gone from the bundle;
+/// 3. it still hashes to what `previous` recorded, so the user has not
+///    touched it since we wrote it.
+///
+/// Anything else stays. A file we never owned is not ours to delete, and a
+/// file the user edited is theirs even if we shipped it originally. A
+/// removal that fails (permissions, a directory in the way) is a warning
+/// rather than an error: the sync already succeeded, and leaving a stale
+/// skill behind is not worth failing an otherwise-good install over.
+///
+/// Directories emptied by a removal are pruned, bounded by `dest`.
+fn remove_orphans(dest: &Path, previous: &BundleManifest, next: &BundleManifest) -> Vec<String> {
+    let kept = next.digests();
+    let mut removed = Vec::new();
+
+    for entry in &previous.files {
+        // An entry naming anything but a plain relative path under the
+        // harness root is not something we wrote, and is never resolved to
+        // a real path, let alone deleted.
+        let (Some(key), Some(path)) = (
+            manifest::relative_key(Path::new(&entry.path)),
+            manifest::resolve_under(dest, &entry.path),
+        ) else {
+            continue;
+        };
+        if kept.contains_key(&key) || !path.is_file() {
+            continue;
+        }
+        if integrity::verify_sha256(&path, &entry.sha256).is_err() {
+            // Modified since we installed it (or unreadable) — the user's.
+            continue;
+        }
+        if let Err(e) = fs::remove_file(&path) {
+            eprintln!("warning: could not remove {}: {e}", path.display());
+            continue;
+        }
+        if let Some(parent) = path.parent() {
+            prune_empty_dirs(dest, parent);
+        }
+        removed.push(key);
+    }
+
+    removed
+}
+
+/// Remove directories left empty by an orphan deletion, walking up from
+/// `from` and stopping at `dest`. `fs::remove_dir` refuses a non-empty
+/// directory, so this can never take one that still holds anything —
+/// including the user's own files.
+fn prune_empty_dirs(dest: &Path, from: &Path) {
+    let mut current = from;
+    while current != dest && current.starts_with(dest) {
+        if fs::remove_dir(current).is_err() {
+            return;
+        }
+        let Some(parent) = current.parent() else {
+            return;
+        };
+        current = parent;
+    }
+}
+
+/// Parse a staged bundle's own `manifest.json`, or `None` for a legacy
+/// `master`-tree download, which has none.
+///
+/// A manifest that exists but does not parse is a hard error: it is the
+/// completeness gate's only evidence, and refusing here leaves `dest`
+/// untouched, which is the same rollback guarantee a torn download gets.
+fn read_staged_manifest(staged: &Path) -> Result<Option<BundleManifest>> {
+    let path = staged.join(MANIFEST_FILE_NAME);
+    let Ok(body) = fs::read_to_string(&path) else {
+        return Ok(None);
+    };
+    BundleManifest::parse(&body)
+        .map(Some)
+        .map_err(|e| anyhow::anyhow!("Downloaded bundle carries an unusable manifest: {e}"))
+}
+
+/// The manifest the last install recorded in `dest`, or `None` when there
+/// is none — a first install, or one done by a pre-manifest CLI.
+///
+/// A record that will not parse is also `None`, with a warning: we then
+/// know nothing about which files are ours, which is exactly the
+/// pre-manifest situation, and that degrades to the historical behaviour
+/// rather than failing the install. It is replaced at the end of this
+/// install.
+fn read_installed_manifest(dest: &Path) -> Option<BundleManifest> {
+    let path = dest.join(INSTALLED_MANIFEST_FILE);
+    let body = fs::read_to_string(&path).ok()?;
+    match BundleManifest::parse(&body) {
+        Ok(manifest) => Some(manifest),
+        Err(e) => {
+            eprintln!(
+                "warning: ignoring unreadable install record {}: {e}",
+                path.display()
+            );
+            None
+        }
+    }
+}
+
+fn write_installed_manifest(dest: &Path, manifest: &BundleManifest) -> Result<()> {
+    let path = dest.join(INSTALLED_MANIFEST_FILE);
+    let body = serde_json::to_string_pretty(manifest)
+        .context("Failed to serialize the bundle manifest")?;
+    fs::write(&path, body).with_context(|| format!("Failed to write {}", path.display()))
+}
+
+/// The forward-pin guard: refuse a pinned bundle whose manifest declares a
+/// `min_cli_version` newer than the binary about to install it.
+///
+/// Only pins are checked. An unpinned install resolves to the binary's own
+/// version (`resolve_assets_version`), so its bundle's floor is satisfied by
+/// construction; a pin is the one way to ask for a bundle cut for a CLI that
+/// does not exist here yet, whose skills would then reference commands this
+/// binary has no idea about.
+///
+/// This is a hard error rather than a fallback: `fetch_into` treats a failed
+/// asset fetch as "try the legacy tree", and silently installing something
+/// other than what was pinned is worse than refusing. `dest` is untouched
+/// either way — the check runs before the sync.
+fn verify_pin_is_supported(manifest: &BundleManifest, pinned_version: Option<&str>) -> Result<()> {
+    let Some(pinned) = pinned_version else {
+        return Ok(());
+    };
+    let cli = env!("CARGO_PKG_VERSION");
+    if manifest.supports_cli_version(cli) {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "The pinned {} assets bundle ({pinned}) needs hyprlayer {} or newer, but this \
+         binary is {cli}. Upgrade hyprlayer, or clear `agentsPinnedVersion` in your \
+         hyprlayer config to go back to the bundle that matches this binary.",
+        manifest.harness,
+        manifest.min_cli_version
+    )
+}
+
+/// The manifest-driven completeness gate: every file the staged bundle
+/// claims to own must be there and must hash to what the manifest recorded.
+///
+/// This is what `is_installed_at`'s two hardcoded sentinels approximated
+/// for asset installs — a torn or corrupted download must never overwrite a
+/// good install — except that it covers the whole bundle rather than two
+/// files, and catches corruption as well as absence.
+fn verify_staged_completeness(
+    tool: AgentTool,
+    staged: &Path,
+    manifest: &BundleManifest,
+) -> Result<()> {
+    for entry in &manifest.files {
+        let path = manifest::resolve_under(staged, &entry.path).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Downloaded {tool} bundle is incomplete — its manifest lists {:?}, \
+                 which is not a path inside the bundle.",
+                entry.path
+            )
+        })?;
+        if !path.is_file() {
+            anyhow::bail!(
+                "Downloaded {tool} bundle is incomplete — its manifest lists `{}`, \
+                 which the bundle does not contain. \
+                 Run 'hyprlayer ai reinstall' to retry.",
+                entry.path
+            );
+        }
+        integrity::verify_sha256(&path, &entry.sha256).map_err(|e| {
+            anyhow::anyhow!(
+                "Downloaded {tool} bundle is incomplete — `{}` does not match the \
+                 digest its manifest records ({e}). \
+                 Run 'hyprlayer ai reinstall' to retry.",
+                entry.path
+            )
+        })?;
+    }
+    Ok(())
 }
 
 /// Recursively list every regular file under `dir`. Returns an empty list
@@ -597,6 +1155,69 @@ pub(crate) fn github_get_json(url: &str, timeout_secs: Option<u32>) -> Result<St
     .map_err(|e| anyhow::anyhow!("GitHub API request failed: {e}"))
 }
 
+/// The manifest of the bundle `tool` currently has installed, or `None`
+/// when there is none: an install from the frozen legacy tree, or one done
+/// by a pre-manifest CLI. Callers that need a single file from the
+/// installed bundle use this to tell the two worlds apart — `None` means
+/// there is no bundle to read from and `master`'s frozen tree is the right
+/// source after all.
+pub(crate) fn installed_manifest(tool: AgentTool) -> Option<BundleManifest> {
+    read_installed_manifest(&tool.dest_dir().ok()?)
+}
+
+/// Write one file of an installed bundle to `dest`, taken from the release
+/// asset that bundle was installed from and checked against the digest the
+/// manifest records for it.
+///
+/// This is how a file that belongs to the bundle gets restored after
+/// something removed it — the opencode telemetry plugin after a
+/// `telemetry off` → `on` round trip. Fetching it from `master` instead
+/// would hand a pinned install a file from a different version of the
+/// bundle than its skills came from.
+///
+/// It costs a whole (small, per-harness) bundle download to place one file.
+/// That is the price of the file matching the pin, and the callers only
+/// reach here when the file is actually missing.
+pub(crate) fn install_bundled_file(
+    tool: AgentTool,
+    manifest: &BundleManifest,
+    bundle_path: &str,
+    dest: &Path,
+) -> Result<()> {
+    let entry = manifest
+        .files
+        .iter()
+        .find(|entry| entry.path == bundle_path)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "The installed {tool} bundle (v{}) does not carry `{bundle_path}`",
+                manifest.version
+            )
+        })?;
+
+    let staging = tempfile::tempdir().context("Failed to create a staging directory")?;
+    let staged = staging.path().join(tool.repo_dir());
+    tool.fetch_asset_into(&staged, &manifest.version)?;
+
+    let source = manifest::resolve_under(&staged, &entry.path)
+        .ok_or_else(|| anyhow::anyhow!("Manifest entry {:?} is not a bundle path", entry.path))?;
+    integrity::verify_sha256(&source, &entry.sha256).map_err(|e| {
+        anyhow::anyhow!(
+            "`{bundle_path}` in the v{} {tool} bundle does not match the digest \
+             its manifest records ({e})",
+            manifest.version
+        )
+    })?;
+
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create {}", parent.display()))?;
+    }
+    fs::copy(&source, dest)
+        .with_context(|| format!("Failed to write {}", dest.display()))
+        .map(|_| ())
+}
+
 /// Download a single file from the repo to `dest`. Pinned to `master`'s
 /// HEAD SHA (or to `BRANCH` if ref resolution fails).
 ///
@@ -696,7 +1317,7 @@ mod tests {
         let dest = temp.path().join("dest");
         touch(&src.join("a.md"));
         touch(&dest.join("a.md"));
-        assert_eq!(sync_tree(&src, &dest).unwrap(), 0);
+        assert_eq!(sync_tree(&src, &dest, None).unwrap().changed, 0);
         assert_eq!(
             fs::read_to_string(dest.join("a.md")).unwrap(),
             fs::read_to_string(src.join("a.md")).unwrap()
@@ -710,7 +1331,7 @@ mod tests {
         let dest = temp.path().join("dest");
         touch(&src.join("a.md"));
         fs::create_dir_all(&dest).unwrap();
-        assert_eq!(sync_tree(&src, &dest).unwrap(), 1);
+        assert_eq!(sync_tree(&src, &dest, None).unwrap().changed, 1);
         assert!(dest.join("a.md").is_file());
     }
 
@@ -723,7 +1344,7 @@ mod tests {
         fs::create_dir_all(&dest).unwrap();
         fs::write(src.join("a.md"), "new content").unwrap();
         fs::write(dest.join("a.md"), "old content").unwrap();
-        assert_eq!(sync_tree(&src, &dest).unwrap(), 1);
+        assert_eq!(sync_tree(&src, &dest, None).unwrap().changed, 1);
         assert_eq!(
             fs::read_to_string(dest.join("a.md")).unwrap(),
             "new content"
@@ -737,7 +1358,7 @@ mod tests {
         let dest = temp.path().join("dest");
         touch(&src.join("a.md"));
         touch(&dest.join("personal.md"));
-        assert_eq!(sync_tree(&src, &dest).unwrap(), 1);
+        assert_eq!(sync_tree(&src, &dest, None).unwrap().changed, 1);
         assert!(dest.join("a.md").is_file());
         assert!(
             dest.join("personal.md").is_file(),
@@ -751,7 +1372,7 @@ mod tests {
         let src = temp.path().join("src");
         let dest = temp.path().join("dest");
         touch(&src.join("skills/foo/bar/SKILL.md"));
-        assert_eq!(sync_tree(&src, &dest).unwrap(), 1);
+        assert_eq!(sync_tree(&src, &dest, None).unwrap().changed, 1);
         assert!(dest.join("skills/foo/bar/SKILL.md").is_file());
     }
 
@@ -762,7 +1383,7 @@ mod tests {
         let dest = temp.path().join("dest");
         fs::create_dir_all(&src).unwrap();
         touch(&dest.join("personal.md"));
-        assert_eq!(sync_tree(&src, &dest).unwrap(), 0);
+        assert_eq!(sync_tree(&src, &dest, None).unwrap().changed, 0);
         assert!(dest.join("personal.md").is_file());
     }
 
@@ -772,7 +1393,982 @@ mod tests {
         let src = temp.path().join("does-not-exist");
         let dest = temp.path().join("dest");
         fs::create_dir_all(&dest).unwrap();
-        assert_eq!(sync_tree(&src, &dest).unwrap(), 0);
+        assert_eq!(sync_tree(&src, &dest, None).unwrap().changed, 0);
+    }
+
+    /// Real digests from the `v1.6.0-rc.1` prerelease that Phase 3 cut, so
+    /// the fixture below is the shape GitHub actually returns rather than an
+    /// invented one.
+    const RC_CLAUDE_DIGEST: &str =
+        "42292288c4a5fc6c7f765489da159ceef5c70d0705c2c9d65d999df7bb6c60cd";
+    const RC_COPILOT_DIGEST: &str =
+        "d4b730a0bb9755e2bd6aa763ef5e9b24bd1644feec1eae90ca08285a26ea5575";
+
+    /// A `/releases/tags/<tag>` body carrying the three bundles plus the
+    /// binaries, abridged to the fields we read.
+    fn release_json_with_all_bundles() -> String {
+        format!(
+            r#"{{
+                "tag_name": "v1.6.0-rc.1",
+                "assets": [
+                    {{ "name": "hyprlayer-x86_64-unknown-linux-gnu", "digest": "sha256:{RC_COPILOT_DIGEST}" }},
+                    {{ "name": "hyprlayer-assets-claude-1.6.0-rc.1.tar.gz",   "digest": "sha256:{RC_CLAUDE_DIGEST}" }},
+                    {{ "name": "hyprlayer-assets-copilot-1.6.0-rc.1.tar.gz",  "digest": "sha256:{RC_COPILOT_DIGEST}" }},
+                    {{ "name": "hyprlayer-assets-opencode-1.6.0-rc.1.tar.gz", "digest": "sha256:{RC_CLAUDE_DIGEST}" }}
+                ]
+            }}"#
+        )
+    }
+
+    /// Build a minimal but *installable* Claude bundle in the release-asset
+    /// shape: paths relative to the harness root, both sentinels present, a
+    /// `manifest.json` alongside. Returns the tarball path.
+    fn write_bundle_archive(dir: &Path) -> PathBuf {
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+
+        let files: [(&str, &[u8]); 2] = [
+            ("agents/codebase-locator.md", b"---\nname: locator\n---\n"),
+            (
+                "skills/code_review/SKILL.md",
+                b"---\nname: code_review\n---\n",
+            ),
+        ];
+        let manifest = serde_json::to_vec_pretty(&manifest_for("1.6.0", &files)).unwrap();
+        let mut entries: Vec<(&str, &[u8])> = files.to_vec();
+        entries.push((MANIFEST_FILE_NAME, &manifest));
+
+        let mut bytes: Vec<u8> = Vec::new();
+        {
+            let enc = GzEncoder::new(&mut bytes, Compression::default());
+            let mut builder = tar::Builder::new(enc);
+            for (path, data) in entries {
+                let mut header = tar::Header::new_gnu();
+                header.set_entry_type(tar::EntryType::Regular);
+                header.set_path(path).unwrap();
+                header.set_size(data.len() as u64);
+                header.set_mode(0o644);
+                header.set_cksum();
+                builder.append(&header, data).unwrap();
+            }
+            builder.into_inner().unwrap().finish().unwrap();
+        }
+
+        let path = dir.join("hyprlayer-assets-claude-1.6.0.tar.gz");
+        fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    fn sha256_of(path: &Path) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(fs::read(path).unwrap());
+        hex::encode(hasher.finalize())
+    }
+
+    fn sha256_of_bytes(bytes: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(bytes);
+        hex::encode(hasher.finalize())
+    }
+
+    /// A manifest describing exactly `files`, the way
+    /// `scripts/build-asset-bundles.sh` would: real digests, paths relative
+    /// to the harness root, and no entry for `manifest.json` itself.
+    fn manifest_for(version: &str, files: &[(&str, &[u8])]) -> BundleManifest {
+        BundleManifest {
+            version: version.to_string(),
+            harness: "claude".to_string(),
+            min_cli_version: "1.6.0".to_string(),
+            files: files
+                .iter()
+                .map(|(path, data)| manifest::ManifestEntry {
+                    path: (*path).to_string(),
+                    sha256: sha256_of_bytes(data),
+                })
+                .collect(),
+        }
+    }
+
+    /// Lay out an extracted release-asset bundle in `staged`: the files
+    /// plus the `manifest.json` that describes them. This is what
+    /// `install_staged` sees after `archive::extract_bundle`.
+    fn stage_bundle(staged: &Path, version: &str, files: &[(&str, &[u8])]) {
+        for (path, data) in files {
+            let dest = staged.join(path);
+            fs::create_dir_all(dest.parent().unwrap()).unwrap();
+            fs::write(dest, data).unwrap();
+        }
+        let manifest = serde_json::to_string_pretty(&manifest_for(version, files)).unwrap();
+        fs::write(staged.join(MANIFEST_FILE_NAME), manifest).unwrap();
+    }
+
+    /// The two files `is_installed_at` sentinels on, so a fixture bundle is
+    /// installable by the legacy gate as well as the manifest one.
+    const SENTINELS: [(&str, &[u8]); 2] = [
+        ("agents/codebase-locator.md", b"locator v1\n"),
+        ("skills/code_review/SKILL.md", b"code_review v1\n"),
+    ];
+
+    /// Every file under `dir`, as sorted manifest-form paths.
+    fn tree(dir: &Path) -> Vec<String> {
+        let mut out: Vec<String> = walk_files(dir)
+            .unwrap()
+            .iter()
+            .map(|path| manifest::relative_key(path.strip_prefix(dir).unwrap()).unwrap())
+            .collect();
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn asset_name_matches_the_builder_output() {
+        assert_eq!(
+            asset_name("claude", "1.6.0"),
+            "hyprlayer-assets-claude-1.6.0.tar.gz"
+        );
+        assert_eq!(
+            asset_name(AgentTool::OpenCode.repo_dir(), "1.6.0-rc.1"),
+            "hyprlayer-assets-opencode-1.6.0-rc.1.tar.gz"
+        );
+    }
+
+    /// The resolution truth table: a pin wins, and an unpinned config falls
+    /// back to the binary's own version — which is what makes a binary
+    /// upgrade move the skills and a pin survive one.
+    #[test]
+    fn assets_version_resolution_prefers_the_pin_over_the_binary() {
+        assert_eq!(resolve_assets_version(None), env!("CARGO_PKG_VERSION"));
+        assert_eq!(resolve_assets_version(Some("1.5.9")), "1.5.9");
+        assert_eq!(resolve_assets_version(Some("2.0.0")), "2.0.0");
+        // A pin is honoured verbatim, backwards or forwards; whether the
+        // binary can *consume* the resulting bundle is
+        // `verify_pin_is_supported`'s call, not this function's.
+        assert_eq!(
+            resolve_assets_version(Some("1.6.0-rc.1")),
+            "1.6.0-rc.1",
+            "a prerelease pin resolves to that exact tag"
+        );
+    }
+
+    #[test]
+    fn asset_digest_from_release_picks_this_harness_bundle() {
+        let body = release_json_with_all_bundles();
+        let digest = asset_digest_from_release(
+            &body,
+            "v1.6.0-rc.1",
+            "hyprlayer-assets-claude-1.6.0-rc.1.tar.gz",
+        )
+        .unwrap();
+        assert_eq!(digest, RC_CLAUDE_DIGEST);
+    }
+
+    /// The fallback trigger: a release exists but carries no bundle for this
+    /// harness/version (a pre-Phase-3 release, or a dev build whose version
+    /// was never tagged).
+    #[test]
+    fn asset_digest_from_release_missing_asset_is_an_error() {
+        let body = release_json_with_all_bundles();
+        let err =
+            asset_digest_from_release(&body, "v1.6.0-rc.1", "hyprlayer-assets-claude-9.9.9.tar.gz")
+                .unwrap_err();
+        let text = err.to_string();
+        assert!(
+            text.contains("hyprlayer-assets-claude-9.9.9.tar.gz"),
+            "{text}"
+        );
+        assert!(text.contains("v1.6.0-rc.1"), "{text}");
+    }
+
+    /// Fail closed: an asset GitHub advertises without a digest must not be
+    /// downloaded unverified.
+    #[test]
+    fn asset_digest_from_release_undigested_asset_is_an_error() {
+        let body = r#"{ "assets": [ { "name": "hyprlayer-assets-claude-1.6.0.tar.gz" } ] }"#;
+        let err = asset_digest_from_release(body, "v1.6.0", "hyprlayer-assets-claude-1.6.0.tar.gz")
+            .unwrap_err();
+        assert!(err.to_string().contains("unverified"), "{err}");
+    }
+
+    #[test]
+    fn asset_digest_from_release_handles_a_404_body() {
+        let err = asset_digest_from_release(
+            r#"{"message":"Not Found"}"#,
+            "v9.9.9",
+            "hyprlayer-assets-claude-9.9.9.tar.gz",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("v9.9.9"), "{err}");
+    }
+
+    /// Positive control for `asset_digest_mismatch_aborts_and_leaves_dest_untouched`:
+    /// the very same archive and destination, with the digest GitHub would
+    /// have reported, installs cleanly. Without this the mismatch test could
+    /// pass on an archive that was never installable in the first place.
+    #[test]
+    fn verified_bundle_extracts_and_installs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = write_bundle_archive(tmp.path());
+        let staged = tmp.path().join("staged");
+        let dest = tmp.path().join("dest");
+        fs::create_dir_all(&dest).unwrap();
+        fs::write(dest.join("settings.json"), "user data").unwrap();
+
+        let expected = format!("sha256:{}", sha256_of(&archive));
+        let count = verify_and_extract_bundle(
+            &archive,
+            "hyprlayer-assets-claude-1.6.0.tar.gz",
+            &expected,
+            &staged,
+        )
+        .unwrap();
+        assert_eq!(count, 3);
+        assert!(
+            AgentTool::Claude.is_installed_at(&staged),
+            "the fixture bundle must satisfy the completeness gate"
+        );
+
+        let report = AgentTool::Claude
+            .install_staged(&staged, &dest, None)
+            .unwrap();
+        assert_eq!(report.changed, 2);
+        assert!(dest.join("skills/code_review/SKILL.md").is_file());
+        assert!(dest.join("agents/codebase-locator.md").is_file());
+        assert_eq!(
+            fs::read_to_string(dest.join("settings.json")).unwrap(),
+            "user data"
+        );
+        // The bundle's self-description is recorded as the install record,
+        // not dropped into the user's harness dir as a stray file.
+        assert!(!dest.join(MANIFEST_FILE_NAME).exists());
+        assert!(dest.join(INSTALLED_MANIFEST_FILE).is_file());
+    }
+
+    #[test]
+    fn asset_digest_mismatch_aborts_and_leaves_dest_untouched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = write_bundle_archive(tmp.path());
+        let staged = tmp.path().join("staged");
+        let dest = tmp.path().join("dest");
+        fs::create_dir_all(&dest).unwrap();
+        fs::write(dest.join("settings.json"), "user data").unwrap();
+
+        let wrong = "0".repeat(64);
+        let err = verify_and_extract_bundle(
+            &archive,
+            "hyprlayer-assets-claude-1.6.0.tar.gz",
+            &wrong,
+            &staged,
+        )
+        .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("Integrity check failed"),
+            "{err:#}"
+        );
+        assert!(
+            !staged.exists(),
+            "a bundle that fails verification must never be extracted"
+        );
+
+        // Nothing staged means the completeness gate refuses before `dest`
+        // is opened at all — the rollback guarantee.
+        let gate = AgentTool::Claude
+            .install_staged(&staged, &dest, None)
+            .unwrap_err();
+        assert!(gate.to_string().contains("incomplete"), "{gate}");
+        assert_eq!(
+            walk_files(&dest).unwrap(),
+            vec![dest.join("settings.json")],
+            "a rejected bundle must leave dest byte-identical"
+        );
+        assert_eq!(
+            fs::read_to_string(dest.join("settings.json")).unwrap(),
+            "user data"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Manifest-driven install: completeness, user-file protection, and
+    // orphan removal.
+    // ---------------------------------------------------------------
+
+    /// The manifest gate catches what the two sentinels cannot: both
+    /// sentinel files are present here, and the bundle is still refused
+    /// because a third file the manifest claims never arrived.
+    #[test]
+    fn manifest_completeness_rejects_a_missing_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = tmp.path().join("staged");
+        let dest = tmp.path().join("dest");
+        fs::create_dir_all(&dest).unwrap();
+        fs::write(dest.join("settings.json"), "user data").unwrap();
+
+        let mut files = SENTINELS.to_vec();
+        files.push(("skills/create_plan/SKILL.md", b"create_plan v1\n"));
+        stage_bundle(&staged, "1.6.0", &files);
+        fs::remove_file(staged.join("skills/create_plan/SKILL.md")).unwrap();
+
+        assert!(
+            AgentTool::Claude.is_installed_at(&staged),
+            "the sentinels are present — only the manifest can catch this"
+        );
+        let err = AgentTool::Claude
+            .install_staged(&staged, &dest, None)
+            .unwrap_err();
+        let text = format!("{err:#}");
+        assert!(text.contains("incomplete"), "{text}");
+        assert!(text.contains("skills/create_plan/SKILL.md"), "{text}");
+        assert_eq!(
+            tree(&dest),
+            vec!["settings.json"],
+            "a rejected bundle must leave dest byte-identical"
+        );
+    }
+
+    #[test]
+    fn manifest_completeness_rejects_a_mis_hashed_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = tmp.path().join("staged");
+        let dest = tmp.path().join("dest");
+        fs::create_dir_all(&dest).unwrap();
+        fs::write(dest.join("settings.json"), "user data").unwrap();
+
+        stage_bundle(&staged, "1.6.0", &SENTINELS);
+        // Present, right size class, wrong bytes — a torn or tampered
+        // download that every file-existence check would wave through.
+        fs::write(staged.join("agents/codebase-locator.md"), "locator XX\n").unwrap();
+
+        let err = AgentTool::Claude
+            .install_staged(&staged, &dest, None)
+            .unwrap_err();
+        let text = format!("{err:#}");
+        assert!(text.contains("agents/codebase-locator.md"), "{text}");
+        assert!(text.contains("digest"), "{text}");
+        assert_eq!(tree(&dest), vec!["settings.json"]);
+    }
+
+    /// A `manifest.json` that will not parse is a corrupt bundle, not a
+    /// legacy one: falling back to the sentinel gate here would install a
+    /// bundle we cannot describe and then record nothing about it.
+    #[test]
+    fn an_unparseable_bundle_manifest_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = tmp.path().join("staged");
+        let dest = tmp.path().join("dest");
+        fs::create_dir_all(&dest).unwrap();
+
+        stage_bundle(&staged, "1.6.0", &SENTINELS);
+        fs::write(staged.join(MANIFEST_FILE_NAME), "{ truncated").unwrap();
+
+        let err = AgentTool::Claude
+            .install_staged(&staged, &dest, None)
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("manifest"), "{err:#}");
+        assert!(tree(&dest).is_empty());
+    }
+
+    /// Rewrite a staged bundle's declared CLI floor, so a bundle cut for a
+    /// release that does not exist yet can be handed to this binary.
+    fn set_staged_min_cli_version(staged: &Path, min_cli_version: &str) {
+        let path = staged.join(MANIFEST_FILE_NAME);
+        let mut manifest = BundleManifest::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+        manifest.min_cli_version = min_cli_version.to_string();
+        fs::write(&path, serde_json::to_string_pretty(&manifest).unwrap()).unwrap();
+    }
+
+    /// Pinning forward — to a bundle cut for a CLI this binary predates —
+    /// is the one way to get skills that reference commands we do not have.
+    /// It is refused outright rather than falling back to the legacy tree:
+    /// installing something other than what was pinned is worse than
+    /// installing nothing.
+    #[test]
+    fn a_pin_that_needs_a_newer_cli_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = tmp.path().join("staged");
+        let dest = tmp.path().join("dest");
+        fs::create_dir_all(&dest).unwrap();
+        fs::write(dest.join("settings.json"), "user data").unwrap();
+
+        stage_bundle(&staged, "9.9.0", &SENTINELS);
+        set_staged_min_cli_version(&staged, "9.9.0");
+
+        let err = AgentTool::Claude
+            .install_staged(&staged, &dest, Some("9.9.0"))
+            .unwrap_err();
+        let text = format!("{err:#}");
+        assert!(text.contains("9.9.0"), "{text}");
+        assert!(
+            text.contains("Upgrade hyprlayer"),
+            "the message must say what to do about it: {text}"
+        );
+        assert!(
+            text.contains("agentsPinnedVersion"),
+            "the message must name the pin that caused this: {text}"
+        );
+        assert_eq!(
+            tree(&dest),
+            vec!["settings.json"],
+            "a refused pin must leave dest byte-identical"
+        );
+    }
+
+    /// The guard is scoped to pins on purpose. An unpinned install resolves
+    /// to the binary's own version, so its bundle's floor is satisfied by
+    /// construction — and gating it here would make a dev build refuse the
+    /// very bundles cut from its own tree.
+    #[test]
+    fn an_unpinned_install_is_not_gated_on_the_cli_floor() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = tmp.path().join("staged");
+        let dest = tmp.path().join("dest");
+
+        stage_bundle(&staged, "9.9.0", &SENTINELS);
+        set_staged_min_cli_version(&staged, "9.9.0");
+
+        let report = AgentTool::Claude
+            .install_staged(&staged, &dest, None)
+            .unwrap();
+        assert_eq!(report.changed, SENTINELS.len());
+    }
+
+    #[test]
+    fn a_pin_this_binary_can_run_installs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = tmp.path().join("staged");
+        let dest = tmp.path().join("dest");
+
+        stage_bundle(&staged, "1.0.0", &SENTINELS);
+        set_staged_min_cli_version(&staged, "1.0.0");
+
+        let report = AgentTool::Claude
+            .install_staged(&staged, &dest, Some("1.0.0"))
+            .unwrap();
+        assert_eq!(report.changed, SENTINELS.len());
+        assert_eq!(
+            read_installed_manifest(&dest).unwrap().version,
+            "1.0.0",
+            "the pinned bundle is what gets recorded"
+        );
+    }
+
+    /// The legacy `master`-tree fallback carries no manifest, so it keeps
+    /// the sentinel gate — and leaves no install record, which is what
+    /// makes the *next* install treat it as pre-manifest.
+    #[test]
+    fn a_bundle_without_a_manifest_still_uses_the_sentinel_gate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("dest");
+
+        let torn = tmp.path().join("torn");
+        touch(&torn.join("agents/codebase-locator.md"));
+        let err = AgentTool::Claude
+            .install_staged(&torn, &dest, None)
+            .unwrap_err();
+        assert!(err.to_string().contains("incomplete"), "{err}");
+
+        let complete = tmp.path().join("complete");
+        touch(&complete.join("agents/codebase-locator.md"));
+        touch(&complete.join("skills/code_review/SKILL.md"));
+        let report = AgentTool::Claude
+            .install_staged(&complete, &dest, None)
+            .unwrap();
+        assert_eq!(report.changed, 2);
+        assert!(
+            !dest.join(INSTALLED_MANIFEST_FILE).exists(),
+            "a legacy install has no manifest to record"
+        );
+    }
+
+    #[test]
+    fn install_records_the_manifest_it_installed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = tmp.path().join("staged");
+        let dest = tmp.path().join("dest");
+
+        stage_bundle(&staged, "1.6.0", &SENTINELS);
+        AgentTool::Claude
+            .install_staged(&staged, &dest, None)
+            .unwrap();
+
+        let recorded = read_installed_manifest(&dest).expect("install must leave a record");
+        assert_eq!(recorded.version, "1.6.0");
+        assert_eq!(
+            tree(&dest),
+            vec![
+                ".hyprlayer-manifest.json",
+                "agents/codebase-locator.md",
+                "skills/code_review/SKILL.md",
+            ],
+            "the bundle's own manifest.json must not land in dest"
+        );
+    }
+
+    /// The `~/.claude/settings.json` case from the plan: we shipped it, the
+    /// user edited it, the next bundle ships a different one. Their edit
+    /// wins, and every file they did *not* touch still updates.
+    #[test]
+    fn install_preserves_a_user_modified_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("dest");
+
+        let mut v1 = SENTINELS.to_vec();
+        v1.push(("settings.json", b"{\"shipped\": 1}\n"));
+        let staged_v1 = tmp.path().join("v1");
+        stage_bundle(&staged_v1, "1.6.0", &v1);
+        AgentTool::Claude
+            .install_staged(&staged_v1, &dest, None)
+            .unwrap();
+
+        fs::write(dest.join("settings.json"), "{\"mine\": true}\n").unwrap();
+
+        let v2: [(&str, &[u8]); 3] = [
+            ("agents/codebase-locator.md", b"locator v2\n"),
+            ("skills/code_review/SKILL.md", b"code_review v1\n"),
+            ("settings.json", b"{\"shipped\": 2}\n"),
+        ];
+        let staged_v2 = tmp.path().join("v2");
+        stage_bundle(&staged_v2, "1.6.1", &v2);
+        let report = AgentTool::Claude
+            .install_staged(&staged_v2, &dest, None)
+            .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(dest.join("settings.json")).unwrap(),
+            "{\"mine\": true}\n",
+            "a file the user edited must survive an install"
+        );
+        assert_eq!(report.preserved, vec!["settings.json"]);
+        assert_eq!(
+            fs::read_to_string(dest.join("agents/codebase-locator.md")).unwrap(),
+            "locator v2\n",
+            "files the user did not touch must still update"
+        );
+        assert_eq!(report.changed, 1);
+    }
+
+    /// A file at a path the bundle ships that we never installed is the
+    /// user's own work — a hand-written skill of the same name — and is
+    /// left alone rather than overwritten.
+    #[test]
+    fn install_preserves_a_dest_file_we_never_owned() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("dest");
+
+        let staged_v1 = tmp.path().join("v1");
+        stage_bundle(&staged_v1, "1.6.0", &SENTINELS);
+        AgentTool::Claude
+            .install_staged(&staged_v1, &dest, None)
+            .unwrap();
+
+        fs::create_dir_all(dest.join("skills/create_plan")).unwrap();
+        fs::write(dest.join("skills/create_plan/SKILL.md"), "hand-written\n").unwrap();
+
+        let mut v2 = SENTINELS.to_vec();
+        v2.push(("skills/create_plan/SKILL.md", b"ours\n"));
+        let staged_v2 = tmp.path().join("v2");
+        stage_bundle(&staged_v2, "1.6.1", &v2);
+        let report = AgentTool::Claude
+            .install_staged(&staged_v2, &dest, None)
+            .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(dest.join("skills/create_plan/SKILL.md")).unwrap(),
+            "hand-written\n"
+        );
+        assert_eq!(report.preserved, vec!["skills/create_plan/SKILL.md"]);
+        assert_eq!(report.changed, 0);
+    }
+
+    /// The migration case. Upgrading from a pre-1.6.0 install there is no
+    /// record of what we own, so the historical overwrite behaviour has to
+    /// stand — skipping instead would freeze every existing user on the
+    /// bundle they already have.
+    #[test]
+    fn install_without_a_prior_manifest_overwrites_as_before() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = tmp.path().join("staged");
+        let dest = tmp.path().join("dest");
+        fs::create_dir_all(dest.join("agents")).unwrap();
+        fs::write(dest.join("agents/codebase-locator.md"), "locator 1.5.9\n").unwrap();
+
+        stage_bundle(&staged, "1.6.0", &SENTINELS);
+        let report = AgentTool::Claude
+            .install_staged(&staged, &dest, None)
+            .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(dest.join("agents/codebase-locator.md")).unwrap(),
+            "locator v1\n"
+        );
+        assert!(report.preserved.is_empty());
+        assert_eq!(report.changed, 2);
+    }
+
+    /// The other half of the migration case: the overwrite stands, but the
+    /// user's bytes are kept alongside it. Without this, the one install
+    /// every existing user runs is the one that loses their edits.
+    #[test]
+    fn first_manifest_install_backs_up_what_it_overwrites() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = tmp.path().join("staged");
+        let dest = tmp.path().join("dest");
+        fs::create_dir_all(dest.join("agents")).unwrap();
+        fs::write(dest.join("agents/codebase-locator.md"), "my own edit\n").unwrap();
+        // Byte-identical to what the bundle ships: nothing to rescue, so no
+        // backup should be taken for it.
+        fs::create_dir_all(dest.join("skills/code_review")).unwrap();
+        fs::write(dest.join("skills/code_review/SKILL.md"), "code_review v1\n").unwrap();
+
+        stage_bundle(&staged, "1.6.0", &SENTINELS);
+        let report = AgentTool::Claude
+            .install_staged(&staged, &dest, None)
+            .unwrap();
+
+        let backup = dest.join("agents/codebase-locator.md.hyprlayer-backup");
+        assert_eq!(
+            fs::read_to_string(&backup).unwrap(),
+            "my own edit\n",
+            "the user's bytes must survive the overwrite"
+        );
+        assert_eq!(
+            fs::read_to_string(dest.join("agents/codebase-locator.md")).unwrap(),
+            "locator v1\n",
+            "and the bundle's version still lands, so the user is not frozen"
+        );
+        assert_eq!(report.backed_up, vec!["agents/codebase-locator.md"]);
+        assert!(
+            !dest
+                .join("skills/code_review/SKILL.md.hyprlayer-backup")
+                .exists(),
+            "an identical file is not overwritten, so it needs no backup"
+        );
+    }
+
+    /// Re-running the first install must not bury the original copy under a
+    /// second backup taken from the bundle content the first one wrote.
+    #[test]
+    fn a_second_install_does_not_overwrite_an_existing_backup() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = tmp.path().join("staged");
+        let dest = tmp.path().join("dest");
+        fs::create_dir_all(dest.join("agents")).unwrap();
+        fs::write(dest.join("agents/codebase-locator.md"), "original edit\n").unwrap();
+
+        stage_bundle(&staged, "1.6.0", &SENTINELS);
+        AgentTool::Claude
+            .install_staged(&staged, &dest, None)
+            .unwrap();
+        // Wipe the install record so the next one is a "first" install too,
+        // then diverge the file again.
+        fs::remove_file(dest.join(INSTALLED_MANIFEST_FILE)).unwrap();
+        fs::write(dest.join("agents/codebase-locator.md"), "later edit\n").unwrap();
+
+        let staged2 = tmp.path().join("staged2");
+        stage_bundle(&staged2, "1.6.0", &SENTINELS);
+        AgentTool::Claude
+            .install_staged(&staged2, &dest, None)
+            .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(dest.join("agents/codebase-locator.md.hyprlayer-backup")).unwrap(),
+            "original edit\n",
+            "the first backup is the one worth keeping"
+        );
+    }
+
+    #[test]
+    fn append_suffix_keeps_the_whole_file_name() {
+        assert_eq!(
+            append_suffix(Path::new("/a/settings.json"), ".hyprlayer-backup"),
+            PathBuf::from("/a/settings.json.hyprlayer-backup"),
+            "with_extension would have produced settings.hyprlayer-backup"
+        );
+    }
+
+    /// The destructive path, with every case that must *not* be deleted
+    /// sitting next to the one that must:
+    ///
+    /// - `skills/gone/SKILL.md` — ours, unmodified, dropped → removed;
+    /// - `skills/edited/SKILL.md` — ours, dropped, but the user changed it
+    ///   → kept;
+    /// - `notes/mine.md` — never ours → kept;
+    /// - the sentinels — still in the new bundle → kept.
+    #[test]
+    fn orphan_removal_deletes_only_dropped_unmodified_owned_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("dest");
+
+        let mut v1 = SENTINELS.to_vec();
+        v1.push(("skills/gone/SKILL.md", b"gone v1\n"));
+        v1.push(("skills/edited/SKILL.md", b"edited v1\n"));
+        let staged_v1 = tmp.path().join("v1");
+        stage_bundle(&staged_v1, "1.6.0", &v1);
+        AgentTool::Claude
+            .install_staged(&staged_v1, &dest, None)
+            .unwrap();
+
+        fs::write(dest.join("skills/edited/SKILL.md"), "my notes\n").unwrap();
+        fs::create_dir_all(dest.join("notes")).unwrap();
+        fs::write(dest.join("notes/mine.md"), "personal\n").unwrap();
+
+        let staged_v2 = tmp.path().join("v2");
+        stage_bundle(&staged_v2, "1.6.1", &SENTINELS);
+        let report = AgentTool::Claude
+            .install_staged(&staged_v2, &dest, None)
+            .unwrap();
+
+        assert_eq!(report.removed, vec!["skills/gone/SKILL.md"]);
+        assert_eq!(
+            tree(&dest),
+            vec![
+                ".hyprlayer-manifest.json",
+                "agents/codebase-locator.md",
+                "notes/mine.md",
+                "skills/code_review/SKILL.md",
+                "skills/edited/SKILL.md",
+            ]
+        );
+        assert_eq!(
+            fs::read_to_string(dest.join("skills/edited/SKILL.md")).unwrap(),
+            "my notes\n",
+            "an edited file we shipped is the user's, not an orphan"
+        );
+        assert!(
+            !dest.join("skills/gone").exists(),
+            "the directory an orphan emptied should be pruned"
+        );
+    }
+
+    /// First install on 1.6.0: leftovers from the pre-manifest era stay,
+    /// because nothing records that we ever owned them. They go on the
+    /// *second* install, once this one has written a record.
+    #[test]
+    fn orphan_removal_is_a_no_op_without_a_prior_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = tmp.path().join("staged");
+        let dest = tmp.path().join("dest");
+        fs::create_dir_all(dest.join("skills/create_plan_nt")).unwrap();
+        fs::write(dest.join("skills/create_plan_nt/SKILL.md"), "old skill\n").unwrap();
+
+        stage_bundle(&staged, "1.6.0", &SENTINELS);
+        let report = AgentTool::Claude
+            .install_staged(&staged, &dest, None)
+            .unwrap();
+
+        assert!(report.removed.is_empty());
+        assert!(dest.join("skills/create_plan_nt/SKILL.md").is_file());
+    }
+
+    /// The install record is a file in a directory the user can write to,
+    /// so an entry naming a path outside `dest` must resolve to nothing at
+    /// all rather than to a deletion.
+    #[test]
+    fn orphan_removal_ignores_manifest_paths_outside_dest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("dest");
+        let outsider = tmp.path().join("outside.md");
+        fs::write(&outsider, "not ours\n").unwrap();
+        fs::create_dir_all(&dest).unwrap();
+
+        let previous = BundleManifest {
+            version: "1.6.0".to_string(),
+            harness: "claude".to_string(),
+            min_cli_version: "1.6.0".to_string(),
+            files: vec![
+                manifest::ManifestEntry {
+                    path: "../outside.md".to_string(),
+                    sha256: sha256_of_bytes(b"not ours\n"),
+                },
+                manifest::ManifestEntry {
+                    path: "/etc/hosts".to_string(),
+                    sha256: sha256_of_bytes(b"not ours\n"),
+                },
+            ],
+        };
+        fs::write(
+            dest.join(INSTALLED_MANIFEST_FILE),
+            serde_json::to_string_pretty(&previous).unwrap(),
+        )
+        .unwrap();
+
+        let staged = tmp.path().join("staged");
+        stage_bundle(&staged, "1.6.1", &SENTINELS);
+        let report = AgentTool::Claude
+            .install_staged(&staged, &dest, None)
+            .unwrap();
+
+        assert!(report.removed.is_empty());
+        assert!(outsider.is_file(), "a path outside dest is never deleted");
+    }
+
+    /// An install record we cannot parse tells us nothing about what we
+    /// own, so it must delete nothing — not everything.
+    #[test]
+    fn an_unparseable_install_record_deletes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("dest");
+        fs::create_dir_all(dest.join("skills/gone")).unwrap();
+        fs::write(dest.join("skills/gone/SKILL.md"), "gone v1\n").unwrap();
+        fs::write(dest.join(INSTALLED_MANIFEST_FILE), "{ truncated").unwrap();
+
+        let staged = tmp.path().join("staged");
+        stage_bundle(&staged, "1.6.1", &SENTINELS);
+        let report = AgentTool::Claude
+            .install_staged(&staged, &dest, None)
+            .unwrap();
+
+        assert!(report.removed.is_empty());
+        assert!(dest.join("skills/gone/SKILL.md").is_file());
+        assert!(
+            read_installed_manifest(&dest).is_some(),
+            "the unusable record is replaced by this install's"
+        );
+    }
+
+    /// `prune_empty_dirs` walks upward, so it must stop at `dest` and must
+    /// never take a directory that still holds something.
+    #[test]
+    fn prune_empty_dirs_stops_at_dest_and_at_the_first_non_empty_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("dest");
+        fs::create_dir_all(dest.join("skills/a/b")).unwrap();
+        prune_empty_dirs(&dest, &dest.join("skills/a/b"));
+        assert!(dest.is_dir(), "dest itself is never removed");
+        assert!(!dest.join("skills").exists());
+
+        fs::create_dir_all(dest.join("skills/keep/inner")).unwrap();
+        fs::write(dest.join("skills/keep/other.md"), "x").unwrap();
+        prune_empty_dirs(&dest, &dest.join("skills/keep/inner"));
+        assert!(!dest.join("skills/keep/inner").exists());
+        assert!(
+            dest.join("skills/keep/other.md").is_file(),
+            "a parent holding anything else must survive"
+        );
+    }
+
+    #[test]
+    fn fetch_first_available_falls_back_when_the_asset_is_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = tmp.path().join("staged");
+
+        let sources: Vec<BundleSource<'_>> = vec![
+            (
+                "the v9.9.9 release asset".to_string(),
+                Box::new(|_: &Path| {
+                    anyhow::bail!(
+                        "GitHub release `v9.9.9` exposes no SHA256 digest for asset \
+                         `hyprlayer-assets-claude-9.9.9.tar.gz`."
+                    )
+                }),
+            ),
+            (
+                "the master repo archive".to_string(),
+                Box::new(|dest: &Path| {
+                    touch(&dest.join("agents/codebase-locator.md"));
+                    touch(&dest.join("skills/code_review/SKILL.md"));
+                    Ok(2)
+                }),
+            ),
+        ];
+
+        let (label, count) = fetch_first_available(&staged, sources, true).unwrap();
+        assert_eq!(label, "the master repo archive");
+        assert_eq!(count, 2);
+        assert!(
+            AgentTool::Claude.is_installed_at(&staged),
+            "the fallback's output is what gets staged"
+        );
+    }
+
+    #[test]
+    fn fetch_first_available_prefers_the_first_working_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = tmp.path().join("staged");
+
+        let sources: Vec<BundleSource<'_>> = vec![
+            (
+                "the release asset".to_string(),
+                Box::new(|dest: &Path| {
+                    touch(&dest.join("from-asset.md"));
+                    Ok(1)
+                }),
+            ),
+            (
+                "the master repo archive".to_string(),
+                Box::new(|_: &Path| panic!("later sources must not run after a success")),
+            ),
+        ];
+
+        let (label, count) = fetch_first_available(&staged, sources, true).unwrap();
+        assert_eq!(label, "the release asset");
+        assert_eq!(count, 1);
+        assert!(staged.join("from-asset.md").is_file());
+    }
+
+    /// A source that fails partway through extraction must not leave files
+    /// behind for the next source to be judged on — the completeness gate
+    /// would otherwise pass on a mixture of two downloads.
+    #[test]
+    fn fetch_first_available_discards_a_failed_sources_partial_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = tmp.path().join("staged");
+
+        let sources: Vec<BundleSource<'_>> = vec![
+            (
+                "the release asset".to_string(),
+                Box::new(|dest: &Path| {
+                    touch(&dest.join("agents/half-written.md"));
+                    anyhow::bail!("connection reset mid-extraction")
+                }),
+            ),
+            (
+                "the master repo archive".to_string(),
+                Box::new(|dest: &Path| {
+                    touch(&dest.join("agents/complete.md"));
+                    Ok(1)
+                }),
+            ),
+        ];
+
+        fetch_first_available(&staged, sources, true).unwrap();
+        assert_eq!(
+            walk_files(&staged).unwrap(),
+            vec![staged.join("agents/complete.md")],
+            "the failed source's leftovers must not survive into the fallback"
+        );
+    }
+
+    /// The last source is the Contents-API walk, whose error carries the
+    /// rate-limit guidance; that's the message the user must end up seeing.
+    #[test]
+    fn fetch_first_available_propagates_the_last_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = tmp.path().join("staged");
+
+        let sources: Vec<BundleSource<'_>> = vec![
+            (
+                "the release asset".to_string(),
+                Box::new(|_: &Path| anyhow::bail!("no such release")),
+            ),
+            (
+                "the master repo archive".to_string(),
+                Box::new(|_: &Path| anyhow::bail!("codeload unreachable")),
+            ),
+            (
+                "the GitHub API walk".to_string(),
+                Box::new(|_: &Path| anyhow::bail!("GitHub API rate limit exceeded")),
+            ),
+        ];
+
+        let err = fetch_first_available(&staged, sources, true).unwrap_err();
+        assert!(err.to_string().contains("rate limit"), "{err}");
+    }
+
+    #[test]
+    fn fetch_first_available_with_no_sources_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(fetch_first_available(&tmp.path().join("staged"), vec![], true).is_err());
     }
 
     #[test]
@@ -960,15 +2556,15 @@ mod tests {
     fn opencode_provider_sonnet_models() {
         assert_eq!(
             OpenCodeProvider::GithubCopilot.default_sonnet_model(),
-            "github-copilot/claude-sonnet-4.5"
+            "github-copilot/claude-sonnet-5"
         );
         assert_eq!(
             OpenCodeProvider::Anthropic.default_sonnet_model(),
-            "anthropic/claude-sonnet-4-5"
+            "anthropic/claude-sonnet-5"
         );
         assert_eq!(
             OpenCodeProvider::Abacus.default_sonnet_model(),
-            "abacus/claude-sonnet-4-6"
+            "abacus/claude-sonnet-5"
         );
     }
 
@@ -976,15 +2572,15 @@ mod tests {
     fn opencode_provider_opus_models() {
         assert_eq!(
             OpenCodeProvider::GithubCopilot.default_opus_model(),
-            "github-copilot/claude-opus-4.5"
+            "github-copilot/claude-opus-5"
         );
         assert_eq!(
             OpenCodeProvider::Anthropic.default_opus_model(),
-            "anthropic/claude-opus-4-5"
+            "anthropic/claude-opus-5"
         );
         assert_eq!(
             OpenCodeProvider::Abacus.default_opus_model(),
-            "abacus/claude-opus-4-6"
+            "abacus/claude-opus-5"
         );
     }
 
@@ -992,11 +2588,11 @@ mod tests {
     fn opencode_provider_adversarial_models() {
         assert_eq!(
             OpenCodeProvider::GithubCopilot.default_adversarial_model(),
-            "github-copilot/gpt-5-codex"
+            "github-copilot/gpt-5.3-codex"
         );
         assert_eq!(
             OpenCodeProvider::Anthropic.default_adversarial_model(),
-            "anthropic/claude-opus-4-5"
+            "anthropic/claude-opus-5"
         );
         assert_eq!(
             OpenCodeProvider::Abacus.default_adversarial_model(),
@@ -1028,7 +2624,7 @@ mod tests {
         assert!(updated);
 
         let result = fs::read_to_string(&file_path).unwrap();
-        assert!(result.contains("model: github-copilot/claude-sonnet-4.5"));
+        assert!(result.contains("model: github-copilot/claude-sonnet-5"));
         assert!(!result.contains("{{SONNET_MODEL}}"));
 
         fs::remove_dir_all(&temp_dir).ok();
@@ -1047,7 +2643,7 @@ mod tests {
         assert!(updated);
 
         let result = fs::read_to_string(&file_path).unwrap();
-        assert!(result.contains("model: abacus/claude-opus-4-6"));
+        assert!(result.contains("model: abacus/claude-opus-5"));
         assert!(!result.contains("{{OPUS_MODEL}}"));
 
         fs::remove_dir_all(&temp_dir).ok();
@@ -1123,10 +2719,10 @@ mod tests {
         assert_eq!(count, 2); // Only files with placeholders
 
         let agent = fs::read_to_string(agents_dir.join("analyzer.md")).unwrap();
-        assert!(agent.contains("model: github-copilot/claude-sonnet-4.5"));
+        assert!(agent.contains("model: github-copilot/claude-sonnet-5"));
 
         let research = fs::read_to_string(commands_dir.join("research.md")).unwrap();
-        assert!(research.contains("model: github-copilot/claude-opus-4.5"));
+        assert!(research.contains("model: github-copilot/claude-opus-5"));
 
         fs::remove_dir_all(&temp_dir).ok();
     }
@@ -1156,20 +2752,21 @@ mod tests {
         assert!(!adversarial.contains("{{ADVERSARIAL_MODEL}}"));
 
         let analyzer = fs::read_to_string(agents_dir.join("analyzer.md")).unwrap();
-        assert!(analyzer.contains("model: abacus/claude-sonnet-4-6"));
+        assert!(analyzer.contains("model: abacus/claude-sonnet-5"));
 
         fs::remove_dir_all(&temp_dir).ok();
     }
 
-    /// Round-trip test: copy the real shipped opencode/agents/adversarial-reviewer.md
-    /// into a tempdir and verify substitution leaves no `{{...}}` placeholders behind
-    /// for any provider. Catches regressions where someone removes the placeholder
-    /// from the template or adds a new placeholder without updating the substitution
-    /// machinery.
+    /// Round-trip test: copy the real shipped
+    /// assets/opencode/agents/adversarial-reviewer.md into a tempdir and
+    /// verify substitution leaves no `{{...}}` placeholders behind for any
+    /// provider. Catches regressions where someone removes the placeholder
+    /// from the template or adds a new placeholder without updating the
+    /// substitution machinery.
     #[test]
     fn opencode_adversarial_reviewer_template_substitutes_for_all_providers() {
         let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let template = manifest_dir.join("opencode/agents/adversarial-reviewer.md");
+        let template = manifest_dir.join("assets/opencode/agents/adversarial-reviewer.md");
         let template_body = fs::read_to_string(&template).expect("opencode template missing");
 
         for provider in OpenCodeProvider::ALL {
@@ -1375,8 +2972,8 @@ mod tests {
         update_opencode_models(&temp_dir, &OpenCodeProvider::Anthropic).unwrap();
 
         let result = fs::read_to_string(commands_dir.join("test.md")).unwrap();
-        assert!(result.contains("model: anthropic/claude-sonnet-4-5"));
-        assert!(result.contains("opus: anthropic/claude-opus-4-5"));
+        assert!(result.contains("model: anthropic/claude-sonnet-5"));
+        assert!(result.contains("opus: anthropic/claude-opus-5"));
 
         fs::remove_dir_all(&temp_dir).ok();
     }
