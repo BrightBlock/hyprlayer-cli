@@ -190,16 +190,23 @@ fn probe_available(bin: &str) -> bool {
 
 /// Runs a guard command for its exit status alone.
 ///
-/// Both streams are discarded, and that is load-bearing rather than tidy:
-/// `compile`'s stdout **is** the plan artifact, so a probe that inherited
-/// stdout would splice its own output in front of the JSON and break the
-/// byte-identical guarantee. `exit0(git log -1 --format=%ai)` does exactly
-/// that — the contract of this leaf is the status, never the output.
+/// All three streams are detached, and that is load-bearing rather than
+/// tidy. `compile`'s stdout **is** the plan artifact, so a probe that
+/// inherited stdout would splice its own output in front of the JSON and
+/// break the byte-identical guarantee — `exit0(git log -1 --format=%ai)`
+/// does exactly that. stdin is nulled for the mirror-image reason: an
+/// inherited stdin makes the guard a reader of the caller's input, so
+/// `exit0(read line)` blocks forever on an open pipe, and on a pipe that
+/// does carry data it consumes bytes meant for the parent and resolves
+/// from them — making the plan a function of whatever happened to be on
+/// `compile`'s stdin, which is not one of the inputs it promises to
+/// depend on. The contract of this leaf is the status, never the streams.
 fn probe_exit0(cmd: &str) -> bool {
     #[cfg(windows)]
     let status = std::process::Command::new("cmd")
         .arg("/C")
         .arg(cmd)
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status();
@@ -207,6 +214,7 @@ fn probe_exit0(cmd: &str) -> bool {
     let status = std::process::Command::new("sh")
         .arg("-c")
         .arg(cmd)
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status();

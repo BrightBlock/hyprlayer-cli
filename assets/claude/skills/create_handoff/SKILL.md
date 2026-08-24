@@ -58,7 +58,7 @@ orchestration:
         - { value: time-24h,   src: "date +%H-%M-%S" }
         - { value: git-commit, src: "git rev-parse HEAD" }
         - { value: branch,     src: "git branch --show-current" }
-        - { value: repository, src: "basename of git rev-parse --show-toplevel" }
+        - { value: repository, src: 'mappedName from hyprlayer storage info --json (already fetched below for backend); if null, d=$(git rev-parse --path-format=absolute --git-common-dir) || exit 1; d=${d%/.git}; basename "${d%.git}" — the SOURCE repo; --show-toplevel returns the worktree' }
         - { value: researcher, src: "hyprlayer thoughts config --json (user field) or git config user.name" }
         - { value: backend,    src: "hyprlayer storage info --json" }
       produces: destination

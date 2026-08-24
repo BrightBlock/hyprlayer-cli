@@ -163,7 +163,7 @@ orchestration:
         - { value: date-iso,   src: "date -Iseconds" }
         - { value: git-commit, src: "git rev-parse HEAD" }
         - { value: branch,     src: "git branch --show-current" }
-        - { value: repo-name,  src: "basename of git rev-parse --show-toplevel" }
+        - { value: repo-name,  src: 'mappedName from hyprlayer storage info --json (already fetched below for backend); if null, d=$(git rev-parse --path-format=absolute --git-common-dir) || exit 1; d=${d%/.git}; basename "${d%.git}" — the SOURCE repo; --show-toplevel returns the worktree' }
         - { value: researcher, src: "hyprlayer thoughts config --json, else git config user.name" }
         - { value: backend,    src: "hyprlayer storage info --json" }
       reject: exists(unresolved-placeholder)

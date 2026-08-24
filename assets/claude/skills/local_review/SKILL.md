@@ -8,7 +8,7 @@ disable-model-invocation: true
 # Local Review
 
 Set up a throwaway git worktree for reviewing someone else's branch: resolve the
-branch, cut the worktree under `~/wt/<repo>/<short-name>`, install whatever this
+branch, cut the worktree under `~/hyprlayer/worktrees/<repo>/<short-name>`, install whatever this
 repo needs, initialize thoughts inside it, and hand back the path so a new
 Claude Code session can be started there.
 
@@ -44,7 +44,8 @@ orchestration:
         - { value: branch, src: "gh pr view -q .headRefName, or the argument verbatim when it was not a PR number" }
       produces: short-name
       judgment: >
-        Is the derived name unique under `~/wt/<repo-name>/`, and will it still
+        Is the derived name unique under `~/hyprlayer/worktrees/<repo-name>/`, and
+        will it still
         be legible in a week? See "The short worktree name" below.
 
     - id: fetch
@@ -60,10 +61,10 @@ orchestration:
       requires: [fetch, short-name]
       inline: true
       given:
-        - { value: repo-name,  src: 'basename "$PWD"' }
+        - { value: repo-name,  src: 'mappedName from hyprlayer storage info --json; if null, d=$(git rev-parse --path-format=absolute --git-common-dir) || exit 1; d=${d%/.git}; basename "${d%.git}" — the SOURCE repo, never basename "$PWD"' }
         - { value: short-name, src: "the short-name step" }
-      run: git worktree add -b review/<branch> ~/wt/<repo-name>/<short-name> origin/<branch>
-      reject: exit0(test -e ~/wt/<repo-name>/<short-name>) or not exit0(git rev-parse --verify origin/<branch>)
+      run: git worktree add -b review/<branch> ~/hyprlayer/worktrees/<repo-name>/<short-name> origin/<branch>
+      reject: exit0(test -e ~/hyprlayer/worktrees/<repo-name>/<short-name>) or not exit0(git rev-parse --verify origin/<branch>)
       because: >
         Two preconditions with two different remedies, which is why they are
         checked before the command rather than read out of its exit code. A path
@@ -107,8 +108,8 @@ orchestration:
       requires: [worktree, deps]
       inline: true
       given:
-        - { value: repo-name, src: 'basename "$PWD" — the source repo, read before any cd' }
-        - { value: worktree,  src: "the worktree step: ~/wt/<repo-name>/<short-name>" }
+        - { value: repo-name, src: 'mappedName from hyprlayer storage info --json; if null, d=$(git rev-parse --path-format=absolute --git-common-dir) || exit 1; d=${d%/.git}; basename "${d%.git}" — the SOURCE repo, read before any cd' }
+        - { value: worktree,  src: "the worktree step: ~/hyprlayer/worktrees/<repo-name>/<short-name>" }
       run: cd <worktree> && hyprlayer thoughts init --directory <repo-name> --yes
       because: >
         The `cd` is load-bearing, not decoration: this initializes thoughts in
@@ -119,7 +120,28 @@ orchestration:
         name. Thoughts are keyed to the repo, so a worktree that registers
         itself as `eng-1696` gets its own empty thoughts tree instead of the
         repo's history — which looks like a working setup right up until you
-        search it. Ordered after `deps` because that is the order the setup
+        search it. That is why `repo-name` comes from `--git-common-dir` and
+        not from `basename "$PWD"`: this skill is normally invoked from
+        inside a worktree, where the cwd's basename IS the worktree's short
+        name, so the obvious spelling produces exactly the failure this
+        paragraph warns about. It cannot be left to the CLI's own default
+        either — `get_current_repo_path()` is `current_dir()` and
+        `get_repo_name_from_path()` is `file_name()`, so omitting
+        `--directory` under `--yes` picks the same wrong name silently.
+        `mappedName` is preferred over any path arithmetic because it is the
+        thoughts directory the source repo actually joined, and the two
+        diverge in practice: `sanitize_directory_name` turns `brightblock.ai`
+        into `brightblock_ai`, so a basename would name a directory that does
+        not exist. The git expression is the fallback for a source repo not
+        yet initialized. In it, `--path-format=absolute` is required and must
+        precede `--git-common-dir`, since the flag only affects options after
+        it: bare, it returns a relative `.git` in a non-worktree checkout. The
+        `|| exit 1` is equally load-bearing — `basename` swallows git's
+        non-zero exit, so outside a repo the older spelling returned the
+        string `.` with status 0, and `.` flows straight into
+        `--directory .`. Stripping the suffix rather than taking `dirname`
+        keeps bare repos and submodules right, where the common dir IS the
+        repo and `dirname` climbs one level too far. Ordered after `deps` because that is the order the setup
         runs in, and it runs even when `deps` failed.
 
     - id: report
@@ -153,7 +175,7 @@ conventions:
     - { if: "a *.sln or *.csproj file", run: dotnet restore }
     - { if: none of the above,   run: skip dependency setup }
 
-  worktree-path:   ~/wt/<repo-name>/<short-name>
+  worktree-path:   ~/hyprlayer/worktrees/<repo-name>/<short-name>
   worktree-branch: review/<branch>
 
 usage:
@@ -169,7 +191,8 @@ in another shape (`1696-add-feature`, `fix/ENG_1696`) or a second branch for a
 ticket that already has a worktree. Both are yours to notice. A collision does
 not surface until `git worktree add` fails, after the fetch and after you have
 told the user what you are about to do; a name with no ticket in it makes
-`~/wt/<repo>/` unreadable within a week, which is exactly when a reviewer needs
+`~/hyprlayer/worktrees/<repo>/` unreadable within a week, which is exactly
+when a reviewer needs
 to find the tree again.
 
 **Which setup command the repo wants.** The ordered list is a heuristic about

@@ -22,11 +22,17 @@ When invoked with a branch name or PR number:
    - If no ticket found, use a sanitized version of the branch name
 
 3. **Determine repo info**:
-   - `$REPO_NAME` = basename of current directory (e.g., `hyprlayer`, `my-sample-project`)
+   - `$REPO_NAME` = the SOURCE repo's thoughts identity, which is NOT the current
+     directory when you are inside a git worktree. Prefer the registered name:
+     `REPO_NAME=$(hyprlayer storage info --json | jq -r '.mappedName // empty')`
+     and if that is empty, fall back to the source repo's own basename:
+     `d=$(git rev-parse --path-format=absolute --git-common-dir) || exit 1; d=${d%/.git}; REPO_NAME=$(basename "${d%.git}")`
+     (in a worktree `basename $PWD` is the worktree's short name, and a plain
+     basename misses sanitized names like `brightblock.ai` -> `brightblock_ai`)
 
 4. **Set up the worktree**:
    - Fetch latest from origin: `git fetch origin`
-   - Create worktree: `git worktree add -b review/BRANCHNAME ~/wt/$REPO_NAME/SHORT_NAME origin/BRANCHNAME`
+   - Create worktree: `git worktree add -b review/BRANCHNAME ~/hyprlayer/worktrees/$REPO_NAME/SHORT_NAME origin/BRANCHNAME`
 
 5. **Configure the worktree**:
     - Detect and run the appropriate setup command:
@@ -54,5 +60,5 @@ When invoked with a branch name or PR number:
 ```
 
 This will:
-- Fetch from origin and create worktree at `~/wt/$REPO_NAME/eng-1696`
+- Fetch from origin and create worktree at `~/hyprlayer/worktrees/$REPO_NAME/eng-1696`
 - Set up the environment

@@ -31,6 +31,16 @@ pub enum SpawnMode {
         over: String,
         n: usize,
     },
+    /// `fanout: one-of [...]` — the same undecidable call as
+    /// `AgentChoice`, over a list. Joining the candidates into one string
+    /// would put an agent name in the plan that does not exist in any
+    /// registry, so the choice is carried through and recorded as
+    /// unresolved instead.
+    FanoutChoice {
+        candidates: Vec<String>,
+        over: String,
+        n: usize,
+    },
 }
 
 impl SpawnMode {
@@ -38,7 +48,7 @@ impl SpawnMode {
         match self {
             SpawnMode::Inline => 0,
             SpawnMode::Agent { .. } | SpawnMode::AgentChoice { .. } => 1,
-            SpawnMode::Fanout { n, .. } => *n,
+            SpawnMode::Fanout { n, .. } | SpawnMode::FanoutChoice { n, .. } => *n,
         }
     }
 }
@@ -83,6 +93,23 @@ pub enum ScheduleError {
         step: String,
         over: String,
     },
+    /// A delegation that names no agent — `check`'s check 6 reports the
+    /// same defect, but `compile` does not run `check`, so scheduling has
+    /// to stop on its own rather than emit a plan carrying a counted
+    /// spawn with nothing to spawn.
+    NamesNoAgent {
+        step: String,
+        kind: &'static str,
+        one_of: bool,
+    },
+    /// More than one of `inline:` / `agent:` / `fanout:` on one step.
+    /// `check` reports the same defect; scheduling stops on it too rather
+    /// than applying a precedence rule that drops a declared delegation
+    /// out of the plan without a word.
+    ManySpawnModes {
+        step: String,
+        declared: String,
+    },
 }
 
 impl std::fmt::Display for ScheduleError {
@@ -97,6 +124,16 @@ impl std::fmt::Display for ScheduleError {
                     "cannot schedule step(s) {} — unresolved `requires` or a cycle",
                     steps.join(", ")
                 )
+            }
+            ScheduleError::ManySpawnModes { step, declared } => {
+                write!(f, "step `{step}`: declares {declared}")
+            }
+            ScheduleError::NamesNoAgent { step, kind, one_of } => {
+                if *one_of {
+                    write!(f, "step `{step}`: `{kind}: one-of` lists no agents")
+                } else {
+                    write!(f, "step `{step}`: `{kind}:` names no agent")
+                }
             }
             ScheduleError::MissingFanoutSize { step, over } => {
                 write!(
@@ -195,36 +232,78 @@ pub fn schedule<'a>(
     })
 }
 
+/// `check` catches this structurally (check 6), but `compile` never runs
+/// `check` — so the same defect has to stop the scheduler too, or a direct
+/// `compile` emits a plan whose `agentCandidates` is `[]` and whose
+/// `spawns` is 1.
+fn names_no_agent(step: &Step, kind: &'static str, r: &AgentRef) -> Option<ScheduleError> {
+    let one_of = match r {
+        AgentRef::One(n) if n.trim().is_empty() => false,
+        AgentRef::OneOf(ns) if ns.is_empty() => true,
+        _ => return None,
+    };
+    Some(ScheduleError::NamesNoAgent {
+        step: step.id.clone().unwrap_or_default(),
+        kind,
+        one_of,
+    })
+}
+
 fn spawn_mode(
     step: &Step,
     fanout_sizes: &BTreeMap<String, usize>,
 ) -> Result<SpawnMode, ScheduleError> {
+    let mut declared: Vec<&str> = Vec::new();
+    if step.inline {
+        declared.push("inline: true");
+    }
+    if step.agent.is_some() {
+        declared.push("agent:");
+    }
+    if step.fanout.is_some() {
+        declared.push("fanout:");
+    }
+    if declared.len() > 1 {
+        return Err(ScheduleError::ManySpawnModes {
+            step: step.id.clone().unwrap_or_default(),
+            declared: declared.join(" and "),
+        });
+    }
     if step.inline {
         return Ok(SpawnMode::Inline);
     }
     if let Some(fanout) = &step.fanout {
+        if let Some(e) = names_no_agent(step, "fanout", &fanout.value) {
+            return Err(e);
+        }
         let over_name = step
             .over
             .as_ref()
             .map(|o| o.value.clone())
             .unwrap_or_default();
-        let agent_name = match &fanout.value {
-            AgentRef::One(n) => n.clone(),
-            AgentRef::OneOf(ns) => ns.join(","),
-        };
         let n = fanout_sizes.get(&over_name).copied().ok_or_else(|| {
             ScheduleError::MissingFanoutSize {
                 step: step.id.clone().unwrap_or_default(),
                 over: over_name.clone(),
             }
         })?;
-        return Ok(SpawnMode::Fanout {
-            agent: agent_name,
-            over: over_name,
-            n,
+        return Ok(match &fanout.value {
+            AgentRef::One(name) => SpawnMode::Fanout {
+                agent: name.clone(),
+                over: over_name,
+                n,
+            },
+            AgentRef::OneOf(candidates) => SpawnMode::FanoutChoice {
+                candidates: candidates.clone(),
+                over: over_name,
+                n,
+            },
         });
     }
     if let Some(agent) = &step.agent {
+        if let Some(e) = names_no_agent(step, "agent", &agent.value) {
+            return Err(e);
+        }
         return Ok(match &agent.value {
             AgentRef::One(n) => SpawnMode::Agent { name: n.clone() },
             AgentRef::OneOf(ns) => SpawnMode::AgentChoice {

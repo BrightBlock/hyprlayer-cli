@@ -11,7 +11,9 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use crate::orchestrate::agent_names::{self, AgentSource};
-use crate::orchestrate::block::{self, AgentRef, Block, BlockError, GivenEntry, Pos, Spanned};
+use crate::orchestrate::block::{
+    self, AgentRef, Block, BlockError, GivenEntry, Pos, Spanned, Step,
+};
 use crate::orchestrate::eval::{self, FactEnv, FactValue, Tri};
 use crate::orchestrate::expr::{self, Expr, Leaf};
 use crate::orchestrate::target::Target;
@@ -307,7 +309,7 @@ fn check_retry(block: &Block, findings: &mut Vec<Finding>) {
             ));
         }
 
-        if !retry.max_is_integer {
+        if retry.max.is_none() {
             findings.push(error(
                 3,
                 Some(sid),
@@ -509,7 +511,9 @@ fn check_given(block: &Block, findings: &mut Vec<Finding>) {
 /// that target's agent source is absent. `fanout:` without `over:` is
 /// folded in here too, as the wiring check the prototype leaves dangling
 /// outside the six — but checked once, target-agnostically, since a
-/// missing `over:` isn't specific to any one harness.
+/// missing `over:` isn't specific to any one harness. A delegation that
+/// names no agent at all is folded in on the same footing, for the same
+/// reason (`check_names_an_agent`).
 fn check_agents(block: &Block, opts: &CheckOptions, findings: &mut Vec<Finding>) {
     for step in &block.steps {
         let sid = step.id.as_deref().unwrap_or("?");
@@ -526,6 +530,9 @@ fn check_agents(block: &Block, opts: &CheckOptions, findings: &mut Vec<Finding>)
                 "add `over: <list-name>`",
             ));
         }
+        check_names_an_agent(sid, "agent", step.agent.as_ref(), findings);
+        check_names_an_agent(sid, "fanout", step.fanout.as_ref(), findings);
+        check_one_spawn_mode(sid, step, findings);
     }
 
     if opts.targets.is_empty() {
@@ -552,6 +559,69 @@ fn check_agents(block: &Block, opts: &CheckOptions, findings: &mut Vec<Finding>)
     for &target in &opts.targets {
         check_agents_for_target(block, target, &opts.agents_dir, findings);
     }
+}
+
+/// `inline:`, `agent:` and `fanout:` are alternatives, not a precedence
+/// list — `orchestration-runtime.md` states each as the whole of what a
+/// step does, and "`inline: true` you do yourself, never delegated" is
+/// the direct contradiction of carrying an `agent:` too. Nothing enforced
+/// that, and `spawn_mode` resolves the ambiguity by silently dropping the
+/// loser: `inline:` wins over both, `fanout:` wins over `agent:`. The
+/// declared delegation then vanishes from the plan with nothing said.
+fn check_one_spawn_mode(sid: &str, step: &Step, findings: &mut Vec<Finding>) {
+    let mut declared: Vec<&str> = Vec::new();
+    if step.inline {
+        declared.push("inline: true");
+    }
+    if step.agent.is_some() {
+        declared.push("agent:");
+    }
+    if step.fanout.is_some() {
+        declared.push("fanout:");
+    }
+    if declared.len() < 2 {
+        return;
+    }
+    findings.push(with_hint(
+        error(
+            6,
+            Some(sid),
+            Some(step.pos),
+            format!("step `{sid}`: declares {}", declared.join(" and ")),
+        ),
+        "a step has exactly one spawn mode; remove the one that does not apply",
+    ));
+}
+
+/// The structural half of check 6, run before any registry is consulted:
+/// a delegation must name an agent. `parse_agent_ref` yields an empty
+/// `OneOf` for both `agent: one-of` and `agent: one-of []` — its
+/// `[\w\-]+` scan finds no names — which schedules an `AgentChoice`
+/// carrying one spawn and nothing to spawn. `One("")` is the same defect
+/// spelled differently. Reported once, target-agnostically, so it still
+/// fires where name resolution is skipped for want of an agent source.
+fn check_names_an_agent(
+    sid: &str,
+    kind: &str,
+    field: Option<&Spanned<AgentRef>>,
+    findings: &mut Vec<Finding>,
+) {
+    let Some(field) = field else { return };
+    // `parse_agent_ref` trims, so an empty `One` is the whole of
+    // `agent: ""` and `agent: "   "`.
+    let message = match &field.value {
+        AgentRef::One(name) if name.is_empty() => {
+            format!("step `{sid}`: `{kind}:` names no agent")
+        }
+        AgentRef::OneOf(names) if names.is_empty() => {
+            format!("step `{sid}`: `{kind}: one-of` lists no agents")
+        }
+        _ => return,
+    };
+    findings.push(with_hint(
+        error(6, Some(sid), Some(field.pos), message),
+        "name one agent, or list candidates as `one-of [first, second]`",
+    ));
 }
 
 fn check_agents_for_target(
@@ -612,6 +682,12 @@ fn check_agent_ref(
         AgentRef::OneOf(ns) => ns.iter().map(String::as_str).collect(),
     };
     for name in candidates {
+        // An empty name is reported once, structurally, by
+        // `check_names_an_agent` — not once per target as the
+        // uninformative "unknown agent ``".
+        if name.is_empty() {
+            continue;
+        }
         if !names.contains(name) && !builtins.contains(name) {
             let finding = with_target(
                 error(
@@ -826,6 +902,61 @@ mod tests {
         assert!(report.findings.iter().any(
             |f| f.severity == Severity::Warning && f.message.contains("no agent source found")
         ));
+    }
+
+    #[test]
+    fn a_delegation_that_names_no_agent_is_an_error_without_a_registry() {
+        // Both fields, and no agent source: the defect is structural, so
+        // it must not depend on a registry being present to resolve
+        // names against.
+        let dir = tempfile::tempdir().unwrap();
+        let empty_agents = tempfile::tempdir().unwrap();
+        let path = write_fixture(
+            dir.path(),
+            "x.md",
+            "orchestration:\n  steps:\n    - id: a\n      agent: one-of []\n    - id: b\n      fanout: one-of\n      over: areas\n",
+        );
+        let opts = CheckOptions {
+            agents_dir: vec![empty_agents.path().to_path_buf()],
+            targets: vec![Target::Claude],
+        };
+        let report = check_file(&path, &opts);
+        assert!(report.has_errors());
+        let empty: Vec<&Finding> = report
+            .findings
+            .iter()
+            .filter(|f| f.check == 6 && f.target.is_none() && f.message.contains("lists no agents"))
+            .collect();
+        assert_eq!(empty.len(), 2, "findings: {:?}", report.findings);
+    }
+
+    #[test]
+    fn an_empty_agent_name_is_reported_once_not_as_an_unknown_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_fixture(
+            dir.path(),
+            "x.md",
+            "orchestration:\n  steps:\n    - id: a\n      agent: \"\"\n",
+        );
+        let opts = CheckOptions {
+            agents_dir: vec![repo_agents_dir()],
+            targets: vec![Target::Claude],
+        };
+        let report = check_file(&path, &opts);
+        let named: Vec<&Finding> = report
+            .findings
+            .iter()
+            .filter(|f| f.message.contains("names no agent"))
+            .collect();
+        assert_eq!(named.len(), 1, "findings: {:?}", report.findings);
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|f| f.message.contains("unknown agent")),
+            "an empty name must not also be reported per target: {:?}",
+            report.findings
+        );
     }
 
     #[test]
