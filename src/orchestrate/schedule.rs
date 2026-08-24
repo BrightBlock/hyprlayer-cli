@@ -31,6 +31,16 @@ pub enum SpawnMode {
         over: String,
         n: usize,
     },
+    /// `fanout: one-of [...]` — the same undecidable call as
+    /// `AgentChoice`, over a list. Joining the candidates into one string
+    /// would put an agent name in the plan that does not exist in any
+    /// registry, so the choice is carried through and recorded as
+    /// unresolved instead.
+    FanoutChoice {
+        candidates: Vec<String>,
+        over: String,
+        n: usize,
+    },
 }
 
 impl SpawnMode {
@@ -38,7 +48,7 @@ impl SpawnMode {
         match self {
             SpawnMode::Inline => 0,
             SpawnMode::Agent { .. } | SpawnMode::AgentChoice { .. } => 1,
-            SpawnMode::Fanout { n, .. } => *n,
+            SpawnMode::Fanout { n, .. } | SpawnMode::FanoutChoice { n, .. } => *n,
         }
     }
 }
@@ -92,6 +102,14 @@ pub enum ScheduleError {
         kind: &'static str,
         one_of: bool,
     },
+    /// More than one of `inline:` / `agent:` / `fanout:` on one step.
+    /// `check` reports the same defect; scheduling stops on it too rather
+    /// than applying a precedence rule that drops a declared delegation
+    /// out of the plan without a word.
+    ManySpawnModes {
+        step: String,
+        declared: String,
+    },
 }
 
 impl std::fmt::Display for ScheduleError {
@@ -106,6 +124,9 @@ impl std::fmt::Display for ScheduleError {
                     "cannot schedule step(s) {} — unresolved `requires` or a cycle",
                     steps.join(", ")
                 )
+            }
+            ScheduleError::ManySpawnModes { step, declared } => {
+                write!(f, "step `{step}`: declares {declared}")
             }
             ScheduleError::NamesNoAgent { step, kind, one_of } => {
                 if *one_of {
@@ -232,6 +253,22 @@ fn spawn_mode(
     step: &Step,
     fanout_sizes: &BTreeMap<String, usize>,
 ) -> Result<SpawnMode, ScheduleError> {
+    let mut declared: Vec<&str> = Vec::new();
+    if step.inline {
+        declared.push("inline: true");
+    }
+    if step.agent.is_some() {
+        declared.push("agent:");
+    }
+    if step.fanout.is_some() {
+        declared.push("fanout:");
+    }
+    if declared.len() > 1 {
+        return Err(ScheduleError::ManySpawnModes {
+            step: step.id.clone().unwrap_or_default(),
+            declared: declared.join(" and "),
+        });
+    }
     if step.inline {
         return Ok(SpawnMode::Inline);
     }
@@ -244,20 +281,23 @@ fn spawn_mode(
             .as_ref()
             .map(|o| o.value.clone())
             .unwrap_or_default();
-        let agent_name = match &fanout.value {
-            AgentRef::One(n) => n.clone(),
-            AgentRef::OneOf(ns) => ns.join(","),
-        };
         let n = fanout_sizes.get(&over_name).copied().ok_or_else(|| {
             ScheduleError::MissingFanoutSize {
                 step: step.id.clone().unwrap_or_default(),
                 over: over_name.clone(),
             }
         })?;
-        return Ok(SpawnMode::Fanout {
-            agent: agent_name,
-            over: over_name,
-            n,
+        return Ok(match &fanout.value {
+            AgentRef::One(name) => SpawnMode::Fanout {
+                agent: name.clone(),
+                over: over_name,
+                n,
+            },
+            AgentRef::OneOf(candidates) => SpawnMode::FanoutChoice {
+                candidates: candidates.clone(),
+                over: over_name,
+                n,
+            },
         });
     }
     if let Some(agent) = &step.agent {

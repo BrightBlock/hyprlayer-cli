@@ -599,3 +599,117 @@ fn compile_rejects_a_delegation_that_names_no_agent() {
         );
     }
 }
+
+/// `fanout: one-of [a, b]` is the same undecidable call as `agent: one-of`,
+/// over a list. It used to be flattened with `ns.join(",")`, which put
+/// `"cartographer,archivist"` in the plan's `agent` field — a name that
+/// resolves in no registry — and recorded no unresolved decision at all,
+/// so the plan read as though the choice had been made. The candidates are
+/// carried through instead, and the choice is recorded like any other.
+#[test]
+fn a_fanout_one_of_defers_the_choice_instead_of_joining_the_names() {
+    let (_guard, xdg) = isolated_dirs();
+    let claude_agents = repo_root().join("claude/agents");
+    let path = xdg.join("fanout-one-of.md");
+    std::fs::write(
+        &path,
+        "---\nname: x\n---\n\n```yaml\norchestration:\n  steps:\n    - id: a\n      fanout: one-of [cartographer, archivist]\n      over: areas\n```\n",
+    )
+    .unwrap();
+    let out = run(
+        &xdg,
+        &[
+            "orchestrate",
+            "compile",
+            path.to_str().unwrap(),
+            "--target",
+            "claude",
+            "--agents-dir",
+            claude_agents.to_str().unwrap(),
+            "--fanout",
+            "areas=2",
+            "--no-probe",
+        ],
+    );
+    assert!(out.status.success(), "out: {out:?}");
+    let d: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let s = &d["waves"][0]["steps"][0];
+
+    assert_eq!(s["mode"], "fanout", "payload: {d}");
+    assert!(
+        s["agent"].is_null(),
+        "a deferred choice must not name an agent: {d}"
+    );
+    assert_eq!(
+        s["agentCandidates"],
+        serde_json::json!(["cartographer", "archivist"]),
+        "payload: {d}"
+    );
+    assert_eq!(s["over"], "areas", "payload: {d}");
+    assert_eq!(s["spawns"], 2, "payload: {d}");
+    assert_eq!(d["totalSpawns"], 2, "payload: {d}");
+
+    let unresolved = d["unresolved"].as_array().unwrap();
+    assert_eq!(unresolved.len(), 1, "payload: {d}");
+    assert_eq!(unresolved[0]["kind"], "agent-choice", "payload: {d}");
+    assert_eq!(unresolved[0]["step"], "a", "payload: {d}");
+    assert_eq!(
+        unresolved[0]["candidates"],
+        serde_json::json!(["cartographer", "archivist"]),
+        "payload: {d}"
+    );
+}
+
+/// `inline:`, `agent:` and `fanout:` are alternatives. `spawn_mode` used to
+/// apply a silent precedence — `inline:` over both, `fanout:` over `agent:`
+/// — so a step declaring two lost one with nothing said in either surface.
+/// Both now stop, with the same message.
+#[test]
+fn a_step_declaring_two_spawn_modes_is_rejected_by_compile() {
+    let (_guard, xdg) = isolated_dirs();
+    let claude_agents = repo_root().join("claude/agents");
+    let cases = [
+        (
+            "inline-and-agent.md",
+            "    - id: a\n      inline: true\n      agent: cartographer\n",
+            "declares inline: true and agent:",
+        ),
+        (
+            "agent-and-fanout.md",
+            "    - id: a\n      agent: archivist\n      fanout: cartographer\n      over: areas\n",
+            "declares agent: and fanout:",
+        ),
+        (
+            "inline-and-fanout.md",
+            "    - id: a\n      inline: true\n      fanout: cartographer\n      over: areas\n",
+            "declares inline: true and fanout:",
+        ),
+    ];
+    for (name, step, expected) in cases {
+        let path = xdg.join(name);
+        std::fs::write(
+            &path,
+            format!("---\nname: x\n---\n\n```yaml\norchestration:\n  steps:\n{step}```\n"),
+        )
+        .unwrap();
+        let out = run(
+            &xdg,
+            &[
+                "orchestrate",
+                "compile",
+                path.to_str().unwrap(),
+                "--target",
+                "claude",
+                "--agents-dir",
+                claude_agents.to_str().unwrap(),
+                "--fanout",
+                "areas=2",
+                "--no-probe",
+            ],
+        );
+        assert!(!out.status.success(), "{name} compiled: {out:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains(expected), "{name} stderr: {stderr}");
+        assert!(out.stdout.is_empty(), "{name} emitted a plan anyway");
+    }
+}

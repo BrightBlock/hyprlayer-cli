@@ -51,7 +51,9 @@ pub fn build(
         .flatten()
         .flat_map(|s| {
             let mut entries = Vec::new();
-            if let SpawnMode::AgentChoice { candidates } = &s.spawns {
+            if let SpawnMode::AgentChoice { candidates }
+            | SpawnMode::FanoutChoice { candidates, .. } = &s.spawns
+            {
                 entries.push(json!({
                     "step": s.step.id,
                     "kind": "agent-choice",
@@ -110,7 +112,7 @@ fn spawn_mode_str(spawns: &SpawnMode) -> &'static str {
     match spawns {
         SpawnMode::Inline => "inline",
         SpawnMode::Agent { .. } | SpawnMode::AgentChoice { .. } => "agent",
-        SpawnMode::Fanout { .. } => "fanout",
+        SpawnMode::Fanout { .. } | SpawnMode::FanoutChoice { .. } => "fanout",
     }
 }
 
@@ -118,20 +120,24 @@ fn spawn_agent(spawns: &SpawnMode) -> Value {
     match spawns {
         SpawnMode::Agent { name } => json!(name),
         SpawnMode::Fanout { agent, .. } => json!(agent),
-        SpawnMode::Inline | SpawnMode::AgentChoice { .. } => Value::Null,
+        SpawnMode::Inline | SpawnMode::AgentChoice { .. } | SpawnMode::FanoutChoice { .. } => {
+            Value::Null
+        }
     }
 }
 
 fn spawn_candidates(spawns: &SpawnMode) -> Value {
     match spawns {
-        SpawnMode::AgentChoice { candidates } => json!(candidates),
+        SpawnMode::AgentChoice { candidates } | SpawnMode::FanoutChoice { candidates, .. } => {
+            json!(candidates)
+        }
         _ => Value::Null,
     }
 }
 
 fn spawn_over(spawns: &SpawnMode) -> Value {
     match spawns {
-        SpawnMode::Fanout { over, .. } => json!(over),
+        SpawnMode::Fanout { over, .. } | SpawnMode::FanoutChoice { over, .. } => json!(over),
         _ => Value::Null,
     }
 }
