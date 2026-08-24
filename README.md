@@ -131,8 +131,8 @@ Both leaves validate against a **target harness's agent namespace** — `claude`
 Worked example, from a checkout of this repo, against a real shipped skill's block:
 
 ```bash
-hyprlayer orchestrate check claude/skills/research_codebase/SKILL.md --target claude --agents-dir claude/agents
-hyprlayer orchestrate compile claude/skills/research_codebase/SKILL.md --target claude --agents-dir claude/agents \
+hyprlayer orchestrate check assets/claude/skills/research_codebase/SKILL.md --target claude --agents-dir assets/claude/agents
+hyprlayer orchestrate compile assets/claude/skills/research_codebase/SKILL.md --target claude --agents-dir assets/claude/agents \
   --areas 4 --request "map the PTY stack" > plan.json
 ```
 
@@ -147,7 +147,7 @@ with unpushed commits, `permalinks` (`exit0(git merge-base --is-ancestor HEAD
 across different repo states:
 
 ```bash
-hyprlayer orchestrate compile claude/skills/research_codebase/SKILL.md --target claude --agents-dir claude/agents \
+hyprlayer orchestrate compile assets/claude/skills/research_codebase/SKILL.md --target claude --agents-dir assets/claude/agents \
   --areas 4 --request "map the PTY stack" \
   --fact 'backend=git' --fact 'exit0(git merge-base --is-ancestor HEAD @{u})=true' --fact 'exit0(test -d thoughts)=true'
 ```
