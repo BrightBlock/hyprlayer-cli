@@ -9,7 +9,7 @@ use std::io::Write;
 use std::path::{MAIN_SEPARATOR_STR as SEP, Path, PathBuf};
 use std::time::Duration;
 
-use self::manifest::{BundleManifest, MANIFEST_FILE_NAME};
+use self::manifest::{BundleManifest, MANIFEST_FILE_NAME, ManifestEntry};
 use crate::http;
 use crate::integrity;
 
@@ -153,6 +153,44 @@ impl AgentTool {
             Self::Copilot => "copilot",
             Self::OpenCode => "opencode",
         }
+    }
+
+    /// The frozen legacy tree as a file list, standing in for the record a
+    /// pre-1.6.0 install never wrote.
+    ///
+    /// Those clients download `claude/`, `copilot/`, `opencode/` from the
+    /// repo root, and those trees have been frozen since 1.6.0 (see
+    /// `assets/FROZEN.md`), so what they put in `dest` is known exactly.
+    /// `scripts/build-frozen-manifests.sh` generates the lists embedded
+    /// here, and `frozen_manifests_match_the_frozen_trees` holds them to
+    /// the trees.
+    ///
+    /// This is used for one thing: deciding what a migration install may
+    /// delete. Ownership by digest is what makes deleting a retired
+    /// workflow safe — a file that no longer hashes to what the frozen tree
+    /// shipped has been edited since, so it is the user's and stays. It is
+    /// deliberately not consulted for the overwrite decision: a machine
+    /// that last refreshed before the freeze holds older bytes for files we
+    /// still ship, and treating those as "not ours" would freeze it on them
+    /// forever.
+    ///
+    /// Embedded JSON that fails to parse would be a bug the unit tests
+    /// catch, so a failure here degrades to "nothing is known to be ours" —
+    /// an install that cleans nothing up — rather than aborting an
+    /// otherwise-good install.
+    fn frozen_manifest(&self) -> Vec<ManifestEntry> {
+        let json = match self {
+            Self::Claude => include_str!("agents/frozen/claude.json"),
+            Self::Copilot => include_str!("agents/frozen/copilot.json"),
+            Self::OpenCode => include_str!("agents/frozen/opencode.json"),
+        };
+        serde_json::from_str(json).unwrap_or_else(|e| {
+            eprintln!(
+                "warning: the built-in {self} file list did not parse ({e}); \
+                       skipping cleanup of files retired before 1.6.0"
+            );
+            Vec::new()
+        })
     }
 
     pub(crate) fn dest_dir(&self) -> Result<PathBuf> {
@@ -434,6 +472,12 @@ impl AgentTool {
     /// overwrite, and which of the previous bundle's files are now orphans.
     /// The legacy `master`-tree fallback has no manifest, so it keeps the
     /// hardcoded sentinel gate and the historical additive-only sync.
+    ///
+    /// Orphan removal reads one more record: the frozen tree
+    /// (`frozen_manifest`), which is what pre-1.6.0 installs wrote and no
+    /// manifest describes. Either way the install finishes by clearing the
+    /// `.hyprlayer-backup` copies 1.6.0 left in the content directories
+    /// (`clean_backups`).
     fn install_staged(
         &self,
         staged: &Path,
@@ -472,12 +516,37 @@ impl AgentTool {
         fs::create_dir_all(dest)?;
         let mut report = sync_tree(staged, dest, previous.as_ref())?;
 
+        let frozen = self.frozen_manifest();
+
         if let Some(manifest) = &bundle {
-            if let Some(previous) = &previous {
-                report.removed = remove_orphans(dest, previous, manifest);
-            }
+            let mut removed = match &previous {
+                Some(previous) => remove_orphans(dest, &previous.files, manifest),
+                None => Vec::new(),
+            };
+            // The workflows retired before 1.6.0 appear in no recorded
+            // manifest — the installs that wrote them never wrote one — so
+            // the frozen tree is the only thing that can prove they are
+            // ours. Consulted on every install rather than only the
+            // migration one: the machines that already took 1.6.0 have a
+            // record now, and `ci_commit` and friends are still sitting in
+            // their skills directory next to the skills that replaced them.
+            removed.extend(remove_orphans(dest, &frozen, manifest));
+            report.removed = removed;
             write_installed_manifest(dest, manifest)?;
         }
+
+        // Every list of files we have ever owned here, because a backup
+        // could have been written beside any of them: what the last install
+        // recorded, what a pre-1.6.0 one left, and what this bundle ships.
+        // A path in more than one list is swept once — the second look
+        // finds no file.
+        report.cleaned_backups = clean_backups(dest, &frozen)
+            + previous
+                .as_ref()
+                .map_or(0, |previous| clean_backups(dest, &previous.files))
+            + bundle
+                .as_ref()
+                .map_or(0, |manifest| clean_backups(dest, &manifest.files));
 
         Ok(report)
     }
@@ -670,17 +739,17 @@ struct SyncReport {
     /// Files deleted because the previous bundle owned them and this one
     /// dropped them. Always empty without a previous manifest.
     removed: Vec<String>,
-    /// Files copied aside before being overwritten, because there was no
-    /// previous manifest to prove they were ours. Only ever non-empty on
-    /// the first manifest install over an existing tree.
-    backed_up: Vec<String>,
+    /// Leftover `<name>.hyprlayer-backup` copies an earlier install wrote
+    /// into the content directories, cleared out by this one.
+    cleaned_backups: usize,
 }
 
 impl SyncReport {
     /// One line per file we deliberately did not overwrite and per orphan
     /// removed. Both are decisions the user should be able to see: an
     /// install that skipped their edited `settings.json`, or deleted a
-    /// skill they still had, must not do it silently.
+    /// skill they still had, must not do it silently. Leftover backups get
+    /// one summary line — the count is worth seeing, fifty paths are not.
     fn print(&self) {
         for path in &self.preserved {
             println!("  {:<60}", format!("Kept your modified {path}"));
@@ -691,18 +760,25 @@ impl SyncReport {
                 format!("Removed {path} (no longer in this bundle)")
             );
         }
-        for path in &self.backed_up {
+        if self.cleaned_backups > 0 {
+            let plural = if self.cleaned_backups == 1 { "" } else { "s" };
             println!(
                 "  {:<60}",
-                format!("Saved your {path} as {path}{BACKUP_SUFFIX}")
+                format!(
+                    "Cleared {} leftover {BACKUP_SUFFIX} file{plural} from an earlier install",
+                    self.cleaned_backups
+                )
             );
         }
     }
 }
 
-/// Suffix for the copy taken of a pre-existing file the first manifest
-/// install has to overwrite. Deliberately not a dotfile: the user is meant
-/// to notice it and either merge it back or delete it.
+/// Suffix 1.6.0's first-manifest install used for the copy it took of each
+/// file it overwrote. No install writes one any more: inside a skill
+/// directory a `SKILL.md.hyprlayer-backup` is a second file sitting exactly
+/// where the harness scans for skills, and an upgrade from a pre-1.6.0 tree
+/// produced one for nearly every skill we ship. The suffix survives only so
+/// `clean_backups` can clear what earlier installs already left on disk.
 const BACKUP_SUFFIX: &str = ".hyprlayer-backup";
 
 /// Append `suffix` to the whole file name, extension included, so
@@ -712,6 +788,18 @@ fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(suffix);
     path.with_file_name(name)
+}
+
+/// Is `relative` the harness's own config rather than hyprlayer content?
+///
+/// Every bundle keeps its content in subdirectories — `agents/`, `skills/`,
+/// `commands/`, `prompts/`, `plugins/` — so the only thing sitting at the
+/// harness root is its config file (`~/.claude/settings.json`). We ship one
+/// to give a fresh install something to start from, but an existing one
+/// holds the user's permissions, hooks and env, none of which a bundle can
+/// put back.
+fn is_harness_config(relative: &Path) -> bool {
+    relative.components().count() == 1
 }
 
 /// Copy every file from `src` into `dest`, creating parent directories as
@@ -730,16 +818,15 @@ fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
 ///
 /// With no `previous` — a legacy `master`-tree install, or the first
 /// manifest install on top of a pre-1.6.0 one — there is no way to tell our
-/// own files from the user's. Skipping every differing file would leave
-/// every pre-1.6.0 user frozen on the bundle they already have, so the
-/// overwrite proceeds, but a differing file is first copied aside to
-/// `<name>.hyprlayer-backup`. The user keeps their bytes either way, and
-/// the manifest that install writes is what lets the *next* one skip the
-/// overwrite outright.
-///
-/// An existing backup is not overwritten a second time: re-running an
-/// install must not bury the original copy under one taken from the bundle
-/// content we just wrote.
+/// own files from the user's, and skipping every differing file would leave
+/// every pre-1.6.0 user frozen on the bundle they already have. Content is
+/// therefore replaced outright, with nothing copied aside: the skills and
+/// agents we ship are ours to keep current, and anyone who wants an older
+/// one pins that bundle version (`ai reinstall --version`) rather than
+/// editing files in place. Harness config is the exception — a
+/// `settings.json` already on disk is the user's, so it is preserved and
+/// our starter copy dropped. The manifest that install writes is what lets
+/// every later install tell the two apart by digest instead.
 fn sync_tree(src: &Path, dest: &Path, previous: Option<&BundleManifest>) -> Result<SyncReport> {
     let owned = previous.map(|manifest| manifest.digests());
     let mut report = SyncReport::default();
@@ -758,35 +845,20 @@ fn sync_tree(src: &Path, dest: &Path, previous: Option<&BundleManifest>) -> Resu
                 continue;
             }
             let key = manifest::relative_key(relative);
-            match &owned {
-                Some(owned) => {
-                    let ours = key
-                        .as_deref()
-                        .and_then(|key| owned.get(key).copied())
-                        .is_some_and(|recorded| integrity::bytes_match_sha256(&existing, recorded));
-                    if !ours {
-                        report
-                            .preserved
-                            .push(key.unwrap_or_else(|| relative.display().to_string()));
-                        continue;
-                    }
-                }
-                // Nothing proves this file is ours, so keep a copy of the
-                // user's bytes before the overwrite goes through.
-                None => {
-                    let backup = append_suffix(&dest_path, BACKUP_SUFFIX);
-                    if !backup.exists() {
-                        match fs::write(&backup, &existing) {
-                            Ok(()) => report
-                                .backed_up
-                                .push(key.unwrap_or_else(|| relative.display().to_string())),
-                            Err(e) => eprintln!(
-                                "warning: could not back up {} before overwriting it: {e}",
-                                dest_path.display()
-                            ),
-                        }
-                    }
-                }
+            let ours = match &owned {
+                Some(owned) => key
+                    .as_deref()
+                    .and_then(|key| owned.get(key).copied())
+                    .is_some_and(|recorded| integrity::bytes_match_sha256(&existing, recorded)),
+                // Nothing proves the file either way, so fall back to what
+                // kind of file it is: content is ours, config is theirs.
+                None => !is_harness_config(relative),
+            };
+            if !ours {
+                report
+                    .preserved
+                    .push(key.unwrap_or_else(|| relative.display().to_string()));
+                continue;
             }
         }
 
@@ -802,12 +874,73 @@ fn sync_tree(src: &Path, dest: &Path, previous: Option<&BundleManifest>) -> Resu
     Ok(report)
 }
 
+/// Clear the `.hyprlayer-backup` copies 1.6.0's first-manifest install left
+/// behind.
+///
+/// That install wrote one beside every file it replaced, which on an upgrade
+/// from a pre-1.6.0 tree is most of the bundle: `~/.claude/skills/` came out
+/// of it with a `SKILL.md.hyprlayer-backup` inside nearly every skill
+/// directory, one directory-mate too many for something the harness parses
+/// by scanning. Nothing writes them any more, so an install clears the ones
+/// already on disk — including on the daily refresh, so an affected machine
+/// heals without anyone running `ai reinstall`.
+///
+/// Driven by `owned` — a manifest's file list — rather than by walking
+/// `dest` for the suffix. Only `<owned path>.hyprlayer-backup` is ever
+/// removed, which is exactly the set that install could have written, so a
+/// file of the user's that happens to carry the suffix is not ours to
+/// delete however it got there. Walking instead would also have followed
+/// directory symlinks out of `dest` entirely — `~/.claude/skills/mine`
+/// pointing at a dotfiles checkout is an ordinary thing to do — and deleted
+/// matching files there.
+///
+/// Harness config is skipped: `settings.json.hyprlayer-backup` may be the
+/// only copy left of a user's own settings, so it stays for them to merge
+/// back.
+///
+/// Nothing here fails the install. It runs after the bundle and the
+/// manifest are already on disk, so returning an error would report a
+/// failed install that had in fact succeeded, and skip the caller's
+/// bookkeeping with it. A leftover we could not delete is worth a warning
+/// and nothing more.
+fn clean_backups(dest: &Path, owned: &[ManifestEntry]) -> usize {
+    let mut cleaned = 0;
+
+    for entry in owned {
+        let relative = Path::new(&entry.path);
+        if manifest::relative_key(relative).is_none() || is_harness_config(relative) {
+            continue;
+        }
+        let Some(path) = manifest::resolve_under(dest, &entry.path) else {
+            continue;
+        };
+        let backup = append_suffix(&path, BACKUP_SUFFIX);
+        // `symlink_metadata`, so a symlink wearing the suffix is left alone
+        // rather than unlinked out from under whatever made it.
+        if !fs::symlink_metadata(&backup).is_ok_and(|meta| meta.is_file()) {
+            continue;
+        }
+        if let Err(e) = fs::remove_file(&backup) {
+            eprintln!("warning: could not remove {}: {e}", backup.display());
+            continue;
+        }
+        cleaned += 1;
+        if let Some(parent) = backup.parent() {
+            prune_empty_dirs(dest, parent);
+        }
+    }
+
+    cleaned
+}
+
 /// Delete the files the previous bundle owned that this one dropped.
 ///
 /// A file is removed only when all three of these hold:
 ///
-/// 1. `previous` — the manifest the last install recorded — lists it, so we
-///    are the ones who put it there;
+/// 1. `previous` — what the last install left behind, either the manifest it
+///    recorded or, for a pre-1.6.0 install, the frozen tree standing in for
+///    the record it never wrote — lists it, so we are the ones who put it
+///    there;
 /// 2. `next` does not list it, so it is genuinely gone from the bundle;
 /// 3. it still hashes to what `previous` recorded, so the user has not
 ///    touched it since we wrote it.
@@ -819,11 +952,11 @@ fn sync_tree(src: &Path, dest: &Path, previous: Option<&BundleManifest>) -> Resu
 /// skill behind is not worth failing an otherwise-good install over.
 ///
 /// Directories emptied by a removal are pruned, bounded by `dest`.
-fn remove_orphans(dest: &Path, previous: &BundleManifest, next: &BundleManifest) -> Vec<String> {
+fn remove_orphans(dest: &Path, previous: &[ManifestEntry], next: &BundleManifest) -> Vec<String> {
     let kept = next.digests();
     let mut removed = Vec::new();
 
-    for entry in &previous.files {
+    for entry in previous {
         // An entry naming anything but a plain relative path under the
         // harness root is not something we wrote, and is never resolved to
         // a real path, let alone deleted.
@@ -1340,14 +1473,34 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let src = temp.path().join("src");
         let dest = temp.path().join("dest");
-        fs::create_dir_all(&src).unwrap();
-        fs::create_dir_all(&dest).unwrap();
-        fs::write(src.join("a.md"), "new content").unwrap();
-        fs::write(dest.join("a.md"), "old content").unwrap();
+        fs::create_dir_all(src.join("agents")).unwrap();
+        fs::create_dir_all(dest.join("agents")).unwrap();
+        fs::write(src.join("agents/a.md"), "new content").unwrap();
+        fs::write(dest.join("agents/a.md"), "old content").unwrap();
         assert_eq!(sync_tree(&src, &dest, None).unwrap().changed, 1);
         assert_eq!(
-            fs::read_to_string(dest.join("a.md")).unwrap(),
+            fs::read_to_string(dest.join("agents/a.md")).unwrap(),
             "new content"
+        );
+    }
+
+    /// Same shape one directory up: a file at the harness root is its
+    /// config, and with no manifest to prove we wrote it, it is the user's.
+    #[test]
+    fn sync_tree_preserves_a_differing_root_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let src = temp.path().join("src");
+        let dest = temp.path().join("dest");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&dest).unwrap();
+        fs::write(src.join("settings.json"), "ours").unwrap();
+        fs::write(dest.join("settings.json"), "theirs").unwrap();
+        let report = sync_tree(&src, &dest, None).unwrap();
+        assert_eq!(report.changed, 0);
+        assert_eq!(report.preserved, vec!["settings.json"]);
+        assert_eq!(
+            fs::read_to_string(dest.join("settings.json")).unwrap(),
+            "theirs"
         );
     }
 
@@ -2005,85 +2158,337 @@ mod tests {
         assert_eq!(report.changed, 2);
     }
 
-    /// The other half of the migration case: the overwrite stands, but the
-    /// user's bytes are kept alongside it. Without this, the one install
-    /// every existing user runs is the one that loses their edits.
+    /// The other half of the migration case: content is replaced in place,
+    /// with nothing dropped beside it. 1.6.0 copied each replaced file to
+    /// `<name>.hyprlayer-backup`, which put a second file inside every skill
+    /// directory the harness scans.
     #[test]
-    fn first_manifest_install_backs_up_what_it_overwrites() {
+    fn first_manifest_install_replaces_content_without_backups() {
         let tmp = tempfile::tempdir().unwrap();
         let staged = tmp.path().join("staged");
         let dest = tmp.path().join("dest");
         fs::create_dir_all(dest.join("agents")).unwrap();
         fs::write(dest.join("agents/codebase-locator.md"), "my own edit\n").unwrap();
-        // Byte-identical to what the bundle ships: nothing to rescue, so no
-        // backup should be taken for it.
         fs::create_dir_all(dest.join("skills/code_review")).unwrap();
-        fs::write(dest.join("skills/code_review/SKILL.md"), "code_review v1\n").unwrap();
+        fs::write(dest.join("skills/code_review/SKILL.md"), "my own skill\n").unwrap();
 
         stage_bundle(&staged, "1.6.0", &SENTINELS);
         let report = AgentTool::Claude
             .install_staged(&staged, &dest, None)
             .unwrap();
 
-        let backup = dest.join("agents/codebase-locator.md.hyprlayer-backup");
-        assert_eq!(
-            fs::read_to_string(&backup).unwrap(),
-            "my own edit\n",
-            "the user's bytes must survive the overwrite"
-        );
         assert_eq!(
             fs::read_to_string(dest.join("agents/codebase-locator.md")).unwrap(),
             "locator v1\n",
-            "and the bundle's version still lands, so the user is not frozen"
+            "the bundle's version lands, so the user is not frozen"
         );
-        assert_eq!(report.backed_up, vec!["agents/codebase-locator.md"]);
+        assert_eq!(
+            fs::read_to_string(dest.join("skills/code_review/SKILL.md")).unwrap(),
+            "code_review v1\n"
+        );
+        assert_eq!(
+            tree(&dest),
+            vec![
+                ".hyprlayer-manifest.json",
+                "agents/codebase-locator.md",
+                "skills/code_review/SKILL.md",
+            ],
+            "no backup copies anywhere in the tree"
+        );
+        assert!(report.preserved.is_empty());
+        assert_eq!(report.cleaned_backups, 0);
+    }
+
+    /// The one file at the harness root is not ours to replace: with no
+    /// manifest to prove otherwise, a `settings.json` already on disk holds
+    /// the user's permissions, hooks and env, and our copy is only a
+    /// starting point for a fresh install.
+    #[test]
+    fn first_manifest_install_keeps_existing_harness_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = tmp.path().join("staged");
+        let dest = tmp.path().join("dest");
+        fs::create_dir_all(&dest).unwrap();
+        fs::write(dest.join("settings.json"), "{\"mine\": true}\n").unwrap();
+
+        let mut files = SENTINELS.to_vec();
+        files.push(("settings.json", b"{\"ours\": true}\n"));
+        stage_bundle(&staged, "1.6.0", &files);
+        let report = AgentTool::Claude
+            .install_staged(&staged, &dest, None)
+            .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(dest.join("settings.json")).unwrap(),
+            "{\"mine\": true}\n",
+            "the user's own settings survive the migration install"
+        );
         assert!(
-            !dest
-                .join("skills/code_review/SKILL.md.hyprlayer-backup")
-                .exists(),
-            "an identical file is not overwritten, so it needs no backup"
+            !dest.join("settings.json.hyprlayer-backup").exists(),
+            "preserving it in place means there is nothing to copy aside"
+        );
+        assert_eq!(report.preserved, vec!["settings.json"]);
+        assert_eq!(report.changed, 2, "content still installs");
+    }
+
+    /// A fresh install still gets our starter config — preserving one only
+    /// applies to a file that is already there.
+    #[test]
+    fn install_writes_harness_config_when_none_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = tmp.path().join("staged");
+        let dest = tmp.path().join("dest");
+
+        let mut files = SENTINELS.to_vec();
+        files.push(("settings.json", b"{\"ours\": true}\n"));
+        stage_bundle(&staged, "1.6.0", &files);
+        AgentTool::Claude
+            .install_staged(&staged, &dest, None)
+            .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(dest.join("settings.json")).unwrap(),
+            "{\"ours\": true}\n"
         );
     }
 
-    /// Re-running the first install must not bury the original copy under a
-    /// second backup taken from the bundle content the first one wrote.
+    /// The machines 1.6.0 already ran on keep their backups until something
+    /// clears them, so every install sweeps the paths it owns — and only
+    /// those. A file wearing the suffix beside a skill of the user's own was
+    /// not written by any install of ours, whatever put it there.
     #[test]
-    fn a_second_install_does_not_overwrite_an_existing_backup() {
+    fn install_clears_leftover_backups_beside_files_we_own() {
         let tmp = tempfile::tempdir().unwrap();
         let staged = tmp.path().join("staged");
         let dest = tmp.path().join("dest");
         fs::create_dir_all(dest.join("agents")).unwrap();
-        fs::write(dest.join("agents/codebase-locator.md"), "original edit\n").unwrap();
+        fs::create_dir_all(dest.join("skills/code_review")).unwrap();
+        fs::create_dir_all(dest.join("skills/mine")).unwrap();
+        // What 1.6.0 left, beside two files we ship — plus one beside a
+        // skill of the user's own, which no install of ours can have
+        // written, since we have never shipped that path.
+        fs::write(
+            dest.join("agents/codebase-locator.md.hyprlayer-backup"),
+            "old locator\n",
+        )
+        .unwrap();
+        fs::write(
+            dest.join("skills/code_review/SKILL.md.hyprlayer-backup"),
+            "old code_review\n",
+        )
+        .unwrap();
+        fs::write(dest.join("skills/mine/SKILL.md"), "hand-written\n").unwrap();
+        fs::write(
+            dest.join("skills/mine/SKILL.md.hyprlayer-backup"),
+            "older hand-written\n",
+        )
+        .unwrap();
+        // The user's own settings copy, taken by that same install, is the
+        // one thing the sweep must not touch.
+        fs::write(
+            dest.join("settings.json.hyprlayer-backup"),
+            "{\"mine\": true}\n",
+        )
+        .unwrap();
+
+        stage_bundle(&staged, "1.6.0", &SENTINELS);
+        let report = AgentTool::Claude
+            .install_staged(&staged, &dest, None)
+            .unwrap();
+
+        assert_eq!(report.cleaned_backups, 2);
+        assert_eq!(
+            tree(&dest),
+            vec![
+                ".hyprlayer-manifest.json",
+                "agents/codebase-locator.md",
+                "settings.json.hyprlayer-backup",
+                "skills/code_review/SKILL.md",
+                "skills/mine/SKILL.md",
+                "skills/mine/SKILL.md.hyprlayer-backup",
+            ],
+            "backups beside files we ship go; the harness-config copy, the \
+             user's own skill and the stray beside it all stay"
+        );
+    }
+
+    /// An up-to-date install writes nothing, and still has to sweep: the
+    /// daily refresh is what heals most affected machines.
+    #[test]
+    fn a_no_op_install_still_clears_leftover_backups() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = tmp.path().join("staged");
+        let dest = tmp.path().join("dest");
 
         stage_bundle(&staged, "1.6.0", &SENTINELS);
         AgentTool::Claude
             .install_staged(&staged, &dest, None)
             .unwrap();
-        // Wipe the install record so the next one is a "first" install too,
-        // then diverge the file again.
-        fs::remove_file(dest.join(INSTALLED_MANIFEST_FILE)).unwrap();
-        fs::write(dest.join("agents/codebase-locator.md"), "later edit\n").unwrap();
+        fs::write(
+            dest.join("skills/code_review/SKILL.md.hyprlayer-backup"),
+            "leftover\n",
+        )
+        .unwrap();
 
         let staged2 = tmp.path().join("staged2");
         stage_bundle(&staged2, "1.6.0", &SENTINELS);
-        AgentTool::Claude
+        let report = AgentTool::Claude
             .install_staged(&staged2, &dest, None)
             .unwrap();
 
-        assert_eq!(
-            fs::read_to_string(dest.join("agents/codebase-locator.md.hyprlayer-backup")).unwrap(),
-            "original edit\n",
-            "the first backup is the one worth keeping"
+        assert_eq!(report.changed, 0);
+        assert_eq!(report.cleaned_backups, 1);
+        assert!(
+            !dest
+                .join("skills/code_review/SKILL.md.hyprlayer-backup")
+                .exists()
+        );
+    }
+
+    /// A directory left holding nothing but a backup — its real file
+    /// dropped by this bundle — goes away with it, rather than lingering as
+    /// an empty skill directory.
+    #[test]
+    fn clearing_the_last_backup_prunes_the_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("dest");
+
+        let mut v1 = SENTINELS.to_vec();
+        v1.push(("skills/gone/SKILL.md", b"gone v1\n"));
+        let staged_v1 = tmp.path().join("v1");
+        stage_bundle(&staged_v1, "1.6.0", &v1);
+        AgentTool::Claude
+            .install_staged(&staged_v1, &dest, None)
+            .unwrap();
+        fs::write(
+            dest.join("skills/gone/SKILL.md.hyprlayer-backup"),
+            "older gone\n",
+        )
+        .unwrap();
+
+        // v2 drops the skill: orphan removal takes `SKILL.md` but cannot
+        // prune past the backup still sitting beside it, so the sweep has to
+        // be what finishes the directory off.
+        let staged_v2 = tmp.path().join("v2");
+        stage_bundle(&staged_v2, "1.6.1", &SENTINELS);
+        let report = AgentTool::Claude
+            .install_staged(&staged_v2, &dest, None)
+            .unwrap();
+
+        assert_eq!(report.removed, vec!["skills/gone/SKILL.md"]);
+        assert_eq!(report.cleaned_backups, 1);
+        assert!(!dest.join("skills/gone").exists());
+        assert!(dest.join("skills/code_review").is_dir());
+    }
+
+    /// The sweep must not reach outside `dest`. Walking the content
+    /// directories for the suffix did: `is_dir()` follows symlinks, so a
+    /// skills directory pointed at a dotfiles checkout — an ordinary thing
+    /// to do — put every matching file in that checkout in range. Driving
+    /// the sweep off the manifest instead means an unowned path is never
+    /// looked at, symlink or not.
+    #[test]
+    #[cfg(unix)]
+    fn the_sweep_never_follows_a_symlink_out_of_dest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = tmp.path().join("staged");
+        let dest = tmp.path().join("dest");
+
+        let outside = tmp.path().join("dotfiles");
+        fs::create_dir_all(&outside).unwrap();
+        let theirs = outside.join("SKILL.md.hyprlayer-backup");
+        fs::write(&theirs, "not ours\n").unwrap();
+
+        fs::create_dir_all(dest.join("skills")).unwrap();
+        std::os::unix::fs::symlink(&outside, dest.join("skills/linked")).unwrap();
+
+        stage_bundle(&staged, "1.6.0", &SENTINELS);
+        let report = AgentTool::Claude
+            .install_staged(&staged, &dest, None)
+            .unwrap();
+
+        assert_eq!(report.cleaned_backups, 0);
+        assert!(
+            theirs.is_file(),
+            "a file outside dest is never the sweep's to delete"
+        );
+    }
+
+    /// A symlink that happens to wear the suffix is not a copy we took, so
+    /// unlinking it would break whatever points through it.
+    #[test]
+    #[cfg(unix)]
+    fn the_sweep_leaves_a_symlink_wearing_the_suffix_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = tmp.path().join("staged");
+        let dest = tmp.path().join("dest");
+        let target = tmp.path().join("target.md");
+        fs::write(&target, "theirs\n").unwrap();
+
+        fs::create_dir_all(dest.join("skills/code_review")).unwrap();
+        std::os::unix::fs::symlink(
+            &target,
+            dest.join("skills/code_review/SKILL.md.hyprlayer-backup"),
+        )
+        .unwrap();
+
+        stage_bundle(&staged, "1.6.0", &SENTINELS);
+        let report = AgentTool::Claude
+            .install_staged(&staged, &dest, None)
+            .unwrap();
+
+        assert_eq!(report.cleaned_backups, 0);
+        assert!(target.is_file(), "the symlink's target survives");
+        assert!(
+            fs::symlink_metadata(dest.join("skills/code_review/SKILL.md.hyprlayer-backup")).is_ok(),
+            "and so does the symlink itself"
+        );
+    }
+
+    /// The sweep runs after the bundle and the manifest are already on
+    /// disk, so it must never be what fails an install: the caller would
+    /// report a failure for an install that had in fact landed, and skip
+    /// its own bookkeeping with it.
+    #[test]
+    #[cfg(unix)]
+    fn a_cleanup_it_cannot_finish_still_leaves_the_install_successful() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = tmp.path().join("staged");
+        let dest = tmp.path().join("dest");
+        let dir = dest.join("skills/code_review");
+        fs::create_dir_all(&dir).unwrap();
+        // Already byte-identical to the bundle's copy, so the sync itself
+        // needs no write into this directory and the only thing left to
+        // fail is the cleanup.
+        fs::write(dir.join("SKILL.md"), "code_review v1\n").unwrap();
+        fs::write(dir.join("SKILL.md.hyprlayer-backup"), "old\n").unwrap();
+        // No unlink permission in the directory holding it.
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+
+        stage_bundle(&staged, "1.6.0", &SENTINELS);
+        let outcome = AgentTool::Claude.install_staged(&staged, &dest, None);
+
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            outcome.is_ok(),
+            "cleanup trouble is a warning, not a failed install: {:?}",
+            outcome.err()
+        );
+        assert!(
+            dest.join(INSTALLED_MANIFEST_FILE).is_file(),
+            "and the record this install wrote still stands"
         );
     }
 
     #[test]
-    fn append_suffix_keeps_the_whole_file_name() {
-        assert_eq!(
-            append_suffix(Path::new("/a/settings.json"), ".hyprlayer-backup"),
-            PathBuf::from("/a/settings.json.hyprlayer-backup"),
-            "with_extension would have produced settings.hyprlayer-backup"
-        );
+    fn harness_config_is_the_root_file_only() {
+        assert!(is_harness_config(Path::new("settings.json")));
+        assert!(!is_harness_config(
+            &Path::new("skills").join("commit").join("SKILL.md")
+        ));
+        assert!(!is_harness_config(&Path::new("agents").join("herald.md")));
     }
 
     /// The destructive path, with every case that must *not* be deleted
@@ -2140,11 +2545,11 @@ mod tests {
         );
     }
 
-    /// First install on 1.6.0: leftovers from the pre-manifest era stay,
-    /// because nothing records that we ever owned them. They go on the
-    /// *second* install, once this one has written a record.
+    /// The digest guard on the frozen list: a retired workflow's path is
+    /// not enough on its own. These bytes are not the ones we shipped, so
+    /// whoever wrote them, it was not us, and the file stays.
     #[test]
-    fn orphan_removal_is_a_no_op_without_a_prior_manifest() {
+    fn a_leftover_that_is_not_byte_identical_to_ours_is_never_deleted() {
         let tmp = tempfile::tempdir().unwrap();
         let staged = tmp.path().join("staged");
         let dest = tmp.path().join("dest");
@@ -2158,6 +2563,267 @@ mod tests {
 
         assert!(report.removed.is_empty());
         assert!(dest.join("skills/create_plan_nt/SKILL.md").is_file());
+    }
+
+    /// The frozen root tree, which is what every pre-1.6.0 install put in
+    /// `dest`. Real bytes, so the embedded digests are exercised rather
+    /// than a fixture's.
+    fn frozen_tree(tool: AgentTool) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join(tool.repo_dir())
+    }
+
+    /// Copy `paths` out of the frozen tree into `dest`, reproducing what a
+    /// pre-1.6.0 install left on disk.
+    fn install_frozen_files(tool: AgentTool, dest: &Path, paths: &[&str]) {
+        for path in paths {
+            let to = dest.join(path);
+            fs::create_dir_all(to.parent().unwrap()).unwrap();
+            fs::copy(frozen_tree(tool).join(path), to).unwrap();
+        }
+    }
+
+    /// The migration case that the recorded-manifest machinery cannot
+    /// reach: `ci_commit` and the seven other workflows retired before
+    /// 1.6.0 are in no manifest, because the installs that wrote them wrote
+    /// no manifest. They are still sitting in `~/.claude/skills`, where the
+    /// harness finds them next to the skills that replaced them, and the
+    /// frozen tree is what proves they are ours to delete.
+    #[test]
+    fn install_removes_workflows_retired_before_1_6_0() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = tmp.path().join("staged");
+        let dest = tmp.path().join("dest");
+
+        install_frozen_files(
+            AgentTool::Claude,
+            &dest,
+            &[
+                "skills/ci_commit/SKILL.md",
+                "skills/create_plan_nt/SKILL.md",
+                "skills/create_plan/SKILL.md",
+                "agents/codebase-locator.md",
+            ],
+        );
+        // One retired workflow the user has since edited, and one skill of
+        // their own: neither is ours to remove.
+        fs::create_dir_all(dest.join("skills/ci_describe_pr")).unwrap();
+        fs::write(dest.join("skills/ci_describe_pr/SKILL.md"), "my take\n").unwrap();
+        fs::create_dir_all(dest.join("skills/mine")).unwrap();
+        fs::write(dest.join("skills/mine/SKILL.md"), "hand-written\n").unwrap();
+
+        // `create_plan` is in the frozen tree *and* in this bundle, so it
+        // is replaced rather than removed — the shape the retired ones
+        // would have if they were merely renamed.
+        let mut files = SENTINELS.to_vec();
+        files.push(("skills/create_plan/SKILL.md", b"create_plan v1\n"));
+        stage_bundle(&staged, "1.6.0", &files);
+        let report = AgentTool::Claude
+            .install_staged(&staged, &dest, None)
+            .unwrap();
+
+        assert_eq!(
+            report.removed,
+            vec![
+                "skills/ci_commit/SKILL.md",
+                "skills/create_plan_nt/SKILL.md"
+            ]
+        );
+        assert_eq!(
+            fs::read_to_string(dest.join("skills/create_plan/SKILL.md")).unwrap(),
+            "create_plan v1\n",
+            "a skill still in the bundle is brought up to date, not deleted"
+        );
+        assert_eq!(
+            tree(&dest),
+            vec![
+                ".hyprlayer-manifest.json",
+                "agents/codebase-locator.md",
+                "skills/ci_describe_pr/SKILL.md",
+                "skills/code_review/SKILL.md",
+                "skills/create_plan/SKILL.md",
+                "skills/mine/SKILL.md",
+            ],
+            "the two pristine retired workflows go; the edited one, the \
+             user's own skill, and a skill this bundle still ships stay"
+        );
+        assert!(
+            !dest.join("skills/ci_commit").exists(),
+            "the directory a removal emptied is pruned, not left behind"
+        );
+    }
+
+    /// The machines that already took 1.6.0 have a record now, and it lists
+    /// none of the retired workflows — so consulting the frozen list only
+    /// when a record is missing would leave exactly the machines that hit
+    /// this uncleaned. It is consulted on every install.
+    #[test]
+    fn retired_workflows_go_even_when_an_install_record_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("dest");
+
+        let staged_v1 = tmp.path().join("v1");
+        stage_bundle(&staged_v1, "1.6.0", &SENTINELS);
+        AgentTool::Claude
+            .install_staged(&staged_v1, &dest, None)
+            .unwrap();
+        assert!(read_installed_manifest(&dest).is_some());
+
+        install_frozen_files(AgentTool::Claude, &dest, &["skills/ci_commit/SKILL.md"]);
+
+        let staged_v2 = tmp.path().join("v2");
+        stage_bundle(&staged_v2, "1.6.1", &SENTINELS);
+        let report = AgentTool::Claude
+            .install_staged(&staged_v2, &dest, None)
+            .unwrap();
+
+        assert_eq!(report.removed, vec!["skills/ci_commit/SKILL.md"]);
+        assert!(!dest.join("skills/ci_commit").exists());
+    }
+
+    /// A file the frozen tree lists and this bundle still ships is not an
+    /// orphan, however it got there — the sweep must not delete something
+    /// the same install just wrote.
+    #[test]
+    fn frozen_cleanup_never_touches_a_path_the_bundle_still_ships() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = tmp.path().join("staged");
+        let dest = tmp.path().join("dest");
+
+        install_frozen_files(AgentTool::Claude, &dest, &["settings.json"]);
+
+        let mut files = SENTINELS.to_vec();
+        files.push(("settings.json", b"{\"ours\": true}\n"));
+        stage_bundle(&staged, "1.6.0", &files);
+        let report = AgentTool::Claude
+            .install_staged(&staged, &dest, None)
+            .unwrap();
+
+        assert!(report.removed.is_empty());
+        assert!(dest.join("settings.json").is_file());
+    }
+
+    /// The whole repair, on the tree a real machine has.
+    ///
+    /// Reconstructs what a 1.6.0 install left in `~/.claude`: the bundle's
+    /// own files, the workflows retired before 1.6.0 that nothing could
+    /// prove were ours, and a `.hyprlayer-backup` beside every file that
+    /// install replaced. One more install has to land exactly on the
+    /// bundle — no leftovers, nothing of the harness's own lost — for all
+    /// three harnesses.
+    #[test]
+    fn a_1_6_0_tree_heals_completely_on_the_next_install() {
+        for tool in AgentTool::ALL {
+            let tmp = tempfile::tempdir().unwrap();
+            let dest = tmp.path().join("dest");
+            let assets = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("assets")
+                .join(tool.repo_dir());
+            let frozen = frozen_tree(*tool);
+
+            // The bundle, packed from the live tree the release is cut from.
+            let bytes: Vec<(String, Vec<u8>)> = tree(&assets)
+                .into_iter()
+                .map(|path| {
+                    let data = fs::read(assets.join(&path)).unwrap();
+                    (path, data)
+                })
+                .collect();
+            let files: Vec<(&str, &[u8])> = bytes
+                .iter()
+                .map(|(path, data)| (path.as_str(), data.as_slice()))
+                .collect();
+            let staged = tmp.path().join("staged");
+            stage_bundle(&staged, "1.6.1", &files);
+
+            // 1.6.0's install, as it left `dest`.
+            let staged_v1 = tmp.path().join("v1");
+            stage_bundle(&staged_v1, "1.6.0", &files);
+            tool.install_staged(&staged_v1, &dest, None).unwrap();
+
+            // What it could not remove: the retired workflows, still
+            // carrying the bytes the pre-1.6.0 install wrote.
+            let retired: Vec<String> = tree(&frozen)
+                .into_iter()
+                .filter(|path| !bytes.iter().any(|(shipped, _)| shipped == path))
+                .collect();
+            assert!(!retired.is_empty(), "{tool} should have retired files");
+            let retired_refs: Vec<&str> = retired.iter().map(String::as_str).collect();
+            install_frozen_files(*tool, &dest, &retired_refs);
+
+            // ...and what it wrote: a copy beside every file it replaced.
+            let replaced: Vec<String> = bytes
+                .iter()
+                .filter(|(path, data)| fs::read(frozen.join(path)).is_ok_and(|old| old != *data))
+                .map(|(path, _)| path.clone())
+                .collect();
+            assert!(!replaced.is_empty(), "{tool} should have replaced files");
+            for path in &replaced {
+                fs::write(
+                    dest.join(format!("{path}{BACKUP_SUFFIX}")),
+                    "the pre-1.6.0 bytes\n",
+                )
+                .unwrap();
+            }
+
+            let report = tool.install_staged(&staged, &dest, None).unwrap();
+
+            assert_eq!(report.changed, 0, "{tool} content is already current");
+            assert_eq!(report.removed, retired, "{tool} retired workflows");
+            assert_eq!(
+                report.cleaned_backups,
+                replaced.len(),
+                "{tool} leftover backups"
+            );
+
+            let mut expected = vec![INSTALLED_MANIFEST_FILE.to_string()];
+            expected.extend(tree(&assets));
+            expected.sort();
+            assert_eq!(
+                tree(&dest),
+                expected,
+                "{tool} should land on exactly the bundle plus its record"
+            );
+        }
+    }
+
+    /// The embedded lists are the only evidence a migration install has for
+    /// what a pre-1.6.0 install wrote, so they have to describe the frozen
+    /// trees exactly: every file, and the bytes actually on disk. Rerun
+    /// `scripts/build-frozen-manifests.sh` if this fails — though per
+    /// `assets/FROZEN.md` a frozen tree changing at all wants explaining.
+    #[test]
+    fn frozen_manifests_match_the_frozen_trees() {
+        for tool in AgentTool::ALL {
+            let listed: Vec<String> = tool
+                .frozen_manifest()
+                .iter()
+                .map(|entry| entry.path.clone())
+                .collect();
+            assert!(
+                !listed.is_empty(),
+                "{tool}'s built-in file list is empty or did not parse"
+            );
+
+            let dir = frozen_tree(*tool);
+            let mut sorted = listed.clone();
+            sorted.sort();
+            assert_eq!(listed, sorted, "{tool}'s list should be path-sorted");
+            assert_eq!(
+                listed,
+                tree(&dir),
+                "{tool}'s list does not match {}",
+                dir.display()
+            );
+
+            for entry in tool.frozen_manifest() {
+                let bytes = fs::read(dir.join(&entry.path)).unwrap();
+                assert!(
+                    integrity::bytes_match_sha256(&bytes, &entry.sha256),
+                    "{tool}'s recorded digest for {} is stale",
+                    entry.path
+                );
+            }
+        }
     }
 
     /// The install record is a file in a directory the user can write to,
