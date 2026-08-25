@@ -212,10 +212,12 @@ that still match it byte for byte. Edit one and it is yours; it stays.
 1.6.0 handled that first install differently: it copied each file it replaced to
 `<name>.hyprlayer-backup`, which left one inside nearly every skill directory —
 extra files sitting where the harness scans for skills. Installs from 1.6.1 on
-clear those out of `agents/`, `skills/` and the other content directories, on
-the daily refresh as well as an explicit reinstall. A
-`settings.json.hyprlayer-backup` is left alone, since it may be the only copy of
-settings that install replaced — merge it back and delete it yourself.
+clear them out, on the daily refresh as well as an explicit reinstall. Only
+copies sitting beside a file hyprlayer ships are removed — that is exactly the
+set that install could have written, so anything of yours wearing the same
+suffix stays. `settings.json.hyprlayer-backup` stays too: it may be the only
+copy left of the settings that install replaced, so merge it back and delete it
+yourself.
 
 ### Frozen legacy trees
 

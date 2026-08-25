@@ -516,6 +516,8 @@ impl AgentTool {
         fs::create_dir_all(dest)?;
         let mut report = sync_tree(staged, dest, previous.as_ref())?;
 
+        let frozen = self.frozen_manifest();
+
         if let Some(manifest) = &bundle {
             let mut removed = match &previous {
                 Some(previous) => remove_orphans(dest, &previous.files, manifest),
@@ -528,11 +530,23 @@ impl AgentTool {
             // migration one: the machines that already took 1.6.0 have a
             // record now, and `ci_commit` and friends are still sitting in
             // their skills directory next to the skills that replaced them.
-            removed.extend(remove_orphans(dest, &self.frozen_manifest(), manifest));
+            removed.extend(remove_orphans(dest, &frozen, manifest));
             report.removed = removed;
             write_installed_manifest(dest, manifest)?;
         }
-        report.cleaned_backups = clean_backups(staged, dest)?;
+
+        // Every list of files we have ever owned here, because a backup
+        // could have been written beside any of them: what the last install
+        // recorded, what a pre-1.6.0 one left, and what this bundle ships.
+        // A path in more than one list is swept once — the second look
+        // finds no file.
+        report.cleaned_backups = clean_backups(dest, &frozen)
+            + previous
+                .as_ref()
+                .map_or(0, |previous| clean_backups(dest, &previous.files))
+            + bundle
+                .as_ref()
+                .map_or(0, |manifest| clean_backups(dest, &manifest.files));
 
         Ok(report)
     }
@@ -767,6 +781,15 @@ impl SyncReport {
 /// `clean_backups` can clear what earlier installs already left on disk.
 const BACKUP_SUFFIX: &str = ".hyprlayer-backup";
 
+/// Append `suffix` to the whole file name, extension included, so
+/// `settings.json` becomes `settings.json.hyprlayer-backup`. `with_extension`
+/// would replace `.json` instead and collide across sibling files.
+fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(suffix);
+    path.with_file_name(name)
+}
+
 /// Is `relative` the harness's own config rather than hyprlayer content?
 ///
 /// Every bundle keeps its content in subdirectories — `agents/`, `skills/`,
@@ -862,49 +885,52 @@ fn sync_tree(src: &Path, dest: &Path, previous: Option<&BundleManifest>) -> Resu
 /// already on disk — including on the daily refresh, so an affected machine
 /// heals without anyone running `ai reinstall`.
 ///
-/// The sweep is bounded to the content directories the staged bundle ships
-/// (`agents/`, `skills/`, ...) and never the harness root, so
-/// `settings.json.hyprlayer-backup` — potentially the only copy left of a
-/// user's own settings — stays for them to merge back. Under a content
-/// directory a file with this suffix can only be one we wrote.
+/// Driven by `owned` — a manifest's file list — rather than by walking
+/// `dest` for the suffix. Only `<owned path>.hyprlayer-backup` is ever
+/// removed, which is exactly the set that install could have written, so a
+/// file of the user's that happens to carry the suffix is not ours to
+/// delete however it got there. Walking instead would also have followed
+/// directory symlinks out of `dest` entirely — `~/.claude/skills/mine`
+/// pointing at a dotfiles checkout is an ordinary thing to do — and deleted
+/// matching files there.
 ///
-/// A removal that fails is a warning, not an error: the install itself
-/// already succeeded, and a leftover we could not delete is not worth
-/// failing it over.
-fn clean_backups(staged: &Path, dest: &Path) -> Result<usize> {
+/// Harness config is skipped: `settings.json.hyprlayer-backup` may be the
+/// only copy left of a user's own settings, so it stays for them to merge
+/// back.
+///
+/// Nothing here fails the install. It runs after the bundle and the
+/// manifest are already on disk, so returning an error would report a
+/// failed install that had in fact succeeded, and skip the caller's
+/// bookkeeping with it. A leftover we could not delete is worth a warning
+/// and nothing more.
+fn clean_backups(dest: &Path, owned: &[ManifestEntry]) -> usize {
     let mut cleaned = 0;
-    if !staged.is_dir() {
-        return Ok(cleaned);
-    }
 
-    for entry in
-        fs::read_dir(staged).with_context(|| format!("Failed to read {}", staged.display()))?
-    {
-        let entry =
-            entry.with_context(|| format!("Failed to read an entry in {}", staged.display()))?;
-        if !entry.path().is_dir() {
+    for entry in owned {
+        let relative = Path::new(&entry.path);
+        if manifest::relative_key(relative).is_none() || is_harness_config(relative) {
             continue;
         }
-        for path in walk_files(&dest.join(entry.file_name()))? {
-            let is_backup = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.ends_with(BACKUP_SUFFIX));
-            if !is_backup {
-                continue;
-            }
-            if let Err(e) = fs::remove_file(&path) {
-                eprintln!("warning: could not remove {}: {e}", path.display());
-                continue;
-            }
-            cleaned += 1;
-            if let Some(parent) = path.parent() {
-                prune_empty_dirs(dest, parent);
-            }
+        let Some(path) = manifest::resolve_under(dest, &entry.path) else {
+            continue;
+        };
+        let backup = append_suffix(&path, BACKUP_SUFFIX);
+        // `symlink_metadata`, so a symlink wearing the suffix is left alone
+        // rather than unlinked out from under whatever made it.
+        if !fs::symlink_metadata(&backup).is_ok_and(|meta| meta.is_file()) {
+            continue;
+        }
+        if let Err(e) = fs::remove_file(&backup) {
+            eprintln!("warning: could not remove {}: {e}", backup.display());
+            continue;
+        }
+        cleaned += 1;
+        if let Some(parent) = backup.parent() {
+            prune_empty_dirs(dest, parent);
         }
     }
 
-    Ok(cleaned)
+    cleaned
 }
 
 /// Delete the files the previous bundle owned that this one dropped.
@@ -2227,17 +2253,20 @@ mod tests {
     }
 
     /// The machines 1.6.0 already ran on keep their backups until something
-    /// clears them, so every install sweeps the content directories.
+    /// clears them, so every install sweeps the paths it owns — and only
+    /// those. A file wearing the suffix beside a skill of the user's own was
+    /// not written by any install of ours, whatever put it there.
     #[test]
-    fn install_clears_leftover_backups_from_content_directories() {
+    fn install_clears_leftover_backups_beside_files_we_own() {
         let tmp = tempfile::tempdir().unwrap();
         let staged = tmp.path().join("staged");
         let dest = tmp.path().join("dest");
         fs::create_dir_all(dest.join("agents")).unwrap();
         fs::create_dir_all(dest.join("skills/code_review")).unwrap();
         fs::create_dir_all(dest.join("skills/mine")).unwrap();
-        // What 1.6.0 left: beside a file we ship, beside one it has since
-        // dropped, and beside a skill of the user's own.
+        // What 1.6.0 left, beside two files we ship — plus one beside a
+        // skill of the user's own, which no install of ours can have
+        // written, since we have never shipped that path.
         fs::write(
             dest.join("agents/codebase-locator.md.hyprlayer-backup"),
             "old locator\n",
@@ -2267,7 +2296,7 @@ mod tests {
             .install_staged(&staged, &dest, None)
             .unwrap();
 
-        assert_eq!(report.cleaned_backups, 3);
+        assert_eq!(report.cleaned_backups, 2);
         assert_eq!(
             tree(&dest),
             vec![
@@ -2276,9 +2305,10 @@ mod tests {
                 "settings.json.hyprlayer-backup",
                 "skills/code_review/SKILL.md",
                 "skills/mine/SKILL.md",
+                "skills/mine/SKILL.md.hyprlayer-backup",
             ],
-            "content backups go, the harness-config copy and the user's own \
-             skill stay"
+            "backups beside files we ship go; the harness-config copy, the \
+             user's own skill and the stray beside it all stay"
         );
     }
 
@@ -2315,28 +2345,141 @@ mod tests {
         );
     }
 
-    /// A directory left holding nothing but a backup — its real file dropped
-    /// by an earlier bundle — goes away with it rather than lingering as an
-    /// empty skill directory.
+    /// A directory left holding nothing but a backup — its real file
+    /// dropped by this bundle — goes away with it, rather than lingering as
+    /// an empty skill directory.
     #[test]
     fn clearing_the_last_backup_prunes_the_directory() {
         let tmp = tempfile::tempdir().unwrap();
-        let staged = tmp.path().join("staged");
         let dest = tmp.path().join("dest");
-        fs::create_dir_all(dest.join("skills/gone")).unwrap();
+
+        let mut v1 = SENTINELS.to_vec();
+        v1.push(("skills/gone/SKILL.md", b"gone v1\n"));
+        let staged_v1 = tmp.path().join("v1");
+        stage_bundle(&staged_v1, "1.6.0", &v1);
+        AgentTool::Claude
+            .install_staged(&staged_v1, &dest, None)
+            .unwrap();
         fs::write(
             dest.join("skills/gone/SKILL.md.hyprlayer-backup"),
-            "dropped skill\n",
+            "older gone\n",
+        )
+        .unwrap();
+
+        // v2 drops the skill: orphan removal takes `SKILL.md` but cannot
+        // prune past the backup still sitting beside it, so the sweep has to
+        // be what finishes the directory off.
+        let staged_v2 = tmp.path().join("v2");
+        stage_bundle(&staged_v2, "1.6.1", &SENTINELS);
+        let report = AgentTool::Claude
+            .install_staged(&staged_v2, &dest, None)
+            .unwrap();
+
+        assert_eq!(report.removed, vec!["skills/gone/SKILL.md"]);
+        assert_eq!(report.cleaned_backups, 1);
+        assert!(!dest.join("skills/gone").exists());
+        assert!(dest.join("skills/code_review").is_dir());
+    }
+
+    /// The sweep must not reach outside `dest`. Walking the content
+    /// directories for the suffix did: `is_dir()` follows symlinks, so a
+    /// skills directory pointed at a dotfiles checkout — an ordinary thing
+    /// to do — put every matching file in that checkout in range. Driving
+    /// the sweep off the manifest instead means an unowned path is never
+    /// looked at, symlink or not.
+    #[test]
+    #[cfg(unix)]
+    fn the_sweep_never_follows_a_symlink_out_of_dest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = tmp.path().join("staged");
+        let dest = tmp.path().join("dest");
+
+        let outside = tmp.path().join("dotfiles");
+        fs::create_dir_all(&outside).unwrap();
+        let theirs = outside.join("SKILL.md.hyprlayer-backup");
+        fs::write(&theirs, "not ours\n").unwrap();
+
+        fs::create_dir_all(dest.join("skills")).unwrap();
+        std::os::unix::fs::symlink(&outside, dest.join("skills/linked")).unwrap();
+
+        stage_bundle(&staged, "1.6.0", &SENTINELS);
+        let report = AgentTool::Claude
+            .install_staged(&staged, &dest, None)
+            .unwrap();
+
+        assert_eq!(report.cleaned_backups, 0);
+        assert!(
+            theirs.is_file(),
+            "a file outside dest is never the sweep's to delete"
+        );
+    }
+
+    /// A symlink that happens to wear the suffix is not a copy we took, so
+    /// unlinking it would break whatever points through it.
+    #[test]
+    #[cfg(unix)]
+    fn the_sweep_leaves_a_symlink_wearing_the_suffix_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = tmp.path().join("staged");
+        let dest = tmp.path().join("dest");
+        let target = tmp.path().join("target.md");
+        fs::write(&target, "theirs\n").unwrap();
+
+        fs::create_dir_all(dest.join("skills/code_review")).unwrap();
+        std::os::unix::fs::symlink(
+            &target,
+            dest.join("skills/code_review/SKILL.md.hyprlayer-backup"),
         )
         .unwrap();
 
         stage_bundle(&staged, "1.6.0", &SENTINELS);
-        AgentTool::Claude
+        let report = AgentTool::Claude
             .install_staged(&staged, &dest, None)
             .unwrap();
 
-        assert!(!dest.join("skills/gone").exists());
-        assert!(dest.join("skills/code_review").is_dir());
+        assert_eq!(report.cleaned_backups, 0);
+        assert!(target.is_file(), "the symlink's target survives");
+        assert!(
+            fs::symlink_metadata(dest.join("skills/code_review/SKILL.md.hyprlayer-backup")).is_ok(),
+            "and so does the symlink itself"
+        );
+    }
+
+    /// The sweep runs after the bundle and the manifest are already on
+    /// disk, so it must never be what fails an install: the caller would
+    /// report a failure for an install that had in fact landed, and skip
+    /// its own bookkeeping with it.
+    #[test]
+    #[cfg(unix)]
+    fn a_cleanup_it_cannot_finish_still_leaves_the_install_successful() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = tmp.path().join("staged");
+        let dest = tmp.path().join("dest");
+        let dir = dest.join("skills/code_review");
+        fs::create_dir_all(&dir).unwrap();
+        // Already byte-identical to the bundle's copy, so the sync itself
+        // needs no write into this directory and the only thing left to
+        // fail is the cleanup.
+        fs::write(dir.join("SKILL.md"), "code_review v1\n").unwrap();
+        fs::write(dir.join("SKILL.md.hyprlayer-backup"), "old\n").unwrap();
+        // No unlink permission in the directory holding it.
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+
+        stage_bundle(&staged, "1.6.0", &SENTINELS);
+        let outcome = AgentTool::Claude.install_staged(&staged, &dest, None);
+
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            outcome.is_ok(),
+            "cleanup trouble is a warning, not a failed install: {:?}",
+            outcome.err()
+        );
+        assert!(
+            dest.join(INSTALLED_MANIFEST_FILE).is_file(),
+            "and the record this install wrote still stands"
+        );
     }
 
     #[test]
