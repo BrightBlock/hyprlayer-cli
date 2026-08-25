@@ -195,10 +195,27 @@ are removed, but only when they still match what we recorded — anything you
 edited stays.
 
 The first install after upgrading from a pre-1.6.0 hyprlayer has no such record
-and cannot prove which files are yours, so it writes the new bundle but saves
-what it replaces alongside as `<name>.hyprlayer-backup`. Merge anything you want
-to keep back, then delete those files; later installs skip the overwrite
-outright and take no backups.
+and cannot prove which files are yours, so it replaces the skills and agents it
+ships outright — those are ours to keep current, and `ai reinstall --version`
+puts an older bundle back if you need one. Your `~/.claude/settings.json` is the
+exception: an existing one is kept as it is, and only a fresh install gets our
+starter copy.
+
+Skills retired before 1.6.0 are cleaned up too. `ci_commit`, `create_plan_nt`
+and the six others dropped at that release are still on disk on every machine
+that ran an older hyprlayer — pre-1.6.0 installs kept no record, so nothing
+could prove they were ours to delete, and the harness kept finding them next to
+the skills that replaced them. The binary now carries a digest list of exactly
+what those installs wrote, so an install removes them, and removes only files
+that still match it byte for byte. Edit one and it is yours; it stays.
+
+1.6.0 handled that first install differently: it copied each file it replaced to
+`<name>.hyprlayer-backup`, which left one inside nearly every skill directory —
+extra files sitting where the harness scans for skills. Installs from 1.6.1 on
+clear those out of `agents/`, `skills/` and the other content directories, on
+the daily refresh as well as an explicit reinstall. A
+`settings.json.hyprlayer-backup` is left alone, since it may be the only copy of
+settings that install replaced — merge it back and delete it yourself.
 
 ### Frozen legacy trees
 
