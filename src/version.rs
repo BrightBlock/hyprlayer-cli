@@ -437,17 +437,17 @@ fn ensure_bundle_set_in(cfg: &mut config::HyprlayerConfig, now: i64) -> bool {
     let had_install = agents::bundle_set_has_existing_install();
     match agents::install_bundle_set(cfg.agents_pinned_version.as_deref(), true) {
         Ok(outcome) => {
-            if outcome.changed > 0 {
-                eprintln!(
-                    "{} Claude + Codex agent files ({} links).",
-                    if had_install { "Updated" } else { "Installed" },
-                    outcome.changed
-                );
-            }
             if let Some(sha) = outcome.sha {
                 cfg.agents_installed_sha = Some(sha);
             }
             if agents::bundle_set_is_installed(&desired) {
+                if outcome.changed > 0 {
+                    eprintln!(
+                        "{} Claude + Codex agent files ({} links).",
+                        if had_install { "Updated" } else { "Installed" },
+                        outcome.changed
+                    );
+                }
                 cfg.record_assets_version(&desired);
             } else {
                 eprintln!(

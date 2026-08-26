@@ -30,6 +30,7 @@ pub fn reinstall(args: AiReinstallArgs) -> Result<()> {
     }
     record_install(&mut hyprlayer_config, &config_path, outcome.sha)?;
     install_claude_hook_if_applicable(&hyprlayer_config);
+    println!("  Agent files installed successfully.");
 
     Ok(())
 }

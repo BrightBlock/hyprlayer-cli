@@ -227,8 +227,8 @@ impl AgentTool {
         let release_body = fetch_bundle_release(version)?;
         preflight_bundle_pair(&release_body, version)?;
 
-        let claude_count = self.fetch_into(&staged, &release_body, pinned_version)?;
-        let codex_count = fetch_codex_companion_into(&codex_staged, &release_body, pinned_version)?;
+        self.fetch_into(&staged, &release_body, pinned_version)?;
+        fetch_codex_companion_into(&codex_staged, &release_body, pinned_version)?;
 
         let report = install_claude_bundle_set(
             &staged,
@@ -242,13 +242,6 @@ impl AgentTool {
             quiet,
         )?;
         if !quiet {
-            println!(
-                "  {:<60}",
-                format!(
-                    "Downloaded and installed {} files from the v{version} release",
-                    claude_count + codex_count
-                )
-            );
             report.print();
         }
         let changed = report.changed;
@@ -356,13 +349,13 @@ impl AgentTool {
         staged: &Path,
         release_body: &str,
         pinned_version: Option<&str>,
-    ) -> Result<usize> {
+    ) -> Result<()> {
         let version = resolve_assets_version(pinned_version);
         let tag = format!("v{version}");
         let asset = asset_name(self.harness_slug(), version);
-        let count = fetch_harness_asset_from_release(release_body, &tag, &asset, staged)?;
+        fetch_harness_asset_from_release(release_body, &tag, &asset, staged)?;
         claude_staged_manifest(staged, pinned_version, version)?;
-        Ok(count)
+        Ok(())
     }
 }
 
@@ -523,13 +516,13 @@ fn fetch_codex_companion_into(
     staged: &Path,
     release_body: &str,
     pinned_version: Option<&str>,
-) -> Result<usize> {
+) -> Result<()> {
     let version = resolve_assets_version(pinned_version);
     let tag = format!("v{version}");
     let asset = asset_name(CODEX_HARNESS, version);
-    let count = fetch_harness_asset_from_release(release_body, &tag, &asset, staged)?;
+    fetch_harness_asset_from_release(release_body, &tag, &asset, staged)?;
     codex_staged_manifest(staged, pinned_version, version)?;
-    Ok(count)
+    Ok(())
 }
 
 fn release_lists_asset(release_body: &str, asset: &str) -> Result<bool> {
@@ -5380,6 +5373,24 @@ mod tests {
             friendly_release_fetch_error("1.6.2", http::HttpError::Status(403, raw.to_string()));
         let text = err.to_string();
         assert!(text.contains("HTTP 403: API rate limit exceeded"), "{text}");
+        assert!(!text.contains("documentation_url"), "{text}");
+        assert!(!text.contains("docs.github.com"), "{text}");
+    }
+
+    #[test]
+    fn asset_download_errors_also_hide_the_github_response() {
+        let raw = r#"{"message":"Not Found","documentation_url":"https://docs.github.com/rest"}"#;
+        let err = friendly_asset_download_error(
+            "v1.6.2",
+            "hyprlayer-assets-codex-1.6.2.tar.gz",
+            http::HttpError::Status(404, raw.to_string()),
+        );
+        let text = err.to_string();
+        assert!(
+            text.contains("hyprlayer-assets-codex-1.6.2.tar.gz"),
+            "{text}"
+        );
+        assert!(text.contains("ai versions"), "{text}");
         assert!(!text.contains("documentation_url"), "{text}");
         assert!(!text.contains("docs.github.com"), "{text}");
     }
