@@ -34,13 +34,13 @@ yay -S hyprlayer-bin
 ### Setup
 
 ```bash
-# Configure your AI tool
-hyprlayer ai configure
-
 # Initialize thoughts in a project
 cd ~/Projects/my-project
 hyprlayer thoughts init
 ```
+
+Claude Code and Codex assets are provisioned automatically on the first
+hyprlayer run; there is no platform-selection step.
 
 See the [Getting Started guide](https://brightblock.ai/hyprlayer/getting-started/installation/) for full setup instructions.
 
@@ -86,10 +86,15 @@ Run `hyprlayer storage info --json` from inside a project to see the resolved ba
 6. **Review** (`/code_review`) -- Adversarial diff review (codex CLI when available, Claude subagent otherwise)
 7. **Ship** (`/describe_pr`) -- Generate a PR description
 
-## Supported AI Tools
+## Supported AI platforms
 
 - **Claude Code** -- Anthropic's Claude Code CLI
-- **OpenCode** -- OpenCode CLI (GitHub Copilot, Anthropic, or Abacus providers).
+- **Codex** -- OpenAI's Codex CLI
+
+Hyprlayer always provisions both platform integrations. OpenCode remains a
+compatible app harness rather than a third installation target: Claude-family
+models use the Claude integration, and every other model uses the Codex
+integration.
 
 ## Commands
 
@@ -126,7 +131,12 @@ hyprlayer orchestrate grammar                            # the `when:` guard gra
 
 `check` never executes anything — no `exit0` probing, no PATH lookups, no config reads — which is what makes it safe to run from a hook or an editor on every keystroke. `compile` may probe live state (`exit0(...)` commands, `available()` PATH lookups, the effective storage backend) to resolve a step's `when:` guard; pass `--no-probe` to pin every fact explicitly instead and skip execution entirely.
 
-Both leaves validate against a **target harness's agent namespace** — `claude`, `opencode`, or `codex` — because the same skill file is often read by more than one. This matters because **OpenCode reads `~/.claude/skills/` directly**: a skill authored for Claude Code is loaded and executed by OpenCode with no action from the author, against a smaller agent registry. `check` defaults to every harness installed on the machine so an author sees the portability gap before it becomes a spawn-time failure; `compile` takes exactly one target, since a compiled plan is executed by a single harness.
+Both leaves validate against a **target platform's agent namespace** —
+`claude` or `codex` — because the same skill file is read by both. OpenCode
+maps its selected model to one of those two namespaces rather than carrying a
+separate agent registry. `check` defaults to both supported platforms;
+`compile` takes exactly one target, since a compiled plan is executed by a
+single model family.
 
 Worked example, from a checkout of this repo, against a real shipped skill's block:
 
@@ -156,21 +166,31 @@ hyprlayer orchestrate compile assets/claude/skills/research_codebase/SKILL.md --
 
 ## Agent bundles
 
-The skills, agents, and hooks hyprlayer installs into `~/.claude/` (or
-`~/.config/opencode/`, or VS Code's `User/`) ship as per-harness assets attached
-to each GitHub release — `hyprlayer-assets-<harness>-<version>.tar.gz`.
+The skills, agents, and hooks hyprlayer installs for Claude and Codex ship as
+two matching assets attached to each GitHub release:
+`hyprlayer-assets-{claude,codex}-<version>.tar.gz`.
 
 From **1.6.0** the bundle is pinned to a release version rather than tracking
-`master`. `hyprlayer ai configure` and `hyprlayer ai reinstall` download the
-asset matching the running binary, verify its SHA256 against the digest GitHub
-publishes for that asset, and refuse to install on a mismatch. Once the
-installed version matches the wanted one, the 24-hour startup check performs no
-network I/O at all.
+`master`. Hyprlayer provisions the matching Claude/Codex pair automatically;
+`hyprlayer ai reinstall` repairs it on demand. Both assets are downloaded and
+their published SHA256 digests verified before either live integration is
+changed. A release carrying only one half is not installable. Once the
+installed version and symlinks match the wanted generation, startup performs
+no network I/O at all.
+
+On every supported OS, bundle bytes live in
+`~/.config/hyprlayer/agents/<version>/{claude,codex}`. Claude and Codex agent
+and skill locations are per-entry link farms into that central generation,
+and `~/.agents/skills` links Codex's standard skill root to
+`~/.claude/skills`. Windows uses directory junctions where a directory
+symlink is unavailable, while file entries remain symlinks. If Windows does
+not permit file symlinks, setup stops with Developer Mode/elevation guidance
+instead of silently creating divergent copies.
 
 ### Choosing a version
 
 ```bash
-hyprlayer ai versions                      # releases carrying a bundle for your harness
+hyprlayer ai versions                      # releases carrying both supported bundles
 hyprlayer ai versions --json --limit 20
 hyprlayer ai reinstall --version 1.6.0     # pin to a version and install it
 hyprlayer ai reinstall --unpin             # back to the binary's own bundle
@@ -187,19 +207,17 @@ unauthenticated rate-limit budget.
 
 ### Your edits are kept
 
-Installs no longer overwrite files you have changed. Each install records the
-manifest it wrote, so the next one can tell its own files from yours: a file
-whose contents match neither the incoming version nor what we last installed is
-left alone and reported. Files a previous bundle owned and the new one dropped
-are removed, but only when they still match what we recorded — anything you
-edited stays.
+Installs never replace a personal file or an external link that occupies a
+managed name. They leave the collision in place, report the incomplete pair,
+and wait for you to resolve it. On the first store-mode install, exact
+digest-matched copies from older Hyprlayer releases are migrated to links;
+anything modified is treated as personal and kept. The desktop presents
+store-backed agents as read-only System entries, so customizations are made by
+creating a separate personal agent rather than editing shared release bytes.
 
-The first install after upgrading from a pre-1.6.0 hyprlayer has no such record
-and cannot prove which files are yours, so it replaces the skills and agents it
-ships outright — those are ours to keep current, and `ai reinstall --version`
-puts an older bundle back if you need one. Your `~/.claude/settings.json` is the
-exception: an existing one is kept as it is, and only a fresh install gets our
-starter copy.
+`~/.claude/settings.json` remains mutable configuration rather than an agent
+asset: an existing file is preserved, and only a missing file receives the
+starter settings.
 
 Skills retired before 1.6.0 are cleaned up too. `ci_commit`, `create_plan_nt`
 and the six others dropped at that release are still on disk on every machine
@@ -221,10 +239,11 @@ yourself.
 
 ### Frozen legacy trees
 
-The `claude/`, `copilot/`, and `opencode/` directories at the repo root are
-**frozen** and exist only to serve CLIs older than 1.6.0, whose download paths
-are compiled in and cannot be retargeted. Live skill and agent work happens in
-`assets/`, which is where the release bundles are cut from. See
+The root `claude/` directory is **frozen** and exists only to serve Claude
+installs made by CLIs older than 1.6.0, whose download path is compiled in and
+cannot be retargeted. It is not a live installation source. Current Claude
+and Codex work happens in `assets/`, which is where release bundles are cut
+from. See
 [assets/FROZEN.md](assets/FROZEN.md).
 
 ## Configuration

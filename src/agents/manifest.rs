@@ -22,7 +22,7 @@ pub const MANIFEST_FILE_NAME: &str = "manifest.json";
 pub struct BundleManifest {
     /// Release version this bundle was cut from, without a leading `v`.
     pub version: String,
-    /// Harness this bundle targets: "claude" | "copilot" | "opencode".
+    /// Supported platform this bundle targets: "claude" | "codex".
     pub harness: String,
     /// Oldest CLI version that can consume this bundle. Guards a forward
     /// pin: skills may reference CLI features an older binary lacks.
@@ -203,15 +203,15 @@ mod tests {
         let json = format!(
             r#"{{
   "version": "1.6.0",
-  "harness": "opencode",
+  "harness": "codex",
   "min_cli_version": "1.6.0",
   "files": [
-    {{"path": "agents/cartographer.md", "sha256": "{DIGEST_A}"}}
+    {{"path": "agents/cartographer.toml", "sha256": "{DIGEST_A}"}}
   ]
 }}"#
         );
         let manifest = BundleManifest::parse(&json).unwrap();
-        assert_eq!(manifest.harness, "opencode");
+        assert_eq!(manifest.harness, "codex");
         assert_eq!(manifest.files.len(), 1);
     }
 

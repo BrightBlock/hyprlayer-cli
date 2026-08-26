@@ -24,10 +24,9 @@ fn claude_agents() -> PathBuf {
     repo_root().join("assets/claude/agents")
 }
 
-/// `--agents-dir` requires exactly one target, so exercising two targets
-/// at once (claude + opencode) means installing both registries for real
-/// under the isolated `HOME`, rather than pointing `--agents-dir`
-/// anywhere.
+/// `--agents-dir` requires exactly one target, so exercising both supported
+/// platforms together means installing both native registries under the
+/// isolated HOME.
 fn install_agent_registries(xdg: &Path) {
     let claude_dest = xdg.join(".claude").join("agents");
     std::fs::create_dir_all(&claude_dest).unwrap();
@@ -35,13 +34,13 @@ fn install_agent_registries(xdg: &Path) {
         std::fs::copy(entry.path(), claude_dest.join(entry.file_name())).unwrap();
     }
 
-    let opencode_dest = xdg.join(".config").join("opencode").join("agents");
-    std::fs::create_dir_all(&opencode_dest).unwrap();
-    for entry in std::fs::read_dir(repo_root().join("assets/opencode/agents"))
+    let codex_dest = xdg.join(".codex").join("agents");
+    std::fs::create_dir_all(&codex_dest).unwrap();
+    for entry in std::fs::read_dir(repo_root().join("assets/codex/agents"))
         .unwrap()
         .flatten()
     {
-        std::fs::copy(entry.path(), opencode_dest.join(entry.file_name())).unwrap();
+        std::fs::copy(entry.path(), codex_dest.join(entry.file_name())).unwrap();
     }
 }
 
@@ -57,12 +56,10 @@ fn check_json(xdg: &Path) -> Value {
             "--target",
             "claude",
             "--target",
-            "opencode",
+            "codex",
         ],
     );
-    // Deliberately not asserting exit status here: opencode is expected
-    // to fail this fixture (the ten-agent gap), which is fine — this
-    // function only cares about the JSON shape.
+    assert!(out.status.success(), "check failed: {out:?}");
     serde_json::from_slice(&out.stdout).expect("check --json must always emit valid JSON")
 }
 
@@ -75,7 +72,11 @@ const PINS: [&str; 4] = [
 
 fn compile_json(xdg: &Path, target: &str) -> Value {
     let fixture_path = fixture();
-    let claude_agents_path = claude_agents();
+    let agents_path = if target == "codex" {
+        repo_root().join("assets/codex/agents")
+    } else {
+        claude_agents()
+    };
     let mut args = vec![
         "orchestrate",
         "compile",
@@ -83,7 +84,7 @@ fn compile_json(xdg: &Path, target: &str) -> Value {
         "--target",
         target,
         "--agents-dir",
-        claude_agents_path.to_str().unwrap(),
+        agents_path.to_str().unwrap(),
         "--areas",
         "4",
         "--request",
@@ -134,7 +135,7 @@ fn check_json_carries_the_documented_top_level_keys() {
     assert_eq!(
         targets.len(),
         2,
-        "one entry per active target (claude, opencode)"
+        "one entry per active target (claude, codex)"
     );
     for t in targets {
         assert!(t["target"].is_string());
@@ -293,10 +294,10 @@ fn the_plan_hash_is_the_digest_of_the_plan_with_plan_hash_removed() {
 fn the_same_block_compiled_for_two_targets_has_two_different_hashes() {
     let (_guard, xdg) = isolated_dirs();
     let claude_plan = compile_json(&xdg, "claude");
-    let opencode_plan = compile_json(&xdg, "opencode");
-    assert_ne!(claude_plan["planHash"], opencode_plan["planHash"]);
+    let codex_plan = compile_json(&xdg, "codex");
+    assert_ne!(claude_plan["planHash"], codex_plan["planHash"]);
     assert_eq!(claude_plan["target"], "claude");
-    assert_eq!(opencode_plan["target"], "opencode");
+    assert_eq!(codex_plan["target"], "codex");
 }
 
 #[test]

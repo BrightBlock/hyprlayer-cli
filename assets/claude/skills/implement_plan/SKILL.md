@@ -75,7 +75,7 @@ orchestration:
     - id: track
       requires: [read-referenced]
       inline: true
-      track-with: TodoWrite
+      track-with: task-list
       produces: phase-queue
       because: >
         One todo per phase, kept current for the whole run — the todos and the

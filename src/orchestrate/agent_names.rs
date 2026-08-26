@@ -20,9 +20,8 @@ pub enum AgentSource {
     },
 }
 
-/// One harness's agent namespace. Phase 2 implements Claude; Phase 3 adds
-/// OpenCode and Codex, which differ in all three dimensions — directory,
-/// filename convention, and where the name actually lives.
+/// One native platform's agent namespace. OpenCode selects one of these
+/// registries from its model family rather than owning a third namespace.
 pub trait AgentRegistry {
     /// Directories consulted, in order, for the error message.
     fn search_paths(&self) -> Vec<PathBuf>;
@@ -36,8 +35,8 @@ pub struct ClaudeRegistry;
 impl AgentRegistry for ClaudeRegistry {
     fn search_paths(&self) -> Vec<PathBuf> {
         let mut dirs = vec![PathBuf::from("./.claude/agents")];
-        if let Ok(home_dest) = crate::agents::AgentTool::Claude.dest_dir() {
-            dirs.push(home_dest.join("agents"));
+        if let Some(home) = dirs::home_dir() {
+            dirs.push(home.join(".claude/agents"));
         }
         dirs
     }
@@ -110,109 +109,15 @@ fn extract_frontmatter(content: &str) -> Option<String> {
 pub fn registry_for(target: Target) -> Box<dyn AgentRegistry> {
     match target {
         Target::Claude => Box::new(ClaudeRegistry),
-        Target::OpenCode => Box::new(OpenCodeRegistry),
         Target::Codex => Box::new(CodexRegistry),
     }
-}
-
-pub struct OpenCodeRegistry;
-
-impl AgentRegistry for OpenCodeRegistry {
-    fn search_paths(&self) -> Vec<PathBuf> {
-        let mut dirs = vec![PathBuf::from("./.opencode/agents")];
-        if let Ok(home_dest) = crate::agents::AgentTool::OpenCode.dest_dir() {
-            dirs.push(home_dest.join("agents"));
-        }
-        dirs
-    }
-
-    fn builtins(&self) -> &'static [&'static str] {
-        &["general", "explore", "scout"]
-    }
-
-    fn resolve(&self, dirs: &[PathBuf]) -> AgentSource {
-        let mut names = BTreeSet::new();
-        for dir in dirs {
-            names.extend(opencode_agent_names_in(dir));
-        }
-        for json_path in opencode_json_candidates() {
-            names.extend(opencode_json_agent_names(&json_path));
-        }
-        if names.is_empty() {
-            AgentSource::None {
-                searched: dirs.to_vec(),
-            }
-        } else {
-            AgentSource::Resolved(names)
-        }
-    }
-}
-
-fn opencode_agent_names_in(dir: &Path) -> Vec<String> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    entries
-        .flatten()
-        .filter(|e| e.path().extension().and_then(|e| e.to_str()) == Some("md"))
-        .filter_map(|e| opencode_agent_name_from_file(&e.path()))
-        .collect()
-}
-
-/// OpenCode agent names come from the **filename**, never frontmatter —
-/// verified: 0 of 9 files in `assets/opencode/agents/` carry a `name:` key.
-/// Only `mode: subagent` entries count: a `mode: primary` agent cannot be
-/// spawned as a subagent, so admitting it would make check 6 accept a
-/// name that fails at runtime. A file with no discoverable `mode:` at all
-/// is excluded rather than guessed at.
-fn opencode_agent_name_from_file(path: &Path) -> Option<String> {
-    let content = std::fs::read_to_string(path).ok()?;
-    let frontmatter = extract_frontmatter(&content)?;
-    let docs = MarkedYaml::load_from_str(&frontmatter).ok()?;
-    let doc = docs.into_iter().next()?;
-    let mode = doc
-        .data
-        .as_mapping_get("mode")
-        .and_then(|n| n.data.as_str());
-    if mode != Some("subagent") {
-        return None;
-    }
-    path.file_stem()?.to_str().map(str::to_string)
-}
-
-/// OpenCode agents may also be declared inline in `opencode.json` under an
-/// `agent` key (`{"agent": {"my-agent": {...}}}`) — checked at both the
-/// project root and the global OpenCode config directory.
-fn opencode_json_candidates() -> Vec<PathBuf> {
-    let mut candidates = vec![PathBuf::from("./opencode.json")];
-    if let Ok(home_dest) = crate::agents::AgentTool::OpenCode.dest_dir() {
-        candidates.push(home_dest.join("opencode.json"));
-    }
-    candidates
-}
-
-fn opencode_json_agent_names(path: &Path) -> Vec<String> {
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
-        return Vec::new();
-    };
-    value
-        .get("agent")
-        .and_then(|v| v.as_object())
-        .map(|obj| obj.keys().cloned().collect())
-        .unwrap_or_default()
 }
 
 pub struct CodexRegistry;
 
 impl AgentRegistry for CodexRegistry {
-    /// Codex has no `AgentTool` variant and no hyprlayer-managed install
-    /// (`src/agents.rs`'s `AgentTool` is `Claude | Copilot | OpenCode`) —
-    /// its paths are constructed directly from `dirs::home_dir()`.
-    /// `orchestrate` validates against the user's own registry without
-    /// owning it.
+    /// Codex custom agents are TOML files in project/personal config roots.
+    /// `orchestrate` validates against the user's registry without owning it.
     fn search_paths(&self) -> Vec<PathBuf> {
         let mut dirs = vec![PathBuf::from("./.codex/agents")];
         if let Some(home) = dirs::home_dir() {
@@ -222,7 +127,7 @@ impl AgentRegistry for CodexRegistry {
     }
 
     fn builtins(&self) -> &'static [&'static str] {
-        &["default", "worker", "explorer"]
+        &[]
     }
 
     fn resolve(&self, dirs: &[PathBuf]) -> AgentSource {
@@ -331,42 +236,6 @@ mod tests {
     }
 
     #[test]
-    fn opencode_agent_names_come_from_the_filename_not_frontmatter() {
-        let dir = tempfile::tempdir().unwrap();
-        // File stem differs from any frontmatter field on purpose — there
-        // is no `name:` key in real opencode agent files (verified: 0 of
-        // 9), so the stem must be what resolves.
-        let path = dir.path().join("codebase-locator.md");
-        std::fs::write(&path, "---\ndescription: x\nmode: subagent\n---\n\nbody\n").unwrap();
-        assert_eq!(
-            opencode_agent_name_from_file(&path),
-            Some("codebase-locator".to_string())
-        );
-    }
-
-    #[test]
-    fn an_opencode_primary_mode_agent_is_not_spawnable() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("build.md");
-        std::fs::write(&path, "---\ndescription: x\nmode: primary\n---\n\nbody\n").unwrap();
-        assert_eq!(opencode_agent_name_from_file(&path), None);
-    }
-
-    #[test]
-    fn all_repo_opencode_agent_names_resolve_and_have_the_ten_agent_gap() {
-        let repo_agents = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/opencode/agents");
-        let registry = OpenCodeRegistry;
-        let AgentSource::Resolved(names) = registry.resolve(&[repo_agents]) else {
-            panic!("expected the repo's assets/opencode/agents/ to resolve names");
-        };
-        assert!(names.contains("codebase-locator"));
-        // The ten-agent Claude/OpenCode gap.
-        assert!(!names.contains("cartographer"));
-        assert!(!names.contains("archivist"));
-        assert!(!names.contains("ship"));
-    }
-
-    #[test]
     fn codex_agent_names_are_read_from_toml() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("weird-stem.toml");
@@ -389,22 +258,19 @@ mod tests {
     }
 
     #[test]
-    fn codex_builtins_resolve_without_a_file() {
+    fn codex_has_no_unverified_builtin_agent_names() {
         let registry = CodexRegistry;
-        assert!(registry.builtins().contains(&"default"));
-        assert!(registry.builtins().contains(&"worker"));
-        assert!(registry.builtins().contains(&"explorer"));
+        assert!(registry.builtins().is_empty());
     }
 
     /// The registries' identity was previously asserted here through a
     /// `target()` accessor that nothing else called. Those three assertions
     /// were tautological — each impl returned a literal — and the invariant
     /// worth holding, that `registry_for` dispatches each `Target` to the
-    /// right registry, is covered behaviourally by
-    /// `orchestrate_targets.rs::a_claude_only_agent_is_an_error_for_opencode`,
-    /// which drives the binary and fails on any mis-dispatch.
+    /// right registry, is covered behaviourally by integration tests that
+    /// drive each target through the binary.
     #[test]
-    fn each_registrys_search_paths_are_distinct() {
+    fn registries_search_their_native_roots() {
         assert!(
             ClaudeRegistry
                 .search_paths()

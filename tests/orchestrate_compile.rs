@@ -4,16 +4,98 @@
 
 mod common;
 
+use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use common::{hyprlayer_bin, isolated_dirs, run};
+use saphyr::{LoadableYamlNode, MarkedYaml};
 use wait_timeout::ChildExt;
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+fn skill_fixtures() -> Vec<PathBuf> {
+    let skills_dir = repo_root().join("assets/claude/skills");
+    let mut fixtures: Vec<PathBuf> = std::fs::read_dir(skills_dir)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path().join("SKILL.md"))
+        .filter(|path| path.is_file())
+        .collect();
+    fixtures.sort();
+    fixtures
+}
+
+/// Read the declared `over:` value for every fan-out step from the parsed
+/// orchestration block. The compile matrix must not assume `--areas`: five
+/// of the seven fan-outs iterate a differently named list.
+fn fanout_bindings(skill: &Path) -> Vec<String> {
+    let src = std::fs::read_to_string(skill).unwrap();
+    let fenced = src
+        .split_once("```yaml\n")
+        .and_then(|(_, rest)| rest.split_once("\n```").map(|(yaml, _)| yaml))
+        .unwrap_or_else(|| panic!("{} has no YAML fence", skill.display()));
+    let docs = MarkedYaml::load_from_str(fenced)
+        .unwrap_or_else(|e| panic!("{} has invalid YAML: {e}", skill.display()));
+    let document = docs
+        .first()
+        .unwrap_or_else(|| panic!("{} has an empty YAML fence", skill.display()));
+    let steps = document
+        .data
+        .as_mapping_get("orchestration")
+        .and_then(|node| node.data.as_mapping_get("steps"))
+        .and_then(|node| node.data.as_sequence())
+        .unwrap_or_else(|| panic!("{} has no orchestration.steps", skill.display()));
+
+    steps
+        .iter()
+        .filter(|step| step.data.as_mapping_get("fanout").is_some())
+        .map(|step| {
+            let over = step
+                .data
+                .as_mapping_get("over")
+                .and_then(|node| node.data.as_str())
+                .unwrap_or_else(|| {
+                    panic!("{} has a fan-out step without `over:`", skill.display())
+                });
+            format!("{over}=2")
+        })
+        .collect()
+}
+
+fn run_owned(xdg: &Path, args: &[String]) -> std::process::Output {
+    let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+    run(xdg, &borrowed)
+}
+
+fn assert_plan_schema(plan: &serde_json::Value) {
+    let actual: BTreeSet<&str> = plan
+        .as_object()
+        .expect("plan must be a JSON object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    let expected: BTreeSet<&str> = [
+        "guards",
+        "planHash",
+        "skipped",
+        "skill",
+        "source",
+        "stepCount",
+        "target",
+        "totalSpawns",
+        "unresolved",
+        "version",
+        "waveCount",
+        "waves",
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(actual, expected, "plan JSON schema changed: {plan}");
 }
 
 // The target skill reproduces the observed run ONLY with these pins:
@@ -238,6 +320,126 @@ fn two_identical_invocations_produce_byte_identical_stdout() {
     let out1 = run(&xdg, &args);
     let out2 = run(&xdg, &args);
     assert_eq!(out1.stdout, out2.stdout);
+}
+
+#[test]
+fn all_fourteen_skills_compile_identically_for_claude_and_codex() {
+    let (_guard, xdg) = isolated_dirs();
+    let fixtures = skill_fixtures();
+    assert_eq!(
+        fixtures.len(),
+        14,
+        "unexpected skill inventory: {fixtures:?}"
+    );
+
+    // `compile` intentionally records agent names without resolving them.
+    // Drive all files through `check` once so this matrix also proves every
+    // spawning step names an agent in the generated Codex agent directory,
+    // using Codex's real registry dispatch rather than a duplicate test
+    // parser.
+    let codex_agents = repo_root().join("assets/codex/agents");
+    let mut check_args = vec!["orchestrate".to_string(), "check".to_string()];
+    check_args.extend(fixtures.iter().map(|path| path.display().to_string()));
+    check_args.extend([
+        "--json".to_string(),
+        "--target".to_string(),
+        "codex".to_string(),
+        "--agents-dir".to_string(),
+        codex_agents.display().to_string(),
+    ]);
+    let checked = run_owned(&xdg, &check_args);
+    assert!(
+        checked.status.success(),
+        "Codex agent resolution failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&checked.stdout),
+        String::from_utf8_lossy(&checked.stderr)
+    );
+    let check_payload: serde_json::Value = serde_json::from_slice(&checked.stdout).unwrap();
+    let checked_files = check_payload["files"].as_array().expect("check files[]");
+    assert_eq!(
+        checked_files.len(),
+        fixtures.len(),
+        "payload: {check_payload}"
+    );
+    for file in checked_files {
+        let targets = file["targets"].as_array().expect("check targets[]");
+        assert_eq!(targets.len(), 1, "payload: {file}");
+        assert_eq!(targets[0]["target"], "codex", "payload: {file}");
+        assert_eq!(targets[0]["ok"], true, "payload: {file}");
+        assert!(
+            targets[0]["findings"]
+                .as_array()
+                .expect("target findings[]")
+                .iter()
+                .all(|finding| !finding["message"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("no agent source found")),
+            "Codex registry skipped agent resolution: {file}"
+        );
+    }
+
+    let mut fanout_steps = 0;
+    for fixture in fixtures {
+        let bindings = fanout_bindings(&fixture);
+        fanout_steps += bindings.len();
+        let mut plans = Vec::new();
+
+        for target in ["claude", "codex"] {
+            let agents = if target == "claude" {
+                repo_root().join("assets/claude/agents")
+            } else {
+                codex_agents.clone()
+            };
+            let mut args = vec![
+                "orchestrate".to_string(),
+                "compile".to_string(),
+                fixture.display().to_string(),
+                "--target".to_string(),
+                target.to_string(),
+                "--agents-dir".to_string(),
+                agents.display().to_string(),
+                "--request".to_string(),
+                "compile matrix".to_string(),
+                "--no-probe".to_string(),
+            ];
+            args.extend(PINS.into_iter().map(str::to_string));
+            for binding in &bindings {
+                args.push("--fanout".to_string());
+                args.push(binding.clone());
+            }
+
+            let out = run_owned(&xdg, &args);
+            assert!(
+                out.status.success(),
+                "{} failed for {target}:\nstdout: {}\nstderr: {}",
+                fixture.display(),
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let plan: serde_json::Value = serde_json::from_slice(&out.stdout)
+                .unwrap_or_else(|e| panic!("{} ({target}): {e}", fixture.display()));
+            assert_plan_schema(&plan);
+            assert_eq!(plan["target"], target, "payload: {plan}");
+            plans.push(plan);
+        }
+
+        // Normalize the two target-dependent fields, then demand
+        // byte-identical canonical JSON. Everything describing actual
+        // scheduling must remain identical: waves, bindings, spawn counts,
+        // guards, skips, and unresolved choices.
+        let claude = plans.remove(0);
+        let mut codex = plans.remove(0);
+        codex["target"] = claude["target"].clone();
+        codex["planHash"] = claude["planHash"].clone();
+        assert_eq!(
+            serde_json::to_vec_pretty(&claude).unwrap(),
+            serde_json::to_vec_pretty(&codex).unwrap(),
+            "target changed the schedule for {}",
+            fixture.display()
+        );
+    }
+    assert_eq!(fanout_steps, 7, "unexpected fan-out inventory");
 }
 
 #[test]

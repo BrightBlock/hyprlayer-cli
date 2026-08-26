@@ -73,16 +73,6 @@ pub fn init(args: InitArgs) -> Result<()> {
         super::detect::ensure_cwd_outside_thoughts_repo(thoughts, &current_repo, "init")?;
     }
 
-    if hyprlayer_config
-        .ai
-        .as_ref()
-        .is_none_or(|ai| ai.agent_tool.is_none())
-    {
-        return Err(anyhow::anyhow!(
-            "AI tool not configured. Run 'hyprlayer ai configure' first."
-        ));
-    }
-
     let orphaned = hyprlayer_config.thoughts_mut().find_orphaned_mappings();
     if !orphaned.is_empty() {
         println!(
@@ -113,7 +103,6 @@ pub fn init(args: InitArgs) -> Result<()> {
 
     require_git_repo_for_filesystem_backend(&current_repo, backend_kind)?;
 
-    let agent_tool = hyprlayer_config.ai.as_ref().and_then(|a| a.agent_tool);
     let refreshed = prompt_for_thoughts_fields(
         hyprlayer_config.thoughts.clone().unwrap_or_default(),
         &existing_profile,
@@ -123,7 +112,6 @@ pub fn init(args: InitArgs) -> Result<()> {
         &notion_flags,
         &anytype_flags,
         &profile,
-        agent_tool,
     )?;
     hyprlayer_config.thoughts = Some(refreshed);
 
@@ -212,16 +200,6 @@ fn init_non_interactive(
         if !thoughts.is_thoughts_configured() {
             return Err(anyhow::anyhow!(
                 "Config is incomplete. Run 'hyprlayer thoughts init' interactively to complete setup."
-            ));
-        }
-
-        if hyprlayer_config
-            .ai
-            .as_ref()
-            .is_none_or(|ai| ai.agent_tool.is_none())
-        {
-            return Err(anyhow::anyhow!(
-                "AI tool not configured. Run 'hyprlayer ai configure' first."
             ));
         }
 
@@ -390,7 +368,6 @@ fn prompt_for_thoughts_fields(
     notion_flags: &NotionFlags,
     anytype_flags: &AnytypeFlags,
     profile: &Option<String>,
-    agent_tool: Option<crate::agents::AgentTool>,
 ) -> Result<ThoughtsConfig> {
     let theme = ColorfulTheme::default();
 
@@ -513,7 +490,6 @@ fn prompt_for_thoughts_fields(
             &theme,
             existing_profile.backend.as_anytype(),
             anytype_flags,
-            agent_tool,
         )?),
     };
 
@@ -588,7 +564,6 @@ fn prompt_anytype_config(
     theme: &ColorfulTheme,
     existing: Option<&AnytypeConfig>,
     flags: &AnytypeFlags,
-    agent_tool: Option<crate::agents::AgentTool>,
 ) -> Result<AnytypeConfig> {
     let default_space = existing.map(|a| a.space_id.clone()).unwrap_or_default();
     let space_id = match flags.space_id.clone() {
@@ -611,9 +586,7 @@ fn prompt_anytype_config(
     // Skip the token-env prompt when Anytype MCP is already wired up. The
     // token is only used by the MCP server, and hyprlayer never reads its
     // value directly.
-    let mcp_already_registered = agent_tool
-        .map(crate::backends::anytype::is_anytype_mcp_registered)
-        .unwrap_or(false);
+    let mcp_already_registered = crate::backends::anytype::is_anytype_mcp_registered();
     let api_token_env = if mcp_already_registered {
         println!(
             "{}",
@@ -961,8 +934,7 @@ fn dispatch_backend_init(
         .expect("thoughts config must exist here")
         .effective_config_for(&current_repo_str);
 
-    let agent_tool = config.ai.as_ref().and_then(|a| a.agent_tool);
-    let ctx = BackendContext::new(current_repo, &effective).with_agent_tool(agent_tool);
+    let ctx = BackendContext::new(current_repo, &effective);
     let backend_impl = backends::for_kind(backend_kind);
     backend_impl.init(&ctx)?;
 

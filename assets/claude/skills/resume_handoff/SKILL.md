@@ -196,7 +196,7 @@ orchestration:
     - id: action-plan
       requires: [confirm-direction]
       inline: true
-      track-with: TodoWrite
+      track-with: task-list
       produces: task-list
       judgment: >
         In what order does the surviving work go, given what verification

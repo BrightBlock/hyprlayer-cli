@@ -58,7 +58,7 @@ orchestration:
       requires: [read-plan]
       inline: true
       produces: research-areas
-      track-with: TodoWrite
+      track-with: task-list
       judgment: >
         Does this change need new technical understanding, and if so what are
         the areas and the exact directories each one owns? An empty list is a

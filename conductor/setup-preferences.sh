@@ -22,7 +22,7 @@ cat >> "$preferences_dir/README.md" <<'EOF'
 | `create-pr.md` | Create PR |
 | `branch-rename.md` | Branch rename |
 
-Skill paths assume `hyprlayer ai configure` has populated `~/.claude/skills/` on the machine.
+Skill paths are provisioned automatically into `~/.claude/skills/` by hyprlayer.
 EOF
 
 cat > "$preferences_dir/code-review.md" <<'EOF'

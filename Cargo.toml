@@ -24,6 +24,8 @@ hex = "0.4"
 # Atomic binary replacement without pulling in a second HTTP client.
 self-replace = "1.5"
 tempfile = "3"
+# Serialize automatic repair and explicit reinstall across CLI processes.
+fs2 = "0.4"
 # Bounded `Child::wait_timeout` so package-manager probes can't hang CLI startup.
 wait-timeout = "0.2"
 # Single-request bundle download: one gzipped repo archive from codeload
@@ -51,5 +53,9 @@ libc = "0.2"
 # Result when the console can't support it. Windows-only so it never enters the
 # dependency graph for other platforms.
 enable-ansi-support = "0.2"
+# Directory links normally require Developer Mode or elevated privileges on
+# Windows. Managed directory entries and the Codex skill bridge fall back to
+# junctions; managed files deliberately remain true symlinks.
+junction = "2.0.0"
 
 [dev-dependencies]

@@ -1,7 +1,7 @@
 //! One-time privacy disclosure printed on first auto-enrollment to the
 //! community PostHog project. Suppressed when an org override resolves
 //! (the org has handled comms internally) and when telemetry is disabled
-//! before `ai configure` runs.
+//! before automatic agent provisioning runs.
 
 fn print_lines(lines: &[&str]) {
     for line in lines {

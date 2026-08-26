@@ -491,7 +491,7 @@ mod tests {
             tmp.path(),
             &[
                 TestEntry::File("repo-abc/claude/agents/a.md", b"a"),
-                TestEntry::File("repo-abc/copilot/agents/b.md", b"b"),
+                TestEntry::File("repo-abc/unrelated/agents/b.md", b"b"),
                 TestEntry::File("repo-abc/README.md", b"c"),
             ],
         );
@@ -499,7 +499,7 @@ mod tests {
         let count = extract_subdir(&archive, "claude", &dest).unwrap();
         assert_eq!(count, 1);
         assert!(dest.join("agents/a.md").is_file());
-        assert!(!dest.join("../copilot").exists());
+        assert!(!dest.join("../unrelated").exists());
         let mut walked = Vec::new();
         for entry in walkdir(&dest) {
             walked.push(entry);

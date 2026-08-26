@@ -206,19 +206,7 @@ pub struct ProfileDeleteArgs {
 // AI command argument structs
 
 #[derive(Debug, Args)]
-#[command(
-    name = "configure",
-    about = "Configure AI tool and install agent files"
-)]
-pub struct AiConfigureArgs {
-    #[arg(long, help = "Force reconfiguration even if already set up")]
-    pub force: bool,
-    #[command(flatten)]
-    pub config: ConfigArgs,
-}
-
-#[derive(Debug, Args)]
-#[command(name = "status", about = "Show current AI tool configuration")]
+#[command(name = "status", about = "Show Claude and Codex agent bundle status")]
 pub struct AiStatusArgs {
     #[arg(long, help = "Output as JSON")]
     pub json: bool,
@@ -227,7 +215,10 @@ pub struct AiStatusArgs {
 }
 
 #[derive(Debug, Args)]
-#[command(name = "reinstall", about = "Reinstall AI agent files")]
+#[command(
+    name = "reinstall",
+    about = "Repair or reinstall Claude and Codex agent files"
+)]
 pub struct AiReinstallArgs {
     // The pin is persisted and survives binary upgrades, so a bundle that
     // regressed can be held back until it is fixed.
@@ -368,8 +359,8 @@ pub struct OrchestrateCompileArgs {
     #[arg(long)]
     pub agents_dir: Vec<PathBuf>,
     /// Harness this plan will be executed by. Exactly one — a plan is run
-    /// by a single harness. Defaults to `ai.agentTool` from config, then
-    /// `claude`. (`check` takes many; `compile` takes one. See --help.)
+    /// by a single harness. Defaults to `claude`. (`check` takes many;
+    /// `compile` takes one. See --help.)
     #[arg(long, value_enum)]
     pub target: Vec<crate::orchestrate::target::Target>,
     /// Print a colored wave listing instead of JSON

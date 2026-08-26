@@ -113,8 +113,8 @@ pub fn run(xdg: &Path, args: &[&str]) -> std::process::Output {
 /// `run()` with the child's working directory pinned too.
 ///
 /// Every agent registry's first search path is cwd-relative
-/// (`./.claude/agents`, `./.opencode/agents`, `./opencode.json`,
-/// `./.codex/agents`), and cargo runs integration tests with cwd set to
+/// (`./.claude/agents` and `./.codex/agents`), and cargo runs integration
+/// tests with cwd set to
 /// the manifest directory — so an isolated `HOME` alone does not isolate
 /// target discovery. A developer whose checkout contains a `.claude/`
 /// directory (which `.gitignore` ignores, so it is invisible to git) makes

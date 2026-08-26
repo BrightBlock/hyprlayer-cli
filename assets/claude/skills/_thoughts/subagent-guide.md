@@ -13,6 +13,10 @@ Two families:
 
 The catalog matters most at an `agent: one-of [a, b, c]` step. `orchestrate compile` deliberately declines to pick — it records the choice in `unresolved[]` and leaves it to you. These tables are what you decide from.
 
+On native Codex, these names have two resolution modes: normally, spawn the matching custom agent installed at `~/.codex/agents/`; if custom agents are gated off or the bundle is not installed, fall back to the matching persona in `./.claude/agents/` and then `~/.claude/agents/`.
+
+OpenCode always uses a persona-file fallback. Hyprlayer exposes the shared skills through `~/.claude/skills`, but OpenCode does not discover either custom-agent registry. With a Claude model, read `./.claude/agents/<name>.md` and then `~/.claude/agents/<name>.md`; with every other model, read `./.codex/agents/<name>.toml` and then `~/.codex/agents/<name>.toml`, carrying its `developer_instructions`. In either case, put those instructions into a generic OpenCode sub-agent prompt. The model family also selects the return transport: Claude models follow Claude behavior, while every other model follows Codex behavior. Follow `orchestration-runtime.md` for the corresponding in-band or file-mediated fan-out prompt contract.
+
 ## Stage agents
 
 | Stage | Agent | What you get back |

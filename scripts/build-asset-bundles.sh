@@ -9,9 +9,9 @@
 # the tarball are relative to the harness root — there is no repo-root
 # component, so extraction needs no stripping.
 #
-# The bundles are cut from `assets/<harness>/`, never from the frozen root
-# `claude/`, `copilot/`, `opencode/` trees, which exist only for pre-1.6.0
-# clients (see `assets/FROZEN.md`).
+# The supported Claude and Codex bundles are cut from `assets/<harness>/`,
+# never from the frozen root trees retained for pre-1.6.0 clients (see
+# `assets/FROZEN.md`).
 #
 # Every bundle is verified after packing: the tarball is extracted to a temp
 # dir, its `manifest.json` is re-read, and every recorded SHA256 is compared
@@ -29,7 +29,7 @@ set -euo pipefail
 # CLI ships `hyprlayer orchestrate`, which the declarative skills invoke.
 min_cli_version="1.6.0"
 
-harnesses=(claude copilot opencode)
+harnesses=(claude codex)
 
 # Paths are emitted into JSON and into a tar archive unescaped, so restrict
 # them to characters that need neither. A name outside this set is a build

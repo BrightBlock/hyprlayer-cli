@@ -2,9 +2,13 @@ pub(crate) mod archive;
 pub(crate) mod manifest;
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+use fs2::FileExt;
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
+use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{MAIN_SEPARATOR_STR as SEP, Path, PathBuf};
 use std::time::Duration;
@@ -25,6 +29,14 @@ const BRANCH: &str = "master";
 /// `dest` — see `install_staged`. Dotted so it stays out of the harness's
 /// own file globs.
 const INSTALLED_MANIFEST_FILE: &str = ".hyprlayer-manifest.json";
+
+/// Claude and Codex are installed as one supported bundle set: the shared skill source remains
+/// `~/.claude/skills`, while standalone Codex also receives custom-agent
+/// definitions and a native-root bridge into that source tree.
+const CLAUDE_REPO_DIR: &str = "assets/claude";
+const CODEX_HARNESS: &str = "codex";
+const CODEX_REPO_DIR: &str = "assets/codex";
+const AGENT_STORE_DIR: &str = "agents";
 
 /// GitHub Contents/commits API responses for a single directory listing run
 /// a few KB. 1 MiB is two orders of magnitude of headroom and stops a
@@ -60,106 +72,42 @@ pub(crate) fn asset_name(harness: &str, version: &str) -> String {
     format!("hyprlayer-assets-{harness}-{version}.tar.gz")
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum AgentTool {
+/// Internal helper for the Claude half of the pair. This is deliberately
+/// private: there is no user-selectable harness installation anymore.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentTool {
     Claude,
-    Copilot,
-    OpenCode,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "kebab-case")]
-pub enum OpenCodeProvider {
-    GithubCopilot,
-    Anthropic,
-    Abacus,
-}
-
-impl fmt::Display for OpenCodeProvider {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::GithubCopilot => write!(f, "GitHub Copilot"),
-            Self::Anthropic => write!(f, "Anthropic"),
-            Self::Abacus => write!(f, "Abacus"),
-        }
-    }
-}
-
-impl OpenCodeProvider {
-    pub const ALL: &[OpenCodeProvider] = &[
-        OpenCodeProvider::GithubCopilot,
-        OpenCodeProvider::Anthropic,
-        OpenCodeProvider::Abacus,
-    ];
-
-    pub fn default_sonnet_model(&self) -> &str {
-        match self {
-            Self::GithubCopilot => "github-copilot/claude-sonnet-5",
-            Self::Anthropic => "anthropic/claude-sonnet-5",
-            Self::Abacus => "abacus/claude-sonnet-5",
-        }
-    }
-
-    pub fn default_opus_model(&self) -> &str {
-        match self {
-            Self::GithubCopilot => "github-copilot/claude-opus-5",
-            Self::Anthropic => "anthropic/claude-opus-5",
-            Self::Abacus => "abacus/claude-opus-5",
-        }
-    }
-
-    /// Abacus and GitHub Copilot route to their highest-reasoning codex
-    /// variant for a true cross-model second opinion; Anthropic stays on
-    /// claude-opus-5 because the Anthropic API is Claude-only.
-    ///
-    /// Model ids are the ones opencode resolves through the models.dev
-    /// registry, so a rename upstream shows up here as an unresolvable
-    /// model rather than a silent downgrade — `gpt-5-codex` was dropped
-    /// from Copilot's catalog, which is why it is `gpt-5.3-codex` now.
-    pub fn default_adversarial_model(&self) -> &str {
-        match self {
-            Self::GithubCopilot => "github-copilot/gpt-5.3-codex",
-            Self::Anthropic => "anthropic/claude-opus-5",
-            Self::Abacus => "abacus/gpt-5.3-codex-xhigh",
-        }
-    }
-
-    pub fn provider_prefix(&self) -> &str {
-        match self {
-            Self::GithubCopilot => "github-copilot",
-            Self::Anthropic => "anthropic",
-            Self::Abacus => "abacus",
-        }
-    }
 }
 
 impl fmt::Display for AgentTool {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Claude => write!(f, "Claude Code"),
-            Self::Copilot => write!(f, "GitHub Copilot"),
-            Self::OpenCode => write!(f, "OpenCode"),
         }
     }
 }
 
 impl AgentTool {
-    pub const ALL: &[AgentTool] = &[AgentTool::Claude, AgentTool::Copilot, AgentTool::OpenCode];
+    #[cfg(test)]
+    const ALL: &[AgentTool] = &[AgentTool::Claude];
 
-    pub(crate) fn repo_dir(&self) -> &str {
+    fn harness_slug(&self) -> &str {
         match self {
             Self::Claude => "claude",
-            Self::Copilot => "copilot",
-            Self::OpenCode => "opencode",
+        }
+    }
+
+    fn live_repo_dir(&self) -> &str {
+        match self {
+            Self::Claude => CLAUDE_REPO_DIR,
         }
     }
 
     /// The frozen legacy tree as a file list, standing in for the record a
     /// pre-1.6.0 install never wrote.
     ///
-    /// Those clients download `claude/`, `copilot/`, `opencode/` from the
-    /// repo root, and those trees have been frozen since 1.6.0 (see
+    /// Those clients download `claude/` from the repo root, and that tree
+    /// has been frozen since 1.6.0 (see
     /// `assets/FROZEN.md`), so what they put in `dest` is known exactly.
     /// `scripts/build-frozen-manifests.sh` generates the lists embedded
     /// here, and `frozen_manifests_match_the_frozen_trees` holds them to
@@ -179,11 +127,7 @@ impl AgentTool {
     /// an install that cleans nothing up — rather than aborting an
     /// otherwise-good install.
     fn frozen_manifest(&self) -> Vec<ManifestEntry> {
-        let json = match self {
-            Self::Claude => include_str!("agents/frozen/claude.json"),
-            Self::Copilot => include_str!("agents/frozen/copilot.json"),
-            Self::OpenCode => include_str!("agents/frozen/opencode.json"),
-        };
+        let json = include_str!("agents/frozen/claude.json");
         serde_json::from_str(json).unwrap_or_else(|e| {
             eprintln!(
                 "warning: the built-in {self} file list did not parse ({e}); \
@@ -200,39 +144,13 @@ impl AgentTool {
                     .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
                 Ok(home.join(".claude"))
             }
-            Self::Copilot => {
-                let config = dirs::config_dir()
-                    .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?;
-                Ok(config.join("Code").join("User"))
-            }
-            Self::OpenCode => {
-                let home = dirs::home_dir()
-                    .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
-                Ok(home.join(".config").join("opencode"))
-            }
         }
     }
 
     pub fn dest_display(&self) -> String {
         match self {
             Self::Claude => format!("~{SEP}.claude{SEP}"),
-            #[cfg(target_os = "linux")]
-            Self::Copilot => format!("~{SEP}.config{SEP}Code{SEP}User{SEP}"),
-            #[cfg(target_os = "macos")]
-            Self::Copilot => {
-                format!("~{SEP}Library{SEP}Application Support{SEP}Code{SEP}User{SEP}")
-            }
-            #[cfg(target_os = "windows")]
-            Self::Copilot => format!("%APPDATA%{SEP}Code{SEP}User{SEP}"),
-            Self::OpenCode => format!("~{SEP}.config{SEP}opencode{SEP}"),
         }
-    }
-
-    pub fn is_installed(&self) -> bool {
-        let Ok(dest) = self.dest_dir() else {
-            return false;
-        };
-        self.is_installed_at(&dest)
     }
 
     /// Looser variant: does any prior install exist at `dest_dir`, even if
@@ -250,12 +168,8 @@ impl AgentTool {
     fn has_existing_install_at(&self, dest: &Path) -> bool {
         // Per-tool structural directories that have been part of every
         // shipped bundle. If both exist, *something* was installed here
-        // by a previous `hyprlayer ai configure`.
-        let (a, b) = match self {
-            Self::Claude => ("skills", "agents"),
-            Self::OpenCode => ("commands", "agents"),
-            Self::Copilot => ("prompts", "agents"),
-        };
+        // by a previous hyprlayer asset install.
+        let (a, b) = ("skills", "agents");
         dest.join(a).is_dir() && dest.join(b).is_dir()
     }
 
@@ -264,8 +178,8 @@ impl AgentTool {
     /// Checks for sentinel files unique to the current bundle of
     /// commands/skills/agents. An older install with the right top-level
     /// directories but missing newly added files reports not-installed, so
-    /// `configure --no-force` re-runs and provisions the new bundle. Bump
-    /// these whenever we ship a top-level file existing users should pick up.
+    /// automatic provisioning installs the new bundle. Bump these whenever
+    /// we ship a top-level file existing users should pick up.
     ///
     /// **Scope, since 1.6.0**: as a completeness gate this now governs only
     /// the frozen-legacy-tree fallback. An asset install carries a
@@ -282,7 +196,7 @@ impl AgentTool {
             // It may therefore only ever name long-lived, load-bearing
             // files that ship on every release — never a file from a branch
             // not yet on `master`, or reverting that file turns a benign
-            // rollback into every user's next `ai configure`/`ai reinstall`
+            // rollback into every user's next automatic install/`ai reinstall`
             // failing outright. The frozen trees make that hazard mostly
             // historical: they no longer change. Both paths below are
             // present in the freeze and in every asset bundle.
@@ -290,121 +204,18 @@ impl AgentTool {
                 dest.join("skills/code_review/SKILL.md").is_file()
                     && dest.join("agents/codebase-locator.md").is_file()
             }
-            Self::OpenCode => {
-                dest.join("commands/code_review.md").is_file()
-                    && dest.join("agents/codebase-locator.md").is_file()
-            }
-            Self::Copilot => {
-                dest.join("prompts/code_review.prompt.md").is_file()
-                    && dest.join("agents/codebase-locator.agent.md").is_file()
-            }
         }
-    }
-
-    /// Print status information for this agent tool.
-    /// OpenCode includes provider and model details from config.
-    pub fn print_status(&self, config: &crate::config::AiConfig) {
-        use colored::Colorize;
-
-        println!("  AI Tool: {}", self.to_string().cyan());
-
-        let status = if self.is_installed() {
-            "installed".green()
-        } else {
-            "not installed".red()
-        };
-        println!("  Status: {}", status);
-        println!("  Location: {}", self.dest_display().cyan());
-
-        match self {
-            Self::OpenCode => {
-                println!();
-                println!("  {}", "OpenCode Settings:".yellow());
-                println!(
-                    "    Provider: {}",
-                    config
-                        .opencode_provider
-                        .as_ref()
-                        .map(|p| p.to_string())
-                        .unwrap_or_else(|| "not set".to_string())
-                        .cyan()
-                );
-                println!(
-                    "    Sonnet Model: {}",
-                    config
-                        .opencode_sonnet_model
-                        .as_deref()
-                        .unwrap_or("not set")
-                        .cyan()
-                );
-                println!(
-                    "    Opus Model: {}",
-                    config
-                        .opencode_opus_model
-                        .as_deref()
-                        .unwrap_or("not set")
-                        .cyan()
-                );
-            }
-            Self::Claude | Self::Copilot => {}
-        }
-    }
-
-    /// The machine-readable half of `print_status`.
-    ///
-    /// Takes both halves of the config because the harness block and the
-    /// bundle versions live at different levels: `ai` is the already-narrowed
-    /// `AiConfig` of the configured tool, `config` the surrounding
-    /// `HyprlayerConfig` that records which assets version is installed and
-    /// whether it is pinned.
-    ///
-    /// `assetsVersion` is what the last install recorded — `null` on a config
-    /// written before 1.6.0, which has no version to report — and
-    /// `binaryVersion` is this binary's own. The desktop reads the skew
-    /// between the three to decide whether to offer a rollback.
-    pub fn status_json(
-        &self,
-        ai: &crate::config::AiConfig,
-        config: &crate::config::HyprlayerConfig,
-    ) -> serde_json::Value {
-        let mut value = serde_json::json!({
-            "agentTool": self.to_string(),
-            "installed": self.is_installed(),
-            "location": self.dest_display(),
-            "assetsVersion": config.agents_installed_version,
-            "pinnedVersion": config.agents_pinned_version,
-            "binaryVersion": env!("CARGO_PKG_VERSION"),
-        });
-
-        if matches!(self, Self::OpenCode)
-            && let Some(map) = value.as_object_mut()
-        {
-            map.insert(
-                "opencodeProvider".to_string(),
-                serde_json::json!(ai.opencode_provider.as_ref().map(|p| p.to_string())),
-            );
-            map.insert(
-                "opencodeSonnetModel".to_string(),
-                serde_json::json!(ai.opencode_sonnet_model),
-            );
-            map.insert(
-                "opencodeOpusModel".to_string(),
-                serde_json::json!(ai.opencode_opus_model),
-            );
-        }
-
-        value
     }
 
     /// Download agent files from GitHub and install to the destination.
     ///
     /// Downloads into a temporary staging directory first, refuses to
     /// touch `dest` at all unless the staged bundle looks complete (see
-    /// `is_installed_at`), and then copies only the files that actually
-    /// changed. A mid-download failure — network drop, rate limit,
-    /// truncated archive — therefore can never leave `dest` half-written:
-    /// either staging fails and `dest` is untouched, or staging succeeds
-    /// and the sync is a pure content diff.
+    /// `is_installed_at`). Claude then populates the versioned central store
+    /// and reconciles the Claude/Codex link farms as one rollback-safe
+    /// activation. A mid-download failure — network drop, rate limit,
+    /// truncated archive — therefore cannot leave a live harness tree
+    /// half-downloaded.
     ///
     /// `InstallOutcome::sha` is `Some` when we successfully captured the
     /// repo's `master` HEAD SHA *before* the download (the next 24h
@@ -413,20 +224,14 @@ impl AgentTool {
     /// succeeded — the install is still good, but we have no SHA to
     /// cache, so the next auto-check will treat the bundle as stale and
     /// refresh again. We don't fail the whole install when only ref
-    /// resolution is unreachable because `hyprlayer ai configure` /
-    /// `ai reinstall` must continue to work by falling back to the
-    /// `master` branch name.
+    /// resolution is unreachable because `ai reinstall` can continue by
+    /// falling back to the `master` branch name.
     ///
     /// `pinned_version` is the caller's `agentsPinnedVersion`, if any: it
     /// selects which release asset to fetch and, because a pinned bundle may
     /// have been cut for a newer CLI than this one, is what
     /// `verify_pin_is_supported` gates on.
-    pub fn install(
-        &self,
-        opencode_provider: Option<&OpenCodeProvider>,
-        pinned_version: Option<&str>,
-        quiet: bool,
-    ) -> Result<InstallOutcome> {
+    fn install(&self, pinned_version: Option<&str>, quiet: bool) -> Result<InstallOutcome> {
         let dest = self.dest_dir()?;
 
         // Recording a post-download SHA could mask `master`-advances that
@@ -436,26 +241,37 @@ impl AgentTool {
         let git_ref = sha.as_deref().unwrap_or(BRANCH);
 
         let staging = tempfile::tempdir().context("Failed to create a staging directory")?;
-        let staged = staging.path().join(self.repo_dir());
+        let staged = staging.path().join(self.harness_slug());
         self.fetch_into(&staged, git_ref, pinned_version, quiet)?;
 
-        let report = self.install_staged(&staged, &dest, pinned_version)?;
+        // Fetch and validate the same-version companion before touching the
+        // store or either harness directory. A release carrying only one
+        // half is not an installable generation.
+        let codex_staged = staging.path().join("codex-companion");
+        let primary_is_release = staged.join(MANIFEST_FILE_NAME).is_file();
+        fetch_codex_companion_into(
+            &codex_staged,
+            git_ref,
+            pinned_version,
+            primary_is_release,
+            quiet,
+        )?;
+        let version = resolve_assets_version(pinned_version);
+        let report = install_claude_bundle_set(
+            &staged,
+            &codex_staged,
+            &dest,
+            &codex_dest_dir()?,
+            &agent_store_root()?,
+            &codex_skill_bridge_dir()?,
+            pinned_version,
+            version,
+            quiet,
+        )?;
         if !quiet {
             report.print();
         }
         let changed = report.changed;
-
-        if matches!(self, AgentTool::OpenCode)
-            && let Some(provider) = opencode_provider
-        {
-            if !quiet {
-                println!("Configuring models for {}...", provider);
-            }
-            let updated = update_opencode_models(&dest, provider)?;
-            if !quiet {
-                println!("  {:<60}", format!("Updated {} files", updated));
-            }
-        }
 
         Ok(InstallOutcome { sha, changed })
     }
@@ -478,6 +294,7 @@ impl AgentTool {
     /// manifest describes. Either way the install finishes by clearing the
     /// `.hyprlayer-backup` copies 1.6.0 left in the content directories
     /// (`clean_backups`).
+    #[cfg(test)]
     fn install_staged(
         &self,
         staged: &Path,
@@ -562,13 +379,14 @@ impl AgentTool {
     ///    `archive::fetch_and_extract`).
     /// 3. The old Contents-API walk, in case codeload itself is out.
     ///
-    /// The asset step is allowed to fail softly — a dev build with no
+    /// For an unpinned install the asset step may fail softly — a dev build with no
     /// matching release, a release predating the bundles, a mid-download
     /// network drop, a digest mismatch — because a legacy-tree install is
     /// still a working install. What it must never do is install an
     /// *unverified* asset, so a release that advertises no digest for the
     /// bundle drops through to the fallback rather than downloading it
-    /// anyway.
+    /// anyway. An explicit pin has no fallbacks: it resolves to that exact
+    /// release asset or fails.
     ///
     /// Every source writes into `staged`, so the completeness check and
     /// rollback guarantee in `install_staged` cover the fallbacks too: a
@@ -586,26 +404,31 @@ impl AgentTool {
         }
 
         let version = resolve_assets_version(pinned_version);
-        let sources: Vec<BundleSource<'_>> = vec![
-            (
-                format!("the v{version} release asset"),
-                Box::new(move |dest: &Path| self.fetch_asset_into(dest, version)),
-            ),
-            (
+        let mut sources: Vec<BundleSource<'_>> = vec![(
+            format!("the v{version} release asset"),
+            Box::new(move |dest: &Path| self.fetch_asset_into(dest, version)),
+        )];
+        // A pin is a request for one exact asset version. Falling through
+        // to master would silently install current files while recording
+        // the requested old version, and could pair Claude with Codex from
+        // different revisions. Unpinned development builds retain the
+        // legacy frozen-tree fallbacks.
+        if pinned_version.is_none() {
+            sources.push((
                 format!("the {BRANCH} repo archive"),
                 Box::new(move |dest: &Path| {
-                    archive::fetch_and_extract(self.repo_dir(), git_ref, dest)
+                    archive::fetch_and_extract(self.live_repo_dir(), git_ref, dest)
                 }),
-            ),
-            (
+            ));
+            sources.push((
                 format!("the GitHub API walk of {BRANCH}"),
                 Box::new(move |dest: &Path| {
                     let mut count = 0;
-                    download_directory(self.repo_dir(), git_ref, dest, &mut count, quiet)?;
+                    download_directory(self.live_repo_dir(), git_ref, dest, &mut count, quiet)?;
                     Ok(count)
                 }),
-            ),
-        ];
+            ));
+        }
 
         let (label, count) = fetch_first_available(staged, sources, quiet)?;
         if !quiet {
@@ -621,28 +444,283 @@ impl AgentTool {
     /// Mirrors `direct_update` in `src/commands/self_update.rs`, which runs
     /// the same fetch-digest-then-verify sequence for the binary itself.
     fn fetch_asset_into(&self, staged: &Path, version: &str) -> Result<usize> {
-        let asset = asset_name(self.repo_dir(), version);
-        let tag = format!("v{version}");
+        fetch_harness_asset_into(self.harness_slug(), staged, version)
+    }
+}
 
+fn fetch_harness_asset_into(harness: &str, staged: &Path, version: &str) -> Result<usize> {
+    let asset = asset_name(harness, version);
+    let tag = format!("v{version}");
+
+    let api_url = format!("{}/releases/tags/{tag}", github_api_repo_url());
+    let release_body =
+        http::get_text_capped(&api_url, Duration::from_secs(15), MAX_API_RESPONSE_BYTES)
+            .map_err(|e| anyhow::anyhow!("Unable to fetch release {tag} from GitHub: {e}"))?;
+    fetch_harness_asset_from_release(&release_body, &tag, &asset, staged)
+}
+
+fn fetch_harness_asset_from_release(
+    release_body: &str,
+    tag: &str,
+    asset: &str,
+    staged: &Path,
+) -> Result<usize> {
+    let expected = asset_digest_from_release(release_body, tag, asset)?;
+
+    let tmp = tempfile::tempdir().context("Failed to create a temp dir for the bundle")?;
+    let archive_path = tmp.path().join(asset);
+    let url = format!("{}/{tag}/{asset}", github_release_download_base());
+    http::download_file_capped(
+        &url,
+        &archive_path,
+        Duration::from_secs(30),
+        Some(archive::MAX_ARCHIVE_BYTES),
+    )
+    .map_err(|e| anyhow::anyhow!("Failed to download {url}: {e}"))?;
+
+    verify_and_extract_bundle(&archive_path, asset, &expected, staged)
+}
+
+fn codex_dest_dir() -> Result<PathBuf> {
+    let home =
+        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+    Ok(home.join(".codex"))
+}
+
+fn agent_store_root() -> Result<PathBuf> {
+    let config = dirs::config_dir()
+        .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?;
+    Ok(config.join("hyprlayer").join(AGENT_STORE_DIR))
+}
+
+fn acquire_bundle_lock() -> Result<fs::File> {
+    let store_root = agent_store_root()?;
+    let config_root = store_root
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Agent store has no configuration parent"))?;
+    fs::create_dir_all(config_root)
+        .with_context(|| format!("Failed to create {}", config_root.display()))?;
+    let lock_path = config_root.join(".agents.lock");
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .with_context(|| format!("Failed to open bundle lock {}", lock_path.display()))?;
+    lock.lock_exclusive()
+        .with_context(|| format!("Failed to lock {}", lock_path.display()))?;
+    Ok(lock)
+}
+
+/// Install or update the supported Claude/Codex pair under one process-wide
+/// lock. Both assets are staged and validated before either live namespace
+/// is changed.
+pub(crate) fn install_bundle_set(
+    pinned_version: Option<&str>,
+    quiet: bool,
+) -> Result<InstallOutcome> {
+    let _lock = acquire_bundle_lock()?;
+    AgentTool::Claude.install(pinned_version, quiet)
+}
+
+fn codex_skill_bridge_dir() -> Result<PathBuf> {
+    let home =
+        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+    Ok(home.join(".agents").join("skills"))
+}
+
+/// Fetch the Codex companion from the same version and source as Claude.
+/// Missing companion assets are hard errors: the supported install is an
+/// atomic pair, including for old explicit pins.
+fn fetch_codex_companion_into(
+    staged: &Path,
+    git_ref: &str,
+    pinned_version: Option<&str>,
+    primary_is_release: bool,
+    quiet: bool,
+) -> Result<()> {
+    if !quiet {
+        println!("Downloading Codex companion agent files...");
+    }
+    let version = resolve_assets_version(pinned_version);
+    if pinned_version.is_some() {
+        let asset = asset_name(CODEX_HARNESS, version);
+        let tag = format!("v{version}");
         let api_url = format!("{}/releases/tags/{tag}", github_api_repo_url());
         let release_body =
             http::get_text_capped(&api_url, Duration::from_secs(15), MAX_API_RESPONSE_BYTES)
                 .map_err(|e| anyhow::anyhow!("Unable to fetch release {tag} from GitHub: {e}"))?;
-        let expected = asset_digest_from_release(&release_body, &tag, &asset)?;
-
-        let tmp = tempfile::tempdir().context("Failed to create a temp dir for the bundle")?;
-        let archive_path = tmp.path().join(&asset);
-        let url = format!("{}/{tag}/{asset}", github_release_download_base());
-        http::download_file_capped(
-            &url,
-            &archive_path,
-            Duration::from_secs(30),
-            Some(archive::MAX_ARCHIVE_BYTES),
-        )
-        .map_err(|e| anyhow::anyhow!("Failed to download {url}: {e}"))?;
-
-        verify_and_extract_bundle(&archive_path, &asset, &expected, staged)
+        if !release_lists_asset(&release_body, &asset)? {
+            anyhow::bail!(
+                "Release {tag} does not carry the required Codex companion asset `{asset}`. \
+                 Choose a release that includes both Claude and Codex bundles."
+            );
+        }
+        let count = fetch_harness_asset_from_release(&release_body, &tag, &asset, staged)?;
+        codex_staged_manifest(staged, pinned_version, version)?;
+        if !quiet {
+            println!(
+                "  {:<60}",
+                format!("Downloaded {count} files from the {tag} release asset")
+            );
+        }
+        return Ok(());
     }
+
+    // Keep both halves on one origin as well as one version: a verified
+    // Claude release asset pairs only with the Codex release asset, while a
+    // development/frozen-tree fallback pairs only with the same repo SHA.
+    let sources: Vec<BundleSource<'_>> = if primary_is_release {
+        vec![(
+            format!("the v{version} release asset"),
+            Box::new(move |dest: &Path| fetch_harness_asset_into(CODEX_HARNESS, dest, version)),
+        )]
+    } else {
+        vec![
+            (
+                format!("the {BRANCH} repo archive"),
+                Box::new(move |dest: &Path| {
+                    archive::fetch_and_extract(CODEX_REPO_DIR, git_ref, dest)
+                }),
+            ),
+            (
+                format!("the GitHub API walk of {BRANCH}"),
+                Box::new(move |dest: &Path| {
+                    let mut count = 0;
+                    download_directory(CODEX_REPO_DIR, git_ref, dest, &mut count, quiet)?;
+                    Ok(count)
+                }),
+            ),
+        ]
+    };
+
+    let (label, count) = fetch_first_available(staged, sources, quiet)?;
+    // Validate now, before the caller mutates ~/.claude. `install_codex_staged`
+    // repeats the check at the write boundary so this preflight cannot drift
+    // away from the actual install gate.
+    codex_staged_manifest(staged, pinned_version, version)?;
+    if !quiet {
+        println!("  {:<60}", format!("Downloaded {count} files from {label}"));
+    }
+    Ok(())
+}
+
+fn release_lists_asset(release_body: &str, asset: &str) -> Result<bool> {
+    let release: serde_json::Value =
+        serde_json::from_str(release_body).context("Failed to parse GitHub release response")?;
+    let assets = release
+        .get("assets")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("GitHub release response has no assets array"))?;
+    Ok(assets
+        .iter()
+        .any(|entry| entry.get("name").and_then(serde_json::Value::as_str) == Some(asset)))
+}
+
+fn sha256_bytes(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex::encode(hasher.finalize())
+}
+
+fn manifest_for_tree(staged: &Path, version: &str, harness: &str) -> Result<BundleManifest> {
+    let mut paths = walk_files(staged)?;
+    paths.sort();
+    let mut files = Vec::with_capacity(paths.len());
+    for path in paths {
+        let relative = path
+            .strip_prefix(staged)
+            .expect("walk_files only returns descendants");
+        let Some(key) = manifest::relative_key(relative) else {
+            continue;
+        };
+        if key == MANIFEST_FILE_NAME {
+            continue;
+        }
+        let bytes =
+            fs::read(&path).with_context(|| format!("Failed to read {}", path.display()))?;
+        files.push(ManifestEntry {
+            path: key,
+            sha256: sha256_bytes(&bytes),
+        });
+    }
+    Ok(BundleManifest {
+        version: version.to_string(),
+        harness: harness.to_string(),
+        min_cli_version: env!("CARGO_PKG_VERSION").to_string(),
+        files,
+    })
+}
+
+fn codex_staged_manifest(
+    staged: &Path,
+    pinned_version: Option<&str>,
+    version: &str,
+) -> Result<BundleManifest> {
+    let manifest =
+        read_staged_manifest(staged)?.unwrap_or(manifest_for_tree(staged, version, CODEX_HARNESS)?);
+    if manifest.harness != CODEX_HARNESS {
+        anyhow::bail!(
+            "Downloaded Codex companion bundle identifies itself as {:?}",
+            manifest.harness
+        );
+    }
+    if manifest.version != version {
+        anyhow::bail!(
+            "Downloaded Codex companion bundle is version {:?}, expected {version:?}",
+            manifest.version
+        );
+    }
+    let has_agent = manifest.files.iter().any(|entry| {
+        let path = Path::new(&entry.path);
+        path.starts_with("agents") && path.extension().is_some_and(|ext| ext == "toml")
+    });
+    if !has_agent {
+        anyhow::bail!(
+            "Downloaded Codex companion bundle is incomplete — it contains no agents/*.toml"
+        );
+    }
+    verify_pin_is_supported(&manifest, pinned_version)?;
+    verify_staged_completeness_for("Codex companion", staged, &manifest)?;
+    Ok(manifest)
+}
+
+#[cfg(test)]
+fn install_codex_staged(
+    staged: &Path,
+    dest: &Path,
+    pinned_version: Option<&str>,
+    version: &str,
+) -> Result<SyncReport> {
+    let manifest = codex_staged_manifest(staged, pinned_version, version)?;
+    let bundled_manifest = staged.join(MANIFEST_FILE_NAME);
+    if bundled_manifest.is_file() {
+        fs::remove_file(&bundled_manifest)
+            .with_context(|| format!("Failed to remove {}", bundled_manifest.display()))?;
+    }
+
+    let previous = read_installed_manifest(dest);
+    // Codex is newly managed. With no prior ownership record, preserve any
+    // differing custom agent already at the same path rather than applying
+    // the legacy-harness overwrite migration policy.
+    let empty_previous = BundleManifest {
+        version: String::new(),
+        harness: CODEX_HARNESS.to_string(),
+        min_cli_version: String::new(),
+        files: Vec::new(),
+    };
+    fs::create_dir_all(dest)?;
+    let mut report = sync_tree(
+        staged,
+        dest,
+        Some(previous.as_ref().unwrap_or(&empty_previous)),
+    )?;
+    if let Some(previous) = &previous {
+        report.removed = remove_orphans(dest, &previous.files, &manifest);
+    }
+    write_installed_manifest(dest, &manifest)?;
+    Ok(report)
 }
 
 /// One named way to populate a staging directory, used by `fetch_into`.
@@ -715,15 +793,15 @@ fn verify_and_extract_bundle(
     archive::extract_bundle(archive_path, staged)
 }
 
-/// Result of a successful `AgentTool::install`.
+/// Result of a successful Claude/Codex bundle-set install.
 #[derive(Debug)]
 pub struct InstallOutcome {
     /// The repo's `master` HEAD SHA captured before the download, if ref
     /// resolution succeeded. `None` means the install still succeeded but
     /// there's no fresh SHA to cache.
     pub sha: Option<String>,
-    /// Number of files actually written to the destination. `0` means the
-    /// staged bundle was byte-identical to what's already installed.
+    /// Number of store files, mutable settings/records, or links changed.
+    /// `0` means the requested layout was already current.
     pub changed: usize,
 }
 
@@ -731,7 +809,7 @@ pub struct InstallOutcome {
 /// reports. Paths are manifest-form keys, relative to the harness root.
 #[derive(Debug, Default)]
 struct SyncReport {
-    /// Files actually written (created or overwritten).
+    /// Files or links actually created, overwritten, or repointed.
     changed: usize,
     /// Files left alone because the bytes in `dest` are the user's work,
     /// not the previous bundle's.
@@ -773,6 +851,13 @@ impl SyncReport {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SkillBridgeOutcome {
+    Created,
+    AlreadyCorrect,
+    SkippedExisting,
+}
+
 /// Suffix 1.6.0's first-manifest install used for the copy it took of each
 /// file it overwrote. No install writes one any more: inside a skill
 /// directory a `SKILL.md.hyprlayer-backup` is a second file sitting exactly
@@ -799,7 +884,7 @@ fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
 /// holds the user's permissions, hooks and env, none of which a bundle can
 /// put back.
 fn is_harness_config(relative: &Path) -> bool {
-    relative.components().count() == 1
+    relative == Path::new("settings.json")
 }
 
 /// Copy every file from `src` into `dest`, creating parent directories as
@@ -827,6 +912,7 @@ fn is_harness_config(relative: &Path) -> bool {
 /// `settings.json` already on disk is the user's, so it is preserved and
 /// our starter copy dropped. The manifest that install writes is what lets
 /// every later install tell the two apart by digest instead.
+#[cfg(test)]
 fn sync_tree(src: &Path, dest: &Path, previous: Option<&BundleManifest>) -> Result<SyncReport> {
     let owned = previous.map(|manifest| manifest.digests());
     let mut report = SyncReport::default();
@@ -837,10 +923,35 @@ fn sync_tree(src: &Path, dest: &Path, previous: Option<&BundleManifest>) -> Resu
             .expect("walk_files only yields paths under src");
         let dest_path = dest.join(relative);
 
+        if has_symlink_ancestor(dest, &dest_path) {
+            report.preserved.push(
+                manifest::relative_key(relative).unwrap_or_else(|| relative.display().to_string()),
+            );
+            continue;
+        }
+
         let new_bytes =
             fs::read(&path).with_context(|| format!("Failed to read {}", path.display()))?;
+        let existing = match fs::symlink_metadata(&dest_path) {
+            Ok(metadata) if metadata_is_link(&metadata) || !metadata.is_file() => {
+                report.preserved.push(
+                    manifest::relative_key(relative)
+                        .unwrap_or_else(|| relative.display().to_string()),
+                );
+                continue;
+            }
+            Ok(_) => Some(
+                fs::read(&dest_path)
+                    .with_context(|| format!("Failed to read {}", dest_path.display()))?,
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("Failed to inspect {}", dest_path.display()));
+            }
+        };
 
-        if let Ok(existing) = fs::read(&dest_path) {
+        if let Some(existing) = existing {
             if existing == new_bytes {
                 continue;
             }
@@ -915,6 +1026,9 @@ fn clean_backups(dest: &Path, owned: &[ManifestEntry]) -> usize {
             continue;
         };
         let backup = append_suffix(&path, BACKUP_SUFFIX);
+        if has_symlink_ancestor(dest, &backup) {
+            continue;
+        }
         // `symlink_metadata`, so a symlink wearing the suffix is left alone
         // rather than unlinked out from under whatever made it.
         if !fs::symlink_metadata(&backup).is_ok_and(|meta| meta.is_file()) {
@@ -952,6 +1066,7 @@ fn clean_backups(dest: &Path, owned: &[ManifestEntry]) -> usize {
 /// skill behind is not worth failing an otherwise-good install over.
 ///
 /// Directories emptied by a removal are pruned, bounded by `dest`.
+#[cfg(test)]
 fn remove_orphans(dest: &Path, previous: &[ManifestEntry], next: &BundleManifest) -> Vec<String> {
     let kept = next.digests();
     let mut removed = Vec::new();
@@ -966,7 +1081,13 @@ fn remove_orphans(dest: &Path, previous: &[ManifestEntry], next: &BundleManifest
         ) else {
             continue;
         };
-        if kept.contains_key(&key) || !path.is_file() {
+        if kept.contains_key(&key) || has_symlink_ancestor(dest, &path) {
+            continue;
+        }
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if metadata_is_link(&metadata) || !metadata.is_file() {
             continue;
         }
         if integrity::verify_sha256(&path, &entry.sha256).is_err() {
@@ -1001,6 +1122,1794 @@ fn prune_empty_dirs(dest: &Path, from: &Path) {
         };
         current = parent;
     }
+}
+
+fn claude_staged_manifest(
+    staged: &Path,
+    pinned_version: Option<&str>,
+    version: &str,
+) -> Result<BundleManifest> {
+    let manifest = match read_staged_manifest(staged)? {
+        Some(manifest) => manifest,
+        None => {
+            if !AgentTool::Claude.is_installed_at(staged) {
+                anyhow::bail!(
+                    "Downloaded Claude Code bundle is incomplete — refusing to install. \
+                     Run 'hyprlayer ai reinstall' to retry."
+                );
+            }
+            manifest_for_tree(staged, version, AgentTool::Claude.harness_slug())?
+        }
+    };
+    if manifest.harness != AgentTool::Claude.harness_slug() {
+        anyhow::bail!(
+            "Downloaded Claude Code bundle identifies itself as {:?}",
+            manifest.harness
+        );
+    }
+    if manifest.version != version {
+        anyhow::bail!(
+            "Downloaded Claude Code bundle is version {:?}, expected {version:?}",
+            manifest.version
+        );
+    }
+    verify_pin_is_supported(&manifest, pinned_version)?;
+    verify_staged_completeness(AgentTool::Claude, staged, &manifest)?;
+    Ok(manifest)
+}
+
+fn store_version_dir(store_root: &Path, version: &str) -> Result<PathBuf> {
+    if version.is_empty()
+        || !version
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b'+'))
+        || manifest::relative_key(Path::new(version)).as_deref() != Some(version)
+    {
+        anyhow::bail!("Asset version {version:?} is not safe for the agent store");
+    }
+    Ok(store_root.join(version))
+}
+
+/// A no-symlink snapshot used both to compare a populated store generation
+/// and to decide whether a legacy copied directory is wholly bundle-owned.
+/// Directory entries are included so an extra empty personal directory is
+/// not silently discarded during migration.
+fn tree_snapshot(root: &Path) -> Result<BTreeMap<String, String>> {
+    fn visit(root: &Path, dir: &Path, out: &mut BTreeMap<String, String>) -> Result<()> {
+        for entry in
+            fs::read_dir(dir).with_context(|| format!("Failed to read {}", dir.display()))?
+        {
+            let path = entry
+                .with_context(|| format!("Failed to read an entry in {}", dir.display()))?
+                .path();
+            let metadata = fs::symlink_metadata(&path)
+                .with_context(|| format!("Failed to inspect {}", path.display()))?;
+            let relative = path.strip_prefix(root).expect("walk stays below root");
+            let key = manifest::relative_key(relative)
+                .ok_or_else(|| anyhow::anyhow!("Agent bundle path is not a safe relative path"))?;
+            if metadata_is_link(&metadata) {
+                anyhow::bail!("Agent bundle contains a symlink at {}", path.display());
+            } else if metadata.is_dir() {
+                out.insert(key, "dir".to_string());
+                visit(root, &path, out)?;
+            } else if metadata.is_file() {
+                let bytes = fs::read(&path)
+                    .with_context(|| format!("Failed to read {}", path.display()))?;
+                out.insert(key, format!("file:{}", sha256_bytes(&bytes)));
+            } else {
+                anyhow::bail!(
+                    "Agent bundle contains an unsupported entry at {}",
+                    path.display()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    match fs::symlink_metadata(root) {
+        Ok(metadata) if metadata.is_dir() && !metadata_is_link(&metadata) => {
+            let mut out = BTreeMap::new();
+            visit(root, root, &mut out)?;
+            Ok(out)
+        }
+        Ok(_) => anyhow::bail!("Expected a regular directory at {}", root.display()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+        Err(error) => Err(error).with_context(|| format!("Failed to inspect {}", root.display())),
+    }
+}
+
+fn copy_regular_tree(source: &Path, dest: &Path) -> Result<usize> {
+    fn visit(source_root: &Path, source: &Path, dest: &Path, count: &mut usize) -> Result<()> {
+        for entry in
+            fs::read_dir(source).with_context(|| format!("Failed to read {}", source.display()))?
+        {
+            let source_path = entry
+                .with_context(|| format!("Failed to read an entry in {}", source.display()))?
+                .path();
+            let metadata = fs::symlink_metadata(&source_path)
+                .with_context(|| format!("Failed to inspect {}", source_path.display()))?;
+            let relative = source_path
+                .strip_prefix(source_root)
+                .expect("walk stays below source root");
+            let dest_path = dest.join(relative);
+            if metadata_is_link(&metadata) {
+                anyhow::bail!("Refusing to copy bundle symlink {}", source_path.display());
+            } else if metadata.is_dir() {
+                fs::create_dir_all(&dest_path)
+                    .with_context(|| format!("Failed to create {}", dest_path.display()))?;
+                visit(source_root, &source_path, dest, count)?;
+            } else if metadata.is_file() {
+                if let Some(parent) = dest_path.parent() {
+                    fs::create_dir_all(parent)
+                        .with_context(|| format!("Failed to create {}", parent.display()))?;
+                }
+                fs::copy(&source_path, &dest_path)
+                    .with_context(|| format!("Failed to copy {}", source_path.display()))?;
+                *count += 1;
+            } else {
+                anyhow::bail!("Unsupported bundle entry {}", source_path.display());
+            }
+        }
+        Ok(())
+    }
+
+    fs::create_dir_all(dest).with_context(|| format!("Failed to create {}", dest.display()))?;
+    let mut count = 0;
+    visit(source, source, dest, &mut count)?;
+    Ok(count)
+}
+
+fn remove_path_no_follow(path: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("Failed to inspect {}", path.display()))?;
+    if metadata_is_link(&metadata) {
+        remove_link_no_follow(path, &metadata)
+    } else if metadata.is_file() {
+        fs::remove_file(path).with_context(|| format!("Failed to remove {}", path.display()))
+    } else if metadata.is_dir() {
+        fs::remove_dir_all(path).with_context(|| format!("Failed to remove {}", path.display()))
+    } else {
+        anyhow::bail!("Unsupported filesystem entry at {}", path.display())
+    }
+}
+
+/// A complete Claude/Codex store generation prepared beside its final path.
+/// The temporary path is removed unless activation renames it into place.
+struct PreparedGeneration {
+    generation: PathBuf,
+    staged: Option<PathBuf>,
+    claude_layout: PathBuf,
+    codex_layout: PathBuf,
+    changed: usize,
+}
+
+impl Drop for PreparedGeneration {
+    fn drop(&mut self) {
+        if let Some(path) = self.staged.take()
+            && fs::symlink_metadata(&path).is_ok()
+        {
+            let _ = remove_path_no_follow(&path);
+        }
+    }
+}
+
+fn populate_prepared_bundle(
+    staged: &Path,
+    dest: &Path,
+    manifest: &BundleManifest,
+) -> Result<usize> {
+    let mut count = copy_regular_tree(staged, dest)?;
+    let manifest_path = dest.join(MANIFEST_FILE_NAME);
+    if !manifest_path.is_file() {
+        let body = serde_json::to_string_pretty(manifest)
+            .context("Failed to serialize the agent-store manifest")?;
+        fs::write(&manifest_path, body)
+            .with_context(|| format!("Failed to write {}", manifest_path.display()))?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+/// Build both harnesses beneath one same-parent temporary directory. The
+/// whole version directory is the replacement boundary, including when an
+/// explicit reinstall replaces an existing generation with the same name.
+fn prepare_store_generation(
+    claude_staged: &Path,
+    codex_staged: &Path,
+    store_root: &Path,
+    version: &str,
+    claude_manifest: &BundleManifest,
+    codex_manifest: &BundleManifest,
+) -> Result<PreparedGeneration> {
+    fs::create_dir_all(store_root)
+        .with_context(|| format!("Failed to create agent store {}", store_root.display()))?;
+    let temp = tempfile::Builder::new()
+        .prefix(".hyprlayer-generation-")
+        .tempdir_in(store_root)
+        .context("Failed to stage the Claude/Codex store generation")?;
+    let claude_layout = temp.path().join(AgentTool::Claude.harness_slug());
+    let codex_layout = temp.path().join(CODEX_HARNESS);
+    let mut changed = populate_prepared_bundle(claude_staged, &claude_layout, claude_manifest)?;
+    changed += populate_prepared_bundle(codex_staged, &codex_layout, codex_manifest)?;
+
+    let generation = store_version_dir(store_root, version)?;
+    let prepared_snapshot = tree_snapshot(temp.path())?;
+    if tree_snapshot(&generation).is_ok_and(|current| current == prepared_snapshot) {
+        return Ok(PreparedGeneration {
+            claude_layout: generation.join(AgentTool::Claude.harness_slug()),
+            codex_layout: generation.join(CODEX_HARNESS),
+            generation,
+            staged: None,
+            changed: 0,
+        });
+    }
+
+    let staged = temp.keep();
+    Ok(PreparedGeneration {
+        generation,
+        claude_layout,
+        codex_layout,
+        staged: Some(staged),
+        changed,
+    })
+}
+
+fn known_bundle_digests<'a>(
+    manifests: impl IntoIterator<Item = &'a [ManifestEntry]>,
+) -> BTreeMap<String, BTreeSet<String>> {
+    let mut known: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for entries in manifests {
+        for entry in entries {
+            let Some(key) = manifest::relative_key(Path::new(&entry.path)) else {
+                continue;
+            };
+            known.entry(key).or_default().insert(entry.sha256.clone());
+        }
+    }
+    known
+}
+
+fn legacy_entry_is_owned(
+    path: &Path,
+    logical_path: &Path,
+    known: &BTreeMap<String, BTreeSet<String>>,
+) -> Result<bool> {
+    fn visit(
+        path: &Path,
+        logical_path: &Path,
+        known: &BTreeMap<String, BTreeSet<String>>,
+    ) -> Result<Option<usize>> {
+        let metadata = fs::symlink_metadata(path)
+            .with_context(|| format!("Failed to inspect {}", path.display()))?;
+        if metadata_is_link(&metadata) {
+            return Ok(None);
+        }
+        if metadata.is_file() {
+            let Some(key) = manifest::relative_key(logical_path) else {
+                return Ok(None);
+            };
+            let bytes =
+                fs::read(path).with_context(|| format!("Failed to read {}", path.display()))?;
+            return Ok(known
+                .get(&key)
+                .is_some_and(|digests| digests.contains(&sha256_bytes(&bytes)))
+                .then_some(1));
+        }
+        if !metadata.is_dir() {
+            return Ok(None);
+        }
+
+        let prefix = manifest::relative_key(logical_path)
+            .map(|key| format!("{key}/"))
+            .unwrap_or_default();
+        if !known.keys().any(|key| key.starts_with(&prefix)) {
+            return Ok(None);
+        }
+        let mut matched_files = 0;
+        for entry in
+            fs::read_dir(path).with_context(|| format!("Failed to read {}", path.display()))?
+        {
+            let entry =
+                entry.with_context(|| format!("Failed to read an entry in {}", path.display()))?;
+            let Some(child_files) =
+                visit(&entry.path(), &logical_path.join(entry.file_name()), known)?
+            else {
+                return Ok(None);
+            };
+            matched_files += child_files;
+        }
+        // An empty directory proves no shipped digest. It may be a user's
+        // placeholder at a bundled name and must never be adopted.
+        Ok((matched_files > 0).then_some(matched_files))
+    }
+
+    Ok(visit(path, logical_path, known)?.is_some())
+}
+
+fn absolute_link_target(link: &Path) -> Result<PathBuf> {
+    let target =
+        fs::read_link(link).with_context(|| format!("Failed to read link {}", link.display()))?;
+    if target.is_absolute() {
+        Ok(target)
+    } else {
+        Ok(link.parent().unwrap_or_else(|| Path::new(".")).join(target))
+    }
+}
+
+fn link_targets_store(link: &Path, store_root: &Path) -> bool {
+    if let (Ok(target), Ok(store)) = (fs::canonicalize(link), fs::canonicalize(store_root)) {
+        return target.starts_with(store);
+    }
+    // Hyprlayer creates absolute, parent-free targets. This also recognizes
+    // its dangling links after a store generation was removed, without
+    // treating `store/../personal` as owned.
+    absolute_link_target(link).is_ok_and(|target| {
+        target.is_absolute()
+            && !target
+                .components()
+                .any(|component| matches!(component, std::path::Component::ParentDir))
+            && target.starts_with(store_root)
+    })
+}
+
+fn link_targets_exactly(link: &Path, target: &Path) -> bool {
+    absolute_link_target(link).is_ok_and(|actual| actual == target)
+        || matches!(
+            (fs::canonicalize(link), fs::canonicalize(target)),
+            (Ok(actual), Ok(expected)) if actual == expected
+        )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ManagedLinkKind {
+    File,
+    Directory,
+}
+
+fn managed_link_kind(path: &Path) -> Result<ManagedLinkKind> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("Failed to inspect link target {}", path.display()))?;
+    if metadata_is_link(&metadata) {
+        anyhow::bail!("Agent store contains a link at {}", path.display());
+    }
+    if metadata.is_dir() {
+        Ok(ManagedLinkKind::Directory)
+    } else if metadata.is_file() {
+        Ok(ManagedLinkKind::File)
+    } else {
+        anyhow::bail!("Unsupported agent-store entry at {}", path.display())
+    }
+}
+
+#[cfg(any(windows, test))]
+fn windows_file_symlink_error(error: &std::io::Error, parent: &Path) -> String {
+    if error.raw_os_error() == Some(1314) {
+        format!(
+            "Windows could not create the required agent file symlink in {} (error 1314). \
+             Enable Windows Developer Mode or run hyprlayer from an elevated terminal, then retry. \
+             No agent links were changed.",
+            parent.display()
+        )
+    } else {
+        format!(
+            "Windows could not create an agent file symlink in {}: {error}",
+            parent.display()
+        )
+    }
+}
+
+fn create_managed_link(target: &Path, link: &Path, kind: ManagedLinkKind) -> Result<()> {
+    #[cfg(unix)]
+    {
+        let _ = kind;
+        std::os::unix::fs::symlink(target, link)
+            .with_context(|| format!("Failed to link {} to {}", link.display(), target.display()))
+    }
+
+    #[cfg(windows)]
+    {
+        let parent = link
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("Link path has no parent: {}", link.display()))?;
+        match kind {
+            ManagedLinkKind::File => std::os::windows::fs::symlink_file(target, link)
+                .map_err(|error| anyhow::anyhow!(windows_file_symlink_error(&error, parent)))
+                .with_context(|| {
+                    format!("Failed to link {} to {}", link.display(), target.display())
+                }),
+            ManagedLinkKind::Directory => match std::os::windows::fs::symlink_dir(target, link) {
+                Ok(()) => Ok(()),
+                Err(error) if error.raw_os_error() == Some(1314) => junction::create(target, link)
+                    .with_context(|| {
+                        format!(
+                            "Failed to create directory junction {} -> {}",
+                            link.display(),
+                            target.display()
+                        )
+                    }),
+                Err(error) => Err(error).with_context(|| {
+                    format!("Failed to link {} to {}", link.display(), target.display())
+                }),
+            },
+        }
+    }
+}
+
+fn remove_managed_link(path: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("Failed to inspect link {}", path.display()))?;
+    if !metadata_is_link(&metadata) {
+        anyhow::bail!("Refusing to unlink non-link path {}", path.display());
+    }
+    remove_link_no_follow(path, &metadata)
+}
+
+struct PathMutation {
+    live: PathBuf,
+    backup_root: Option<PathBuf>,
+    installed: bool,
+}
+
+#[derive(Default)]
+struct ActivationTransaction {
+    mutations: Vec<PathMutation>,
+    created_dirs: Vec<PathBuf>,
+}
+
+impl ActivationTransaction {
+    fn ensure_dir(&mut self, path: &Path) -> Result<()> {
+        if fs::metadata(path).is_ok_and(|metadata| metadata.is_dir()) {
+            return Ok(());
+        }
+
+        let mut missing = Vec::new();
+        let mut current = path;
+        loop {
+            match fs::symlink_metadata(current) {
+                Ok(_) => break,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    missing.push(current.to_path_buf());
+                    current = current.parent().ok_or_else(|| {
+                        anyhow::anyhow!("Directory has no existing ancestor: {}", path.display())
+                    })?;
+                }
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("Failed to inspect {}", current.display()));
+                }
+            }
+        }
+        fs::create_dir_all(path).with_context(|| format!("Failed to create {}", path.display()))?;
+        if !fs::metadata(path).is_ok_and(|metadata| metadata.is_dir()) {
+            anyhow::bail!("Expected a directory at {}", path.display());
+        }
+        missing.reverse();
+        self.created_dirs.extend(missing);
+        Ok(())
+    }
+
+    fn backup_existing(&self, live: &Path) -> Result<Option<PathBuf>> {
+        match fs::symlink_metadata(live) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(error).with_context(|| format!("Failed to inspect {}", live.display()));
+            }
+        }
+        let parent = live
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("Activation path has no parent: {}", live.display()))?;
+        let backup_root = tempfile::Builder::new()
+            .prefix(".hyprlayer-activation-")
+            .tempdir_in(parent)
+            .with_context(|| format!("Failed to stage rollback beside {}", live.display()))?
+            .keep();
+        let backup = backup_root.join("previous");
+        if let Err(error) = fs::rename(live, &backup) {
+            let _ = fs::remove_dir(&backup_root);
+            return Err(error)
+                .with_context(|| format!("Failed to stage rollback for {}", live.display()));
+        }
+        Ok(Some(backup_root))
+    }
+
+    fn restore_immediately(live: &Path, backup_root: Option<&Path>) -> Result<()> {
+        if let Some(root) = backup_root {
+            fs::rename(root.join("previous"), live)
+                .with_context(|| format!("Failed to restore {}", live.display()))?;
+            fs::remove_dir(root)
+                .with_context(|| format!("Failed to clear rollback area {}", root.display()))?;
+        }
+        Ok(())
+    }
+
+    fn replace_with_link(
+        &mut self,
+        live: &Path,
+        target: &Path,
+        kind: ManagedLinkKind,
+    ) -> Result<()> {
+        let backup_root = self.backup_existing(live)?;
+        if let Err(error) = create_managed_link(target, live, kind) {
+            if let Err(rollback) = Self::restore_immediately(live, backup_root.as_deref()) {
+                return Err(error.context(format!(
+                    "The link failed and restoring the previous entry also failed: {rollback:#}"
+                )));
+            }
+            return Err(error);
+        }
+        self.mutations.push(PathMutation {
+            live: live.to_path_buf(),
+            backup_root,
+            installed: true,
+        });
+        Ok(())
+    }
+
+    fn replace_with_path(&mut self, staged: &Path, live: &Path) -> Result<()> {
+        let backup_root = self.backup_existing(live)?;
+        if let Err(error) = fs::rename(staged, live) {
+            if let Err(rollback) = Self::restore_immediately(live, backup_root.as_deref()) {
+                return Err(anyhow::Error::new(error).context(format!(
+                    "Installing {} failed and restoring it also failed: {rollback:#}",
+                    live.display()
+                )));
+            }
+            return Err(error).with_context(|| format!("Failed to install {}", live.display()));
+        }
+        self.mutations.push(PathMutation {
+            live: live.to_path_buf(),
+            backup_root,
+            installed: true,
+        });
+        Ok(())
+    }
+
+    fn replace_with_bytes(&mut self, live: &Path, bytes: &[u8]) -> Result<()> {
+        let parent = live
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("Activation file has no parent: {}", live.display()))?;
+        self.ensure_dir(parent)?;
+        let staged = tempfile::Builder::new()
+            .prefix(".hyprlayer-file-")
+            .tempdir_in(parent)
+            .with_context(|| format!("Failed to stage {}", live.display()))?;
+        let staged_file = staged.path().join("replacement");
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&staged_file)
+            .with_context(|| format!("Failed to stage {}", live.display()))?;
+        file.write_all(bytes)
+            .with_context(|| format!("Failed to stage {}", live.display()))?;
+        file.sync_all()
+            .with_context(|| format!("Failed to sync {}", live.display()))?;
+        drop(file);
+        self.replace_with_path(&staged_file, live)
+    }
+
+    fn remove_path(&mut self, live: &Path) -> Result<()> {
+        let Some(backup_root) = self.backup_existing(live)? else {
+            return Ok(());
+        };
+        self.mutations.push(PathMutation {
+            live: live.to_path_buf(),
+            backup_root: Some(backup_root),
+            installed: false,
+        });
+        Ok(())
+    }
+
+    fn rollback(&mut self) -> Result<()> {
+        let mut errors = Vec::new();
+        for mutation in self.mutations.iter().rev() {
+            if mutation.installed {
+                match fs::symlink_metadata(&mutation.live) {
+                    Ok(_) => {
+                        if let Err(error) = remove_path_no_follow(&mutation.live) {
+                            errors.push(format!("remove {}: {error:#}", mutation.live.display()));
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        errors.push(format!("inspect {}: {error}", mutation.live.display()))
+                    }
+                }
+            }
+            if let Some(root) = &mutation.backup_root {
+                let backup = root.join("previous");
+                if fs::symlink_metadata(&backup).is_ok()
+                    && let Err(error) = fs::rename(&backup, &mutation.live)
+                {
+                    errors.push(format!("restore {}: {error}", mutation.live.display()));
+                }
+                if let Err(error) = fs::remove_dir(root) {
+                    errors.push(format!("clear {}: {error}", root.display()));
+                }
+            }
+        }
+        self.mutations.clear();
+        for dir in self.created_dirs.iter().rev() {
+            match fs::remove_dir(dir) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => {}
+                Err(error) => errors.push(format!("remove {}: {error}", dir.display())),
+            }
+        }
+        self.created_dirs.clear();
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            anyhow::bail!("activation rollback was incomplete: {}", errors.join("; "))
+        }
+    }
+
+    fn commit(mut self) {
+        for mutation in self.mutations.drain(..).rev() {
+            let Some(root) = mutation.backup_root else {
+                continue;
+            };
+            let backup = root.join("previous");
+            if fs::symlink_metadata(&backup).is_ok()
+                && let Err(error) = remove_path_no_follow(&backup)
+            {
+                eprintln!(
+                    "warning: could not clear old activation entry {}: {error}",
+                    backup.display()
+                );
+                continue;
+            }
+            if let Err(error) = fs::remove_dir(&root) {
+                eprintln!(
+                    "warning: could not clear activation directory {}: {error}",
+                    root.display()
+                );
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+enum FarmChange {
+    Link {
+        live: PathBuf,
+        target: PathBuf,
+        preflight_target: PathBuf,
+        kind: ManagedLinkKind,
+    },
+    Remove {
+        live: PathBuf,
+        logical: String,
+    },
+}
+
+#[derive(Debug)]
+struct FarmPlan {
+    dest: PathBuf,
+    active: bool,
+    changes: Vec<FarmChange>,
+    preserved: Vec<String>,
+}
+
+fn plan_link_farm(
+    layout_source: Option<&Path>,
+    target_source: Option<&Path>,
+    dest: &Path,
+    logical_prefix: &str,
+    store_root: &Path,
+    known: &BTreeMap<String, BTreeSet<String>>,
+) -> Result<FarmPlan> {
+    let mut desired = BTreeMap::new();
+    if let (Some(layout_source), Some(target_source)) = (layout_source, target_source) {
+        for entry in fs::read_dir(layout_source)
+            .with_context(|| format!("Failed to read agent store {}", layout_source.display()))?
+        {
+            let entry = entry.with_context(|| {
+                format!("Failed to read an entry in {}", layout_source.display())
+            })?;
+            let name = entry.file_name().into_string().map_err(|_| {
+                anyhow::anyhow!(
+                    "Agent-store entry is not valid UTF-8: {}",
+                    entry.path().display()
+                )
+            })?;
+            let kind = managed_link_kind(&entry.path())?;
+            desired.insert(
+                name.clone(),
+                (target_source.join(&name), entry.path(), kind),
+            );
+        }
+    }
+
+    if desired.is_empty() && fs::symlink_metadata(dest).is_err() {
+        return Ok(FarmPlan {
+            dest: dest.to_path_buf(),
+            active: false,
+            changes: Vec::new(),
+            preserved: Vec::new(),
+        });
+    }
+    let active = match fs::symlink_metadata(dest) {
+        Ok(metadata) if metadata.is_dir() && !metadata_is_link(&metadata) => true,
+        Ok(_) => {
+            return Ok(FarmPlan {
+                dest: dest.to_path_buf(),
+                active: false,
+                changes: Vec::new(),
+                preserved: vec![logical_prefix.to_string()],
+            });
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(error) => {
+            return Err(error).with_context(|| format!("Failed to inspect {}", dest.display()));
+        }
+    };
+
+    let mut changes = Vec::new();
+    let mut preserved = Vec::new();
+    for (name, (target, preflight_target, kind)) in &desired {
+        let link = dest.join(name);
+        let logical = Path::new(logical_prefix).join(name);
+        match fs::symlink_metadata(&link) {
+            Ok(metadata) if metadata_is_link(&metadata) => {
+                if !link_targets_store(&link, store_root) {
+                    preserved.push(logical.display().to_string());
+                } else if !link_targets_exactly(&link, target) {
+                    changes.push(FarmChange::Link {
+                        live: link,
+                        target: target.clone(),
+                        preflight_target: preflight_target.clone(),
+                        kind: *kind,
+                    });
+                }
+            }
+            Ok(_) => {
+                if legacy_entry_is_owned(&link, &logical, known)? {
+                    changes.push(FarmChange::Link {
+                        live: link,
+                        target: target.clone(),
+                        preflight_target: preflight_target.clone(),
+                        kind: *kind,
+                    });
+                } else {
+                    preserved.push(logical.display().to_string());
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                changes.push(FarmChange::Link {
+                    live: link,
+                    target: target.clone(),
+                    preflight_target: preflight_target.clone(),
+                    kind: *kind,
+                });
+            }
+            Err(error) => {
+                return Err(error).with_context(|| format!("Failed to inspect {}", link.display()));
+            }
+        }
+    }
+
+    if fs::symlink_metadata(dest).is_ok() {
+        for entry in
+            fs::read_dir(dest).with_context(|| format!("Failed to read {}", dest.display()))?
+        {
+            let entry =
+                entry.with_context(|| format!("Failed to read an entry in {}", dest.display()))?;
+            let Ok(name) = entry.file_name().into_string() else {
+                // Mixed namespace: an unrelated personal entry can use any
+                // filename the platform supports. It is never ours to reject.
+                continue;
+            };
+            if desired.contains_key(&name) {
+                continue;
+            }
+            let path = entry.path();
+            let metadata = fs::symlink_metadata(&path)
+                .with_context(|| format!("Failed to inspect {}", path.display()))?;
+            if metadata_is_link(&metadata) && link_targets_store(&path, store_root) {
+                changes.push(FarmChange::Remove {
+                    live: path,
+                    logical: format!("{logical_prefix}/{name}"),
+                });
+            }
+        }
+    }
+
+    preserved.sort();
+    Ok(FarmPlan {
+        dest: dest.to_path_buf(),
+        active,
+        changes,
+        preserved,
+    })
+}
+
+fn allocate_preflight_path(parent: &Path) -> Result<PathBuf> {
+    for attempt in 0..100u32 {
+        let candidate = parent.join(format!(
+            ".hyprlayer-link-preflight-{}-{attempt}",
+            std::process::id()
+        ));
+        match fs::symlink_metadata(&candidate) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(candidate),
+            Ok(_) => continue,
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("Failed to inspect {}", candidate.display()));
+            }
+        }
+    }
+    anyhow::bail!(
+        "Could not allocate a link preflight path inside {}",
+        parent.display()
+    )
+}
+
+fn preflight_managed_link(target: &Path, parent: &Path, kind: ManagedLinkKind) -> Result<()> {
+    let candidate = allocate_preflight_path(parent)?;
+    create_managed_link(target, &candidate, kind)?;
+    remove_managed_link(&candidate)
+        .context("The agent-link preflight succeeded but its temporary link could not be removed")
+}
+
+fn preflight_farm(plan: &FarmPlan) -> Result<()> {
+    if !plan.active {
+        return Ok(());
+    }
+    let mut file_done = false;
+    let mut directory_done = false;
+    for change in &plan.changes {
+        let FarmChange::Link {
+            preflight_target,
+            kind,
+            ..
+        } = change
+        else {
+            continue;
+        };
+        let already_done = match kind {
+            ManagedLinkKind::File => &mut file_done,
+            ManagedLinkKind::Directory => &mut directory_done,
+        };
+        if *already_done {
+            continue;
+        }
+        preflight_managed_link(preflight_target, &plan.dest, *kind)?;
+        *already_done = true;
+    }
+    Ok(())
+}
+
+fn apply_farm(plan: &FarmPlan, transaction: &mut ActivationTransaction) -> Result<SyncReport> {
+    let mut report = SyncReport {
+        preserved: plan.preserved.clone(),
+        ..SyncReport::default()
+    };
+    if !plan.active {
+        return Ok(report);
+    }
+    for change in &plan.changes {
+        match change {
+            FarmChange::Link {
+                live, target, kind, ..
+            } => transaction.replace_with_link(live, target, *kind)?,
+            FarmChange::Remove { live, logical } => {
+                transaction.remove_path(live)?;
+                report.removed.push(logical.clone());
+            }
+        }
+        report.changed += 1;
+    }
+    report.removed.sort();
+    Ok(report)
+}
+
+#[cfg(test)]
+fn reconcile_link_farm(
+    source: Option<&Path>,
+    dest: &Path,
+    logical_prefix: &str,
+    store_root: &Path,
+    known: &BTreeMap<String, BTreeSet<String>>,
+) -> Result<SyncReport> {
+    let plan = plan_link_farm(source, source, dest, logical_prefix, store_root, known)?;
+    let mut transaction = ActivationTransaction::default();
+    if plan.active {
+        transaction.ensure_dir(dest)?;
+    }
+    let mut report = match preflight_farm(&plan).and_then(|()| apply_farm(&plan, &mut transaction))
+    {
+        Ok(report) => report,
+        Err(error) => {
+            if let Err(rollback) = transaction.rollback() {
+                return Err(error.context(format!("Link-farm rollback also failed: {rollback:#}")));
+            }
+            return Err(error);
+        }
+    };
+    report.removed.sort();
+    transaction.commit();
+    Ok(report)
+}
+
+fn merge_sync_report(into: &mut SyncReport, mut from: SyncReport) {
+    into.changed += from.changed;
+    into.preserved.append(&mut from.preserved);
+    into.removed.append(&mut from.removed);
+    into.cleaned_backups += from.cleaned_backups;
+}
+
+fn has_symlink_ancestor(root: &Path, path: &Path) -> bool {
+    let Ok(relative) = path.strip_prefix(root) else {
+        return true;
+    };
+    let mut current = root.to_path_buf();
+    let components: Vec<_> = relative.components().collect();
+    for component in components.iter().take(components.len().saturating_sub(1)) {
+        let std::path::Component::Normal(part) = component else {
+            return true;
+        };
+        current.push(part);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata_is_link(&metadata) => return true,
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => return true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return false,
+            Err(_) => return true,
+        }
+    }
+    false
+}
+
+fn metadata_is_link(metadata: &fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        metadata.file_type().is_symlink()
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+}
+
+fn remove_link_no_follow(path: &Path, metadata: &fs::Metadata) -> Result<()> {
+    #[cfg(unix)]
+    {
+        let _ = metadata;
+        fs::remove_file(path).with_context(|| format!("Failed to unlink {}", path.display()))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_DIRECTORY != 0 {
+            fs::remove_dir(path).with_context(|| format!("Failed to unlink {}", path.display()))
+        } else {
+            fs::remove_file(path).with_context(|| format!("Failed to unlink {}", path.display()))
+        }
+    }
+}
+
+/// Remove only digest-matched legacy *copies*. Symlinks are deliberately
+/// excluded: link-farm ownership is decided by their target instead.
+fn remove_legacy_copies(
+    dest: &Path,
+    previous: &[ManifestEntry],
+    next: Option<&BundleManifest>,
+) -> Vec<String> {
+    let kept = next.map(BundleManifest::digests).unwrap_or_default();
+    let mut removed = Vec::new();
+    for entry in previous {
+        let (Some(key), Some(path)) = (
+            manifest::relative_key(Path::new(&entry.path)),
+            manifest::resolve_under(dest, &entry.path),
+        ) else {
+            continue;
+        };
+        if kept.contains_key(&key) || has_symlink_ancestor(dest, &path) {
+            continue;
+        }
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if metadata_is_link(&metadata) || !metadata.is_file() {
+            continue;
+        }
+        if integrity::verify_sha256(&path, &entry.sha256).is_err() {
+            continue;
+        }
+        if let Err(error) = fs::remove_file(&path) {
+            eprintln!("warning: could not remove {}: {error}", path.display());
+            continue;
+        }
+        if let Some(parent) = path.parent() {
+            prune_empty_dirs(dest, parent);
+        }
+        removed.push(key);
+    }
+    removed
+}
+
+fn root_only_manifest(manifest: &BundleManifest) -> BundleManifest {
+    BundleManifest {
+        version: manifest.version.clone(),
+        harness: manifest.harness.clone(),
+        min_cli_version: manifest.min_cli_version.clone(),
+        files: manifest
+            .files
+            .iter()
+            .filter(|entry| is_harness_config(Path::new(&entry.path)))
+            .cloned()
+            .collect(),
+    }
+}
+
+struct RootFilesPlan {
+    replacements: Vec<(PathBuf, Vec<u8>)>,
+    preserved: Vec<String>,
+}
+
+fn plan_claude_root_files(
+    source: &Path,
+    dest: &Path,
+    current: &BundleManifest,
+    previous: Option<&BundleManifest>,
+) -> Result<RootFilesPlan> {
+    // `settings.json` is the deliberate store-mode exception on every OS: it is a
+    // mutable harness config, so it stays a digest-guarded regular copy
+    // rather than a link to immutable bundle defaults.
+    let previous_digests = previous.map(BundleManifest::digests);
+    let mut replacements = Vec::new();
+    let mut preserved = Vec::new();
+    let root = root_only_manifest(current);
+
+    for entry in &root.files {
+        let source_path = manifest::resolve_under(source, &entry.path)
+            .ok_or_else(|| anyhow::anyhow!("Invalid root bundle path {:?}", entry.path))?;
+        let dest_path = manifest::resolve_under(dest, &entry.path)
+            .ok_or_else(|| anyhow::anyhow!("Invalid root destination path {:?}", entry.path))?;
+        let bytes = fs::read(&source_path)
+            .with_context(|| format!("Failed to read {}", source_path.display()))?;
+        match fs::symlink_metadata(&dest_path) {
+            Ok(metadata) if metadata.is_file() && !metadata_is_link(&metadata) => {
+                let existing = fs::read(&dest_path)
+                    .with_context(|| format!("Failed to read {}", dest_path.display()))?;
+                if existing == bytes {
+                    continue;
+                }
+                let ours = previous_digests.as_ref().is_some_and(|digests| {
+                    digests
+                        .get(&entry.path)
+                        .is_some_and(|digest| integrity::bytes_match_sha256(&existing, digest))
+                });
+                if !ours {
+                    preserved.push(entry.path.clone());
+                    continue;
+                }
+            }
+            Ok(_) => {
+                preserved.push(entry.path.clone());
+                continue;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("Failed to inspect {}", dest_path.display()));
+            }
+        }
+        replacements.push((dest_path, bytes));
+    }
+    Ok(RootFilesPlan {
+        replacements,
+        preserved,
+    })
+}
+
+fn apply_claude_root_files(
+    plan: &RootFilesPlan,
+    transaction: &mut ActivationTransaction,
+) -> Result<SyncReport> {
+    let mut report = SyncReport {
+        preserved: plan.preserved.clone(),
+        ..SyncReport::default()
+    };
+    for (path, bytes) in &plan.replacements {
+        transaction.replace_with_bytes(path, bytes)?;
+        report.changed += 1;
+    }
+    Ok(report)
+}
+
+#[cfg(test)]
+fn sync_claude_root_files(
+    source: &Path,
+    dest: &Path,
+    current: &BundleManifest,
+    previous: Option<&BundleManifest>,
+) -> Result<SyncReport> {
+    let plan = plan_claude_root_files(source, dest, current, previous)?;
+    let mut transaction = ActivationTransaction::default();
+    let report = match apply_claude_root_files(&plan, &mut transaction) {
+        Ok(report) => report,
+        Err(error) => {
+            if let Err(rollback) = transaction.rollback() {
+                return Err(error.context(format!("Settings rollback also failed: {rollback:#}")));
+            }
+            return Err(error);
+        }
+    };
+    transaction.commit();
+    Ok(report)
+}
+
+fn paths_resolve_same(a: &Path, b: &Path) -> bool {
+    matches!((fs::canonicalize(a), fs::canonicalize(b)), (Ok(a), Ok(b)) if a == b)
+}
+
+struct SkillBridgePlan {
+    source: PathBuf,
+    link: PathBuf,
+    preflight_target: PathBuf,
+    outcome: SkillBridgeOutcome,
+}
+
+fn plan_skill_bridge(
+    source: &Path,
+    link: &Path,
+    preflight_target: &Path,
+) -> Result<SkillBridgePlan> {
+    let outcome = match fs::symlink_metadata(link) {
+        Ok(_) if paths_resolve_same(link, source) || link_targets_exactly(link, source) => {
+            SkillBridgeOutcome::AlreadyCorrect
+        }
+        Ok(_) => SkillBridgeOutcome::SkippedExisting,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => SkillBridgeOutcome::Created,
+        Err(error) => {
+            return Err(error).with_context(|| format!("Failed to inspect {}", link.display()));
+        }
+    };
+    Ok(SkillBridgePlan {
+        source: source.to_path_buf(),
+        link: link.to_path_buf(),
+        preflight_target: preflight_target.to_path_buf(),
+        outcome,
+    })
+}
+
+fn preflight_skill_bridge(plan: &SkillBridgePlan) -> Result<()> {
+    if plan.outcome != SkillBridgeOutcome::Created {
+        return Ok(());
+    }
+    let parent = plan
+        .link
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Codex skill bridge has no parent"))?;
+    preflight_managed_link(&plan.preflight_target, parent, ManagedLinkKind::Directory)
+}
+
+fn apply_skill_bridge(
+    plan: &SkillBridgePlan,
+    transaction: &mut ActivationTransaction,
+) -> Result<SkillBridgeOutcome> {
+    if plan.outcome != SkillBridgeOutcome::Created {
+        return Ok(plan.outcome);
+    }
+    if !plan.source.is_dir() {
+        anyhow::bail!(
+            "Codex skill bridge source does not exist: {}",
+            plan.source.display()
+        );
+    }
+    transaction.replace_with_link(&plan.link, &plan.source, ManagedLinkKind::Directory)?;
+    Ok(SkillBridgeOutcome::Created)
+}
+
+#[cfg(test)]
+fn ensure_skill_bridge(source: &Path, link: &Path) -> Result<SkillBridgeOutcome> {
+    let plan = plan_skill_bridge(source, link, source)?;
+    let mut transaction = ActivationTransaction::default();
+    if plan.outcome == SkillBridgeOutcome::Created {
+        transaction.ensure_dir(
+            link.parent()
+                .ok_or_else(|| anyhow::anyhow!("Codex skill bridge has no parent"))?,
+        )?;
+    }
+    let outcome = match preflight_skill_bridge(&plan)
+        .and_then(|()| apply_skill_bridge(&plan, &mut transaction))
+    {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            if let Err(rollback) = transaction.rollback() {
+                return Err(
+                    error.context(format!("Skill bridge rollback also failed: {rollback:#}"))
+                );
+            }
+            return Err(error);
+        }
+    };
+    transaction.commit();
+    Ok(outcome)
+}
+
+fn warn_if_bridge_skipped(outcome: SkillBridgeOutcome, source: &Path, link: &Path) {
+    if outcome == SkillBridgeOutcome::SkippedExisting {
+        eprintln!(
+            "warning: left existing {} untouched; standalone Codex skills remain unbridged to {}",
+            link.display(),
+            source.display()
+        );
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActivationBoundary {
+    Generation,
+    ClaudeSkills,
+    ClaudeAgents,
+    CodexAgents,
+    Bridge,
+    Settings,
+    Manifest,
+}
+
+fn inject_activation_failure(
+    requested: Option<ActivationBoundary>,
+    boundary: ActivationBoundary,
+) -> Result<()> {
+    if requested == Some(boundary) {
+        anyhow::bail!("injected activation failure after {boundary:?}");
+    }
+    Ok(())
+}
+
+fn file_needs_replacement(path: &Path, bytes: &[u8]) -> Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() && !metadata_is_link(&metadata) => Ok(fs::read(path)
+            .with_context(|| format!("Failed to read {}", path.display()))?
+            != bytes),
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(error) => Err(error).with_context(|| format!("Failed to inspect {}", path.display())),
+    }
+}
+
+/// Install the same-version Claude/Codex pair through one rollback log.
+/// Bundle bytes first become one immutable store generation; the generation,
+/// all three mixed-namespace link farms, the skill bridge, mutable
+/// `settings.json`, and the ownership record are then committed together.
+#[allow(clippy::too_many_arguments)]
+fn install_claude_bundle_set(
+    claude_staged: &Path,
+    codex_staged: &Path,
+    claude_dest: &Path,
+    codex_dest: &Path,
+    store_root: &Path,
+    bridge: &Path,
+    pinned_version: Option<&str>,
+    version: &str,
+    quiet: bool,
+) -> Result<SyncReport> {
+    install_claude_bundle_set_with_failure(
+        claude_staged,
+        codex_staged,
+        claude_dest,
+        codex_dest,
+        store_root,
+        bridge,
+        pinned_version,
+        version,
+        quiet,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn install_claude_bundle_set_with_failure(
+    claude_staged: &Path,
+    codex_staged: &Path,
+    claude_dest: &Path,
+    codex_dest: &Path,
+    store_root: &Path,
+    bridge: &Path,
+    pinned_version: Option<&str>,
+    version: &str,
+    quiet: bool,
+    failure: Option<ActivationBoundary>,
+) -> Result<SyncReport> {
+    // These gates all run before the first destination mutation.
+    let claude_manifest = claude_staged_manifest(claude_staged, pinned_version, version)?;
+    let codex_manifest = codex_staged_manifest(codex_staged, pinned_version, version)?;
+    let previous_claude = read_installed_manifest(claude_dest);
+    let previous_codex = read_installed_manifest(codex_dest);
+    let frozen = AgentTool::Claude.frozen_manifest();
+    let mut claude_known_sources: Vec<&[ManifestEntry]> =
+        vec![claude_manifest.files.as_slice(), frozen.as_slice()];
+    if let Some(previous) = &previous_claude {
+        claude_known_sources.push(previous.files.as_slice());
+    }
+    let claude_known = known_bundle_digests(claude_known_sources);
+    let mut codex_known_sources: Vec<&[ManifestEntry]> = vec![codex_manifest.files.as_slice()];
+    if let Some(previous) = &previous_codex {
+        codex_known_sources.push(previous.files.as_slice());
+    }
+    let codex_known = known_bundle_digests(codex_known_sources);
+
+    let prepared = prepare_store_generation(
+        claude_staged,
+        codex_staged,
+        store_root,
+        version,
+        &claude_manifest,
+        &codex_manifest,
+    )?;
+    let claude_store = prepared.generation.join(AgentTool::Claude.harness_slug());
+    let codex_store = prepared.generation.join(CODEX_HARNESS);
+    let claude_skills = plan_link_farm(
+        Some(&prepared.claude_layout.join("skills")),
+        Some(&claude_store.join("skills")),
+        &claude_dest.join("skills"),
+        "skills",
+        store_root,
+        &claude_known,
+    )?;
+    let claude_agents = plan_link_farm(
+        Some(&prepared.claude_layout.join("agents")),
+        Some(&claude_store.join("agents")),
+        &claude_dest.join("agents"),
+        "agents",
+        store_root,
+        &claude_known,
+    )?;
+    let codex_agents = plan_link_farm(
+        Some(&prepared.codex_layout.join("agents")),
+        Some(&codex_store.join("agents")),
+        &codex_dest.join("agents"),
+        "agents",
+        store_root,
+        &codex_known,
+    )?;
+    let root_files = plan_claude_root_files(
+        &prepared.claude_layout,
+        claude_dest,
+        &claude_manifest,
+        previous_claude.as_ref(),
+    )?;
+    let bridge_source = claude_dest.join("skills");
+    let bridge_plan = plan_skill_bridge(
+        &bridge_source,
+        bridge,
+        &prepared.claude_layout.join("skills"),
+    )?;
+    let root_manifest = root_only_manifest(&claude_manifest);
+    let root_manifest_bytes = serde_json::to_string_pretty(&root_manifest)
+        .context("Failed to serialize the bundle manifest")?;
+    let claude_record = claude_dest.join(INSTALLED_MANIFEST_FILE);
+    let replace_claude_record =
+        file_needs_replacement(&claude_record, root_manifest_bytes.as_bytes())?;
+    let codex_record = codex_dest.join(INSTALLED_MANIFEST_FILE);
+    let remove_codex_record = fs::symlink_metadata(&codex_record)
+        .is_ok_and(|metadata| metadata.is_file() && !metadata_is_link(&metadata));
+
+    let mut transaction = ActivationTransaction::default();
+    let activation = (|| -> Result<(SyncReport, SkillBridgeOutcome)> {
+        for plan in [&claude_skills, &claude_agents, &codex_agents] {
+            if plan.active {
+                transaction.ensure_dir(&plan.dest)?;
+            }
+        }
+        if bridge_plan.outcome == SkillBridgeOutcome::Created {
+            transaction.ensure_dir(
+                bridge
+                    .parent()
+                    .ok_or_else(|| anyhow::anyhow!("Codex skill bridge has no parent"))?,
+            )?;
+        }
+        preflight_farm(&claude_skills)?;
+        preflight_farm(&claude_agents)?;
+        preflight_farm(&codex_agents)?;
+        preflight_skill_bridge(&bridge_plan)?;
+
+        if let Some(staged) = prepared.staged.as_deref() {
+            transaction.replace_with_path(staged, &prepared.generation)?;
+        }
+        inject_activation_failure(failure, ActivationBoundary::Generation)?;
+
+        let mut report = SyncReport {
+            changed: prepared.changed,
+            ..SyncReport::default()
+        };
+        merge_sync_report(&mut report, apply_farm(&claude_skills, &mut transaction)?);
+        inject_activation_failure(failure, ActivationBoundary::ClaudeSkills)?;
+        merge_sync_report(&mut report, apply_farm(&claude_agents, &mut transaction)?);
+        inject_activation_failure(failure, ActivationBoundary::ClaudeAgents)?;
+        merge_sync_report(&mut report, apply_farm(&codex_agents, &mut transaction)?);
+        inject_activation_failure(failure, ActivationBoundary::CodexAgents)?;
+
+        let bridge_outcome = apply_skill_bridge(&bridge_plan, &mut transaction)?;
+        if bridge_outcome == SkillBridgeOutcome::Created {
+            report.changed += 1;
+        }
+        inject_activation_failure(failure, ActivationBoundary::Bridge)?;
+
+        merge_sync_report(
+            &mut report,
+            apply_claude_root_files(&root_files, &mut transaction)?,
+        );
+        inject_activation_failure(failure, ActivationBoundary::Settings)?;
+
+        if replace_claude_record {
+            transaction.replace_with_bytes(&claude_record, root_manifest_bytes.as_bytes())?;
+            report.changed += 1;
+        }
+        if remove_codex_record {
+            transaction.remove_path(&codex_record)?;
+            report.changed += 1;
+        }
+        inject_activation_failure(failure, ActivationBoundary::Manifest)?;
+        Ok((report, bridge_outcome))
+    })();
+
+    let (mut report, bridge_outcome) = match activation {
+        Ok(success) => success,
+        Err(error) => {
+            if let Err(rollback) = transaction.rollback() {
+                return Err(error.context(format!(
+                    "Claude/Codex activation failed and rollback was incomplete: {rollback:#}"
+                )));
+            }
+            return Err(error);
+        }
+    };
+    transaction.commit();
+
+    // Cleanup is deliberately after the transactional commit and is always
+    // best-effort. It cannot turn a successful activation into a reported
+    // failure, nor can it remove bytes needed to roll an activation back.
+    report.cleaned_backups += clean_backups(claude_dest, &frozen);
+    if let Some(previous) = &previous_claude {
+        report.cleaned_backups += clean_backups(claude_dest, &previous.files);
+        report.removed.extend(remove_legacy_copies(
+            claude_dest,
+            &previous.files,
+            Some(&claude_manifest),
+        ));
+    }
+    report.removed.extend(remove_legacy_copies(
+        claude_dest,
+        &frozen,
+        Some(&claude_manifest),
+    ));
+    if let Some(previous) = &previous_codex {
+        report.removed.extend(remove_legacy_copies(
+            codex_dest,
+            &previous.files,
+            Some(&codex_manifest),
+        ));
+    }
+
+    warn_if_bridge_skipped(bridge_outcome, &bridge_source, bridge);
+    if bridge_outcome == SkillBridgeOutcome::Created && !quiet {
+        println!(
+            "  {:<60}",
+            format!(
+                "Linked standalone Codex skills {} -> {}",
+                bridge.display(),
+                bridge_source.display()
+            )
+        );
+    }
+
+    report.preserved.sort();
+    report.preserved.dedup();
+    report.removed.sort();
+    report.removed.dedup();
+    Ok(report)
+}
+
+struct StoredBundleSet {
+    claude: PathBuf,
+    codex: PathBuf,
+    claude_manifest: BundleManifest,
+    codex_manifest: BundleManifest,
+}
+
+/// Resolve a complete, verified store generation without mutating it. A
+/// missing, partial, or corrupt generation is a cache miss, so callers can
+/// fall back to fetching the pair.
+fn stored_bundle_set(version: &str) -> Result<Option<StoredBundleSet>> {
+    let store_root = agent_store_root()?;
+    let generation = store_version_dir(&store_root, version)?;
+    let claude = generation.join(AgentTool::Claude.harness_slug());
+    let codex = generation.join(CODEX_HARNESS);
+
+    for path in [&claude, &codex] {
+        let Ok(metadata) = fs::symlink_metadata(path) else {
+            return Ok(None);
+        };
+        if !metadata.is_dir() || metadata_is_link(&metadata) {
+            return Ok(None);
+        }
+    }
+
+    let Ok(claude_manifest) = claude_staged_manifest(&claude, None, version) else {
+        return Ok(None);
+    };
+    let Ok(codex_manifest) = codex_staged_manifest(&codex, None, version) else {
+        return Ok(None);
+    };
+    Ok(Some(StoredBundleSet {
+        claude,
+        codex,
+        claude_manifest,
+        codex_manifest,
+    }))
+}
+
+fn link_farm_matches(source: &Path, dest: &Path, store_root: &Path) -> bool {
+    let Ok(metadata) = fs::symlink_metadata(dest) else {
+        return false;
+    };
+    if !metadata.is_dir() || metadata_is_link(&metadata) {
+        return false;
+    }
+
+    let Ok(source_entries) = fs::read_dir(source) else {
+        return false;
+    };
+    let mut desired = BTreeMap::new();
+    for entry in source_entries {
+        let Ok(entry) = entry else {
+            return false;
+        };
+        let Ok(name) = entry.file_name().into_string() else {
+            return false;
+        };
+        desired.insert(name, entry.path());
+    }
+    if desired.is_empty() {
+        return false;
+    }
+
+    for (name, target) in &desired {
+        let link = dest.join(name);
+        let Ok(metadata) = fs::symlink_metadata(&link) else {
+            return false;
+        };
+        if !metadata_is_link(&metadata) || !link_targets_exactly(&link, target) {
+            return false;
+        }
+    }
+
+    let Ok(dest_entries) = fs::read_dir(dest) else {
+        return false;
+    };
+    for entry in dest_entries {
+        let Ok(entry) = entry else {
+            return false;
+        };
+        let path = entry.path();
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            return false;
+        };
+        if metadata_is_link(&metadata)
+            && link_targets_store(&path, store_root)
+            && !entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| desired.contains_key(name))
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// Per-platform health plus the shared skill bridge. This is version-aware
+/// so a config that says "current" cannot accept farms still targeting an
+/// older store generation.
+fn bundle_set_health(version: &str) -> (bool, bool, bool) {
+    let Ok(Some(stored)) = stored_bundle_set(version) else {
+        return (false, false, false);
+    };
+    let (Ok(claude_dest), Ok(codex_dest), Ok(bridge)) = (
+        AgentTool::Claude.dest_dir(),
+        codex_dest_dir(),
+        codex_skill_bridge_dir(),
+    ) else {
+        return (false, false, false);
+    };
+    let Ok(store_root) = agent_store_root() else {
+        return (false, false, false);
+    };
+
+    let claude_healthy = link_farm_matches(
+        &stored.claude.join("skills"),
+        &claude_dest.join("skills"),
+        &store_root,
+    ) && link_farm_matches(
+        &stored.claude.join("agents"),
+        &claude_dest.join("agents"),
+        &store_root,
+    );
+    let codex_healthy = link_farm_matches(
+        &stored.codex.join("agents"),
+        &codex_dest.join("agents"),
+        &store_root,
+    );
+
+    let bridge_healthy = paths_resolve_same(&bridge, &claude_dest.join("skills"));
+    (claude_healthy, codex_healthy, bridge_healthy)
+}
+
+/// Whether every managed link points at the exact requested generation.
+pub(crate) fn bundle_set_is_installed(version: &str) -> bool {
+    let (claude, codex, bridge) = bundle_set_health(version);
+    claude && codex && bridge
+}
+
+/// Looser migration/startup gate: does either managed platform already have
+/// a recognizable installation, regardless of generation health?
+pub(crate) fn bundle_set_has_existing_install() -> bool {
+    AgentTool::Claude.has_existing_install()
+        || codex_dest_dir().is_ok_and(|dest| dest.join("agents").is_dir())
+        || codex_skill_bridge_dir().is_ok_and(|bridge| fs::symlink_metadata(bridge).is_ok())
+}
+
+/// Repoint a complete local generation without network access. Returns
+/// `None` when that exact generation is absent or incomplete.
+pub(crate) fn repair_bundle_set_links(version: &str) -> Result<Option<usize>> {
+    let _lock = acquire_bundle_lock()?;
+    let Some(stored) = stored_bundle_set(version)? else {
+        return Ok(None);
+    };
+    let claude_dest = AgentTool::Claude.dest_dir()?;
+    let codex_dest = codex_dest_dir()?;
+    let store_root = agent_store_root()?;
+    let bridge = codex_skill_bridge_dir()?;
+    let previous_claude = read_installed_manifest(&claude_dest);
+    let previous_codex = read_installed_manifest(&codex_dest);
+    let frozen = AgentTool::Claude.frozen_manifest();
+    let mut claude_sources: Vec<&[ManifestEntry]> =
+        vec![stored.claude_manifest.files.as_slice(), frozen.as_slice()];
+    if let Some(previous) = &previous_claude {
+        claude_sources.push(previous.files.as_slice());
+    }
+    let claude_known = known_bundle_digests(claude_sources);
+    let mut codex_sources: Vec<&[ManifestEntry]> = vec![stored.codex_manifest.files.as_slice()];
+    if let Some(previous) = &previous_codex {
+        codex_sources.push(previous.files.as_slice());
+    }
+    let codex_known = known_bundle_digests(codex_sources);
+    let claude_skills = plan_link_farm(
+        Some(&stored.claude.join("skills")),
+        Some(&stored.claude.join("skills")),
+        &claude_dest.join("skills"),
+        "skills",
+        &store_root,
+        &claude_known,
+    )?;
+    let claude_agents = plan_link_farm(
+        Some(&stored.claude.join("agents")),
+        Some(&stored.claude.join("agents")),
+        &claude_dest.join("agents"),
+        "agents",
+        &store_root,
+        &claude_known,
+    )?;
+    let codex_agents = plan_link_farm(
+        Some(&stored.codex.join("agents")),
+        Some(&stored.codex.join("agents")),
+        &codex_dest.join("agents"),
+        "agents",
+        &store_root,
+        &codex_known,
+    )?;
+    let bridge_source = claude_dest.join("skills");
+    let bridge_plan = plan_skill_bridge(&bridge_source, &bridge, &stored.claude.join("skills"))?;
+
+    let mut transaction = ActivationTransaction::default();
+    let activation = (|| -> Result<(SyncReport, SkillBridgeOutcome)> {
+        for plan in [&claude_skills, &claude_agents, &codex_agents] {
+            if plan.active {
+                transaction.ensure_dir(&plan.dest)?;
+            }
+        }
+        if bridge_plan.outcome == SkillBridgeOutcome::Created {
+            transaction.ensure_dir(
+                bridge
+                    .parent()
+                    .ok_or_else(|| anyhow::anyhow!("Codex skill bridge has no parent"))?,
+            )?;
+        }
+        preflight_farm(&claude_skills)?;
+        preflight_farm(&claude_agents)?;
+        preflight_farm(&codex_agents)?;
+        preflight_skill_bridge(&bridge_plan)?;
+
+        let mut report = apply_farm(&claude_skills, &mut transaction)?;
+        merge_sync_report(&mut report, apply_farm(&claude_agents, &mut transaction)?);
+        merge_sync_report(&mut report, apply_farm(&codex_agents, &mut transaction)?);
+        let bridge_outcome = apply_skill_bridge(&bridge_plan, &mut transaction)?;
+        if bridge_outcome == SkillBridgeOutcome::Created {
+            report.changed += 1;
+        }
+        Ok((report, bridge_outcome))
+    })();
+    let (report, _bridge_outcome) = match activation {
+        Ok(success) => success,
+        Err(error) => {
+            if let Err(rollback) = transaction.rollback() {
+                return Err(error.context(format!(
+                    "Local Claude/Codex repair failed and rollback was incomplete: {rollback:#}"
+                )));
+            }
+            return Err(error);
+        }
+    };
+    transaction.commit();
+    Ok(Some(report.changed))
+}
+
+pub(crate) fn bundle_set_status_json(config: &crate::config::HyprlayerConfig) -> serde_json::Value {
+    let desired = config.desired_assets_version();
+    let (claude_healthy, codex_agents_healthy, bridge_healthy) = bundle_set_health(desired);
+    let codex_healthy = codex_agents_healthy && bridge_healthy;
+    let installed = claude_healthy && codex_healthy;
+    let claude_location = AgentTool::Claude
+        .dest_dir()
+        .ok()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| AgentTool::Claude.dest_display());
+    let codex_location = codex_dest_dir()
+        .ok()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| format!("~{SEP}.codex{SEP}"));
+    let store_location = agent_store_root()
+        .ok()
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+    serde_json::json!({
+        "agentTool": "Claude + Codex",
+        "installed": installed,
+        "location": store_location,
+        "platforms": [
+            {
+                "id": "claude",
+                "name": "Claude Code",
+                "installed": claude_healthy,
+                "location": claude_location,
+            },
+            {
+                "id": "codex",
+                "name": "Codex",
+                "installed": codex_healthy,
+                "location": codex_location,
+            },
+        ],
+        "assetsVersion": config.agents_installed_version,
+        "pinnedVersion": config.agents_pinned_version,
+        "desiredVersion": desired,
+        "binaryVersion": env!("CARGO_PKG_VERSION"),
+    })
+}
+
+pub(crate) fn print_bundle_set_status(config: &crate::config::HyprlayerConfig) {
+    use colored::Colorize;
+
+    let desired = config.desired_assets_version();
+    let status = if bundle_set_is_installed(desired) {
+        "installed".green()
+    } else {
+        "needs repair".red()
+    };
+    println!("  AI Platforms: {}", "Claude Code + Codex".cyan());
+    println!("  Status: {status}");
+    println!("  Claude: {}", AgentTool::Claude.dest_display().cyan());
+    println!("  Codex: {}", format!("~{SEP}.codex{SEP}").cyan());
+    println!("  Desired assets: {}", desired.cyan());
 }
 
 /// Parse a staged bundle's own `manifest.json`, or `None` for a legacy
@@ -1042,11 +2951,28 @@ fn read_installed_manifest(dest: &Path) -> Option<BundleManifest> {
     }
 }
 
+#[cfg(test)]
 fn write_installed_manifest(dest: &Path, manifest: &BundleManifest) -> Result<()> {
     let path = dest.join(INSTALLED_MANIFEST_FILE);
     let body = serde_json::to_string_pretty(manifest)
         .context("Failed to serialize the bundle manifest")?;
-    fs::write(&path, body).with_context(|| format!("Failed to write {}", path.display()))
+    fs::create_dir_all(dest).with_context(|| format!("Failed to create {}", dest.display()))?;
+    let mut temporary = tempfile::Builder::new()
+        .prefix(".hyprlayer-manifest-")
+        .tempfile_in(dest)
+        .with_context(|| format!("Failed to stage {}", path.display()))?;
+    temporary
+        .write_all(body.as_bytes())
+        .with_context(|| format!("Failed to stage {}", path.display()))?;
+    temporary
+        .as_file()
+        .sync_all()
+        .with_context(|| format!("Failed to sync {}", path.display()))?;
+    temporary
+        .persist(&path)
+        .map_err(|error| error.error)
+        .with_context(|| format!("Failed to write {}", path.display()))?;
+    Ok(())
 }
 
 /// The forward-pin guard: refuse a pinned bundle whose manifest declares a
@@ -1091,17 +3017,25 @@ fn verify_staged_completeness(
     staged: &Path,
     manifest: &BundleManifest,
 ) -> Result<()> {
+    verify_staged_completeness_for(&tool.to_string(), staged, manifest)
+}
+
+fn verify_staged_completeness_for(
+    label: &str,
+    staged: &Path,
+    manifest: &BundleManifest,
+) -> Result<()> {
     for entry in &manifest.files {
         let path = manifest::resolve_under(staged, &entry.path).ok_or_else(|| {
             anyhow::anyhow!(
-                "Downloaded {tool} bundle is incomplete — its manifest lists {:?}, \
+                "Downloaded {label} bundle is incomplete — its manifest lists {:?}, \
                  which is not a path inside the bundle.",
                 entry.path
             )
         })?;
         if !path.is_file() {
             anyhow::bail!(
-                "Downloaded {tool} bundle is incomplete — its manifest lists `{}`, \
+                "Downloaded {label} bundle is incomplete — its manifest lists `{}`, \
                  which the bundle does not contain. \
                  Run 'hyprlayer ai reinstall' to retry.",
                 entry.path
@@ -1109,7 +3043,7 @@ fn verify_staged_completeness(
         }
         integrity::verify_sha256(&path, &entry.sha256).map_err(|e| {
             anyhow::anyhow!(
-                "Downloaded {tool} bundle is incomplete — `{}` does not match the \
+                "Downloaded {label} bundle is incomplete — `{}` does not match the \
                  digest its manifest records ({e}). \
                  Run 'hyprlayer ai reinstall' to retry.",
                 entry.path
@@ -1288,94 +3222,7 @@ pub(crate) fn github_get_json(url: &str, timeout_secs: Option<u32>) -> Result<St
     .map_err(|e| anyhow::anyhow!("GitHub API request failed: {e}"))
 }
 
-/// The manifest of the bundle `tool` currently has installed, or `None`
-/// when there is none: an install from the frozen legacy tree, or one done
-/// by a pre-manifest CLI. Callers that need a single file from the
-/// installed bundle use this to tell the two worlds apart — `None` means
-/// there is no bundle to read from and `master`'s frozen tree is the right
-/// source after all.
-pub(crate) fn installed_manifest(tool: AgentTool) -> Option<BundleManifest> {
-    read_installed_manifest(&tool.dest_dir().ok()?)
-}
-
-/// Write one file of an installed bundle to `dest`, taken from the release
-/// asset that bundle was installed from and checked against the digest the
-/// manifest records for it.
-///
-/// This is how a file that belongs to the bundle gets restored after
-/// something removed it — the opencode telemetry plugin after a
-/// `telemetry off` → `on` round trip. Fetching it from `master` instead
-/// would hand a pinned install a file from a different version of the
-/// bundle than its skills came from.
-///
-/// It costs a whole (small, per-harness) bundle download to place one file.
-/// That is the price of the file matching the pin, and the callers only
-/// reach here when the file is actually missing.
-pub(crate) fn install_bundled_file(
-    tool: AgentTool,
-    manifest: &BundleManifest,
-    bundle_path: &str,
-    dest: &Path,
-) -> Result<()> {
-    let entry = manifest
-        .files
-        .iter()
-        .find(|entry| entry.path == bundle_path)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "The installed {tool} bundle (v{}) does not carry `{bundle_path}`",
-                manifest.version
-            )
-        })?;
-
-    let staging = tempfile::tempdir().context("Failed to create a staging directory")?;
-    let staged = staging.path().join(tool.repo_dir());
-    tool.fetch_asset_into(&staged, &manifest.version)?;
-
-    let source = manifest::resolve_under(&staged, &entry.path)
-        .ok_or_else(|| anyhow::anyhow!("Manifest entry {:?} is not a bundle path", entry.path))?;
-    integrity::verify_sha256(&source, &entry.sha256).map_err(|e| {
-        anyhow::anyhow!(
-            "`{bundle_path}` in the v{} {tool} bundle does not match the digest \
-             its manifest records ({e})",
-            manifest.version
-        )
-    })?;
-
-    if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create {}", parent.display()))?;
-    }
-    fs::copy(&source, dest)
-        .with_context(|| format!("Failed to write {}", dest.display()))
-        .map(|_| ())
-}
-
-/// Download a single file from the repo to `dest`. Pinned to `master`'s
-/// HEAD SHA (or to `BRANCH` if ref resolution fails).
-///
-/// Used by the opencode plugin install path to restore the plugin file
-/// after `telemetry off → on` without re-pulling the entire opencode/
-/// bundle. `download_directory` already pins itself across an
-/// install; this helper keeps single-file fetches on the same SHA-pin
-/// contract so a mid-fetch `master` advance can't deliver a file that
-/// references symbols not yet in the cached bundle.
-pub(crate) fn download_repo_file(repo_path: &str, dest: &Path) -> Result<()> {
-    if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let sha = fetch_master_sha().ok();
-    let git_ref = sha.as_deref().unwrap_or(BRANCH);
-    let url = raw_github_url(repo_path, git_ref);
-    download_file_to(&url, dest)
-}
-
-/// Factored out so URL construction is unit-testable without touching the network.
-fn raw_github_url(repo_path: &str, git_ref: &str) -> String {
-    format!("https://raw.githubusercontent.com/{REPO}/{git_ref}/{repo_path}")
-}
-
-/// Download a single file to disk.
+/// Download a single bundle member to disk.
 ///
 /// `ureq` returns `Err` on HTTP 4xx/5xx by default, so a 404 HTML page or
 /// rate-limit JSON envelope can never be persisted as a fake "agent file" —
@@ -1386,50 +3233,6 @@ fn raw_github_url(repo_path: &str, git_ref: &str) -> String {
 fn download_file_to(url: &str, dest: &Path) -> Result<()> {
     http::download_file_capped(url, dest, Duration::from_secs(30), None)
         .map_err(|e| anyhow::anyhow!("Failed to download {}: {e}", dest.display()))
-}
-
-/// Template placeholders used in OpenCode agent/command files
-const SONNET_MODEL_PLACEHOLDER: &str = "{{SONNET_MODEL}}";
-const OPUS_MODEL_PLACEHOLDER: &str = "{{OPUS_MODEL}}";
-const ADVERSARIAL_MODEL_PLACEHOLDER: &str = "{{ADVERSARIAL_MODEL}}";
-
-fn replace_model_placeholders(path: &Path, provider: &OpenCodeProvider) -> Result<bool> {
-    let content = fs::read_to_string(path)?;
-
-    if !content.contains(SONNET_MODEL_PLACEHOLDER)
-        && !content.contains(OPUS_MODEL_PLACEHOLDER)
-        && !content.contains(ADVERSARIAL_MODEL_PLACEHOLDER)
-    {
-        return Ok(false);
-    }
-
-    let updated = content
-        .replace(SONNET_MODEL_PLACEHOLDER, provider.default_sonnet_model())
-        .replace(OPUS_MODEL_PLACEHOLDER, provider.default_opus_model())
-        .replace(
-            ADVERSARIAL_MODEL_PLACEHOLDER,
-            provider.default_adversarial_model(),
-        );
-
-    fs::write(path, updated)?;
-    Ok(true)
-}
-
-/// Files use {{SONNET_MODEL}}, {{OPUS_MODEL}}, and {{ADVERSARIAL_MODEL}} placeholders.
-fn update_opencode_models(dest_dir: &Path, provider: &OpenCodeProvider) -> Result<usize> {
-    let dirs = ["agents", "commands"];
-
-    dirs.iter()
-        .filter_map(|dir| {
-            let path = dest_dir.join(dir);
-            path.is_dir().then_some(path)
-        })
-        .flat_map(|dir| fs::read_dir(dir).into_iter().flatten().flatten())
-        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "md"))
-        .try_fold(0, |count, entry| {
-            let updated = replace_model_placeholders(&entry.path(), provider)?;
-            Ok::<_, anyhow::Error>(count + usize::from(updated))
-        })
 }
 
 #[cfg(test)]
@@ -1549,25 +3352,59 @@ mod tests {
         assert_eq!(sync_tree(&src, &dest, None).unwrap().changed, 0);
     }
 
+    #[test]
+    #[cfg(unix)]
+    fn copy_sync_never_follows_leaf_or_parent_links_outside_dest() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let src = temp.path().join("src");
+        let dest = temp.path().join("dest");
+        let outside_leaf = temp.path().join("outside-leaf.md");
+        let outside_dir = temp.path().join("outside-dir");
+        fs::create_dir_all(src.join("agents/parent")).unwrap();
+        fs::write(src.join("agents/leaf.md"), "new leaf\n").unwrap();
+        fs::write(src.join("agents/parent/child.md"), "new child\n").unwrap();
+        fs::create_dir_all(dest.join("agents")).unwrap();
+        fs::write(&outside_leaf, "personal leaf\n").unwrap();
+        fs::create_dir_all(&outside_dir).unwrap();
+        fs::write(outside_dir.join("child.md"), "personal child\n").unwrap();
+        symlink(&outside_leaf, dest.join("agents/leaf.md")).unwrap();
+        symlink(&outside_dir, dest.join("agents/parent")).unwrap();
+
+        let report = sync_tree(&src, &dest, None).unwrap();
+        assert_eq!(report.changed, 0);
+        assert_eq!(
+            fs::read_to_string(&outside_leaf).unwrap(),
+            "personal leaf\n"
+        );
+        assert_eq!(
+            fs::read_to_string(outside_dir.join("child.md")).unwrap(),
+            "personal child\n"
+        );
+        let mut preserved = report.preserved;
+        preserved.sort();
+        assert_eq!(preserved, vec!["agents/leaf.md", "agents/parent/child.md"]);
+    }
+
     /// Real digests from the `v1.6.0-rc.1` prerelease that Phase 3 cut, so
     /// the fixture below is the shape GitHub actually returns rather than an
     /// invented one.
     const RC_CLAUDE_DIGEST: &str =
         "42292288c4a5fc6c7f765489da159ceef5c70d0705c2c9d65d999df7bb6c60cd";
-    const RC_COPILOT_DIGEST: &str =
+    const RC_BINARY_DIGEST: &str =
         "d4b730a0bb9755e2bd6aa763ef5e9b24bd1644feec1eae90ca08285a26ea5575";
 
-    /// A `/releases/tags/<tag>` body carrying the three bundles plus the
+    /// A `/releases/tags/<tag>` body carrying the supported pair plus the
     /// binaries, abridged to the fields we read.
     fn release_json_with_all_bundles() -> String {
         format!(
             r#"{{
                 "tag_name": "v1.6.0-rc.1",
                 "assets": [
-                    {{ "name": "hyprlayer-x86_64-unknown-linux-gnu", "digest": "sha256:{RC_COPILOT_DIGEST}" }},
+                    {{ "name": "hyprlayer-x86_64-unknown-linux-gnu", "digest": "sha256:{RC_BINARY_DIGEST}" }},
                     {{ "name": "hyprlayer-assets-claude-1.6.0-rc.1.tar.gz",   "digest": "sha256:{RC_CLAUDE_DIGEST}" }},
-                    {{ "name": "hyprlayer-assets-copilot-1.6.0-rc.1.tar.gz",  "digest": "sha256:{RC_COPILOT_DIGEST}" }},
-                    {{ "name": "hyprlayer-assets-opencode-1.6.0-rc.1.tar.gz", "digest": "sha256:{RC_CLAUDE_DIGEST}" }}
+                    {{ "name": "hyprlayer-assets-codex-1.6.0-rc.1.tar.gz", "digest": "sha256:{RC_BINARY_DIGEST}" }}
                 ]
             }}"#
         )
@@ -1629,10 +3466,14 @@ mod tests {
     /// A manifest describing exactly `files`, the way
     /// `scripts/build-asset-bundles.sh` would: real digests, paths relative
     /// to the harness root, and no entry for `manifest.json` itself.
-    fn manifest_for(version: &str, files: &[(&str, &[u8])]) -> BundleManifest {
+    fn manifest_for_harness(
+        harness: &str,
+        version: &str,
+        files: &[(&str, &[u8])],
+    ) -> BundleManifest {
         BundleManifest {
             version: version.to_string(),
-            harness: "claude".to_string(),
+            harness: harness.to_string(),
             min_cli_version: "1.6.0".to_string(),
             files: files
                 .iter()
@@ -1642,6 +3483,10 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    fn manifest_for(version: &str, files: &[(&str, &[u8])]) -> BundleManifest {
+        manifest_for_harness("claude", version, files)
     }
 
     /// Lay out an extracted release-asset bundle in `staged`: the files
@@ -1655,6 +3500,826 @@ mod tests {
         }
         let manifest = serde_json::to_string_pretty(&manifest_for(version, files)).unwrap();
         fs::write(staged.join(MANIFEST_FILE_NAME), manifest).unwrap();
+    }
+
+    fn stage_codex_bundle(staged: &Path, version: &str, files: &[(&str, &[u8])]) {
+        for (path, data) in files {
+            let dest = staged.join(path);
+            fs::create_dir_all(dest.parent().unwrap()).unwrap();
+            fs::write(dest, data).unwrap();
+        }
+        let manifest =
+            serde_json::to_string_pretty(&manifest_for_harness(CODEX_HARNESS, version, files))
+                .unwrap();
+        fs::write(staged.join(MANIFEST_FILE_NAME), manifest).unwrap();
+    }
+
+    #[test]
+    fn codex_companion_sync_is_idempotent_and_removal_safe() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("codex");
+        fs::create_dir_all(dest.join("agents")).unwrap();
+        fs::write(
+            dest.join("agents/adjudicator.toml"),
+            "name = \"my-adjudicator\"\n",
+        )
+        .unwrap();
+        fs::write(dest.join("agents/personal.toml"), "name = \"personal\"\n").unwrap();
+
+        let v1: [(&str, &[u8]); 2] = [
+            (
+                "agents/adjudicator.toml",
+                b"name = \"adjudicator\"\n" as &[u8],
+            ),
+            ("agents/cartographer.toml", b"name = \"cartographer\"\n"),
+        ];
+        let staged_v1 = tmp.path().join("v1");
+        stage_codex_bundle(&staged_v1, "1.6.1", &v1);
+        let first = install_codex_staged(&staged_v1, &dest, None, "1.6.1").unwrap();
+        assert_eq!(first.changed, 1);
+        assert_eq!(first.preserved, vec!["agents/adjudicator.toml"]);
+        assert_eq!(
+            fs::read_to_string(dest.join("agents/adjudicator.toml")).unwrap(),
+            "name = \"my-adjudicator\"\n",
+            "a pre-existing custom agent at a generated path is never clobbered"
+        );
+
+        let staged_same = tmp.path().join("same");
+        stage_codex_bundle(&staged_same, "1.6.1", &v1);
+        let second = install_codex_staged(&staged_same, &dest, None, "1.6.1").unwrap();
+        assert_eq!(second.changed, 0, "a repeated sync writes no agent files");
+
+        let v2: [(&str, &[u8]); 1] = [(
+            "agents/adjudicator.toml",
+            b"name = \"adjudicator\"\n" as &[u8],
+        )];
+        let staged_v2 = tmp.path().join("v2");
+        stage_codex_bundle(&staged_v2, "1.6.2", &v2);
+        let third = install_codex_staged(&staged_v2, &dest, None, "1.6.2").unwrap();
+        assert_eq!(third.removed, vec!["agents/cartographer.toml"]);
+        assert!(!dest.join("agents/cartographer.toml").exists());
+        assert!(dest.join("agents/personal.toml").is_file());
+        assert_eq!(
+            fs::read_to_string(dest.join("agents/adjudicator.toml")).unwrap(),
+            "name = \"my-adjudicator\"\n"
+        );
+    }
+
+    #[test]
+    fn codex_companion_never_removes_an_owned_file_the_user_modified() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("codex");
+        let v1: [(&str, &[u8]); 1] = [("agents/gone.toml", b"name = \"gone\"\n" as &[u8])];
+        let staged_v1 = tmp.path().join("v1");
+        stage_codex_bundle(&staged_v1, "1.6.1", &v1);
+        install_codex_staged(&staged_v1, &dest, None, "1.6.1").unwrap();
+        fs::write(dest.join("agents/gone.toml"), "my edited agent\n").unwrap();
+
+        let v2: [(&str, &[u8]); 1] = [("agents/current.toml", b"name = \"current\"\n" as &[u8])];
+        let staged_v2 = tmp.path().join("v2");
+        stage_codex_bundle(&staged_v2, "1.6.2", &v2);
+        let report = install_codex_staged(&staged_v2, &dest, None, "1.6.2").unwrap();
+        assert!(report.removed.is_empty());
+        assert_eq!(
+            fs::read_to_string(dest.join("agents/gone.toml")).unwrap(),
+            "my edited agent\n"
+        );
+    }
+
+    #[test]
+    fn store_version_is_one_safe_component() {
+        let root = Path::new("/store");
+        assert_eq!(
+            store_version_dir(root, "1.6.1-rc.1").unwrap(),
+            root.join("1.6.1-rc.1")
+        );
+        for invalid in ["", ".", "..", "../escape", "a/b", "a\\b", "v 1"] {
+            assert!(
+                store_version_dir(root, invalid).is_err(),
+                "accepted {invalid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn release_asset_presence_requires_the_supported_pair() {
+        let body = release_json_with_all_bundles();
+        assert!(release_lists_asset(&body, "hyprlayer-assets-claude-1.6.0-rc.1.tar.gz").unwrap());
+        assert!(release_lists_asset(&body, "hyprlayer-assets-codex-1.6.0-rc.1.tar.gz").unwrap());
+        assert!(!release_lists_asset(&body, "hyprlayer-assets-unknown-1.6.0-rc.1.tar.gz").unwrap());
+        assert!(release_lists_asset("{}", "anything").is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn standalone_skill_bridge_creates_noops_and_never_clobbers_a_real_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("claude/skills");
+        touch(&source.join("example/SKILL.md"));
+        let link = tmp.path().join("agents/skills");
+
+        assert_eq!(
+            ensure_skill_bridge(&source, &link).unwrap(),
+            SkillBridgeOutcome::Created
+        );
+        assert_eq!(fs::read_link(&link).unwrap(), source);
+        assert!(link.join("example/SKILL.md").is_file());
+        assert_eq!(
+            ensure_skill_bridge(&source, &link).unwrap(),
+            SkillBridgeOutcome::AlreadyCorrect
+        );
+
+        let planted = tmp.path().join("other-agents/skills");
+        touch(&planted.join("personal/SKILL.md"));
+        assert_eq!(
+            ensure_skill_bridge(&source, &planted).unwrap(),
+            SkillBridgeOutcome::SkippedExisting
+        );
+        assert!(planted.join("personal/SKILL.md").is_file());
+        assert!(
+            !fs::symlink_metadata(&planted)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn store_install_is_idempotent_and_repoints_each_link_on_version_change() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude_dest = tmp.path().join("home/.claude");
+        let codex_dest = tmp.path().join("home/.codex");
+        let store = tmp.path().join("config/hyprlayer/agents");
+        let bridge = tmp.path().join("home/.agents/skills");
+        touch(&claude_dest.join("skills/personal/SKILL.md"));
+
+        let claude_v1: [(&str, &[u8]); 5] = [
+            ("settings.json", b"{}\n"),
+            ("agents/codebase-locator.md", b"locator v1\n"),
+            ("agents/retired.md", b"retired\n"),
+            ("skills/code_review/SKILL.md", b"review v1\n"),
+            ("skills/_thoughts/reference.md", b"reference v1\n"),
+        ];
+        let codex_v1: [(&str, &[u8]); 2] = [
+            (
+                "agents/codebase-locator.toml",
+                b"name = \"codebase-locator\"\n",
+            ),
+            ("agents/retired.toml", b"name = \"retired\"\n"),
+        ];
+        let staged_claude_v1 = tmp.path().join("staged-claude-v1");
+        let staged_codex_v1 = tmp.path().join("staged-codex-v1");
+        stage_bundle(&staged_claude_v1, "1.6.1", &claude_v1);
+        stage_codex_bundle(&staged_codex_v1, "1.6.1", &codex_v1);
+
+        let first = install_claude_bundle_set(
+            &staged_claude_v1,
+            &staged_codex_v1,
+            &claude_dest,
+            &codex_dest,
+            &store,
+            &bridge,
+            None,
+            "1.6.1",
+            true,
+        )
+        .unwrap();
+        assert!(first.changed > 0);
+        assert_eq!(
+            fs::read_link(claude_dest.join("skills/code_review")).unwrap(),
+            store.join("1.6.1/claude/skills/code_review")
+        );
+        assert_eq!(
+            fs::read_link(codex_dest.join("agents/codebase-locator.toml")).unwrap(),
+            store.join("1.6.1/codex/agents/codebase-locator.toml")
+        );
+        assert!(claude_dest.join("skills/personal/SKILL.md").is_file());
+        assert_eq!(fs::read_link(&bridge).unwrap(), claude_dest.join("skills"));
+
+        let second = install_claude_bundle_set(
+            &staged_claude_v1,
+            &staged_codex_v1,
+            &claude_dest,
+            &codex_dest,
+            &store,
+            &bridge,
+            None,
+            "1.6.1",
+            true,
+        )
+        .unwrap();
+        assert_eq!(second.changed, 0);
+
+        let claude_v2: [(&str, &[u8]); 4] = [
+            ("settings.json", b"{}\n"),
+            ("agents/codebase-locator.md", b"locator v2\n"),
+            ("skills/code_review/SKILL.md", b"review v2\n"),
+            ("skills/_thoughts/reference.md", b"reference v2\n"),
+        ];
+        let codex_v2: [(&str, &[u8]); 1] = [(
+            "agents/codebase-locator.toml",
+            b"name = \"codebase-locator\"\n",
+        )];
+        let staged_claude_v2 = tmp.path().join("staged-claude-v2");
+        let staged_codex_v2 = tmp.path().join("staged-codex-v2");
+        stage_bundle(&staged_claude_v2, "1.6.2", &claude_v2);
+        stage_codex_bundle(&staged_codex_v2, "1.6.2", &codex_v2);
+        install_claude_bundle_set(
+            &staged_claude_v2,
+            &staged_codex_v2,
+            &claude_dest,
+            &codex_dest,
+            &store,
+            &bridge,
+            Some("1.6.2"),
+            "1.6.2",
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_link(claude_dest.join("agents/codebase-locator.md")).unwrap(),
+            store.join("1.6.2/claude/agents/codebase-locator.md")
+        );
+        assert_eq!(
+            fs::read_link(codex_dest.join("agents/codebase-locator.toml")).unwrap(),
+            store.join("1.6.2/codex/agents/codebase-locator.toml")
+        );
+        assert!(fs::symlink_metadata(claude_dest.join("agents/retired.md")).is_err());
+        assert!(fs::symlink_metadata(codex_dest.join("agents/retired.toml")).is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn activation_failure_rolls_back_every_farm_settings_record_and_generation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude_dest = tmp.path().join("home/.claude");
+        let codex_dest = tmp.path().join("home/.codex");
+        let store = tmp.path().join("config/hyprlayer/agents");
+        let bridge = tmp.path().join("home/.agents/skills");
+        let claude_v1: [(&str, &[u8]); 3] = [
+            ("settings.json", b"settings-v1\n"),
+            ("agents/codebase-locator.md", b"claude-agent-v1\n"),
+            ("skills/code_review/SKILL.md", b"claude-skill-v1\n"),
+        ];
+        let codex_v1: [(&str, &[u8]); 1] = [(
+            "agents/codebase-locator.toml",
+            b"name = \"codex-v1\"\n" as &[u8],
+        )];
+        let staged_claude_v1 = tmp.path().join("staged-claude-v1-rollback");
+        let staged_codex_v1 = tmp.path().join("staged-codex-v1-rollback");
+        stage_bundle(&staged_claude_v1, "1.6.1", &claude_v1);
+        stage_codex_bundle(&staged_codex_v1, "1.6.1", &codex_v1);
+        install_claude_bundle_set(
+            &staged_claude_v1,
+            &staged_codex_v1,
+            &claude_dest,
+            &codex_dest,
+            &store,
+            &bridge,
+            None,
+            "1.6.1",
+            true,
+        )
+        .unwrap();
+
+        let claude_v2: [(&str, &[u8]); 3] = [
+            ("settings.json", b"settings-v2\n"),
+            ("agents/codebase-locator.md", b"claude-agent-v2\n"),
+            ("skills/code_review/SKILL.md", b"claude-skill-v2\n"),
+        ];
+        let codex_v2: [(&str, &[u8]); 1] = [(
+            "agents/codebase-locator.toml",
+            b"name = \"codex-v2\"\n" as &[u8],
+        )];
+        let staged_claude_v2 = tmp.path().join("staged-claude-v2-rollback");
+        let staged_codex_v2 = tmp.path().join("staged-codex-v2-rollback");
+        stage_bundle(&staged_claude_v2, "1.6.2", &claude_v2);
+        stage_codex_bundle(&staged_codex_v2, "1.6.2", &codex_v2);
+        let error = install_claude_bundle_set_with_failure(
+            &staged_claude_v2,
+            &staged_codex_v2,
+            &claude_dest,
+            &codex_dest,
+            &store,
+            &bridge,
+            Some("1.6.2"),
+            "1.6.2",
+            true,
+            Some(ActivationBoundary::Manifest),
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("injected activation failure"));
+
+        assert_eq!(
+            fs::read_link(claude_dest.join("skills/code_review")).unwrap(),
+            store.join("1.6.1/claude/skills/code_review")
+        );
+        assert_eq!(
+            fs::read_link(claude_dest.join("agents/codebase-locator.md")).unwrap(),
+            store.join("1.6.1/claude/agents/codebase-locator.md")
+        );
+        assert_eq!(
+            fs::read_link(codex_dest.join("agents/codebase-locator.toml")).unwrap(),
+            store.join("1.6.1/codex/agents/codebase-locator.toml")
+        );
+        assert_eq!(
+            fs::read_to_string(claude_dest.join("settings.json")).unwrap(),
+            "settings-v1\n"
+        );
+        assert_eq!(
+            read_installed_manifest(&claude_dest).unwrap().version,
+            "1.6.1"
+        );
+        assert!(paths_resolve_same(&bridge, &claude_dest.join("skills")));
+        assert!(!store.join("1.6.2").exists());
+        assert_eq!(
+            fs::read_to_string(store.join("1.6.1/claude/skills/code_review/SKILL.md")).unwrap(),
+            "claude-skill-v1\n"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn same_version_generation_replacement_is_restored_when_activation_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude_dest = tmp.path().join("home/.claude");
+        let codex_dest = tmp.path().join("home/.codex");
+        let store = tmp.path().join("config/hyprlayer/agents");
+        let bridge = tmp.path().join("home/.agents/skills");
+        let claude_old: [(&str, &[u8]); 2] = [
+            ("agents/codebase-locator.md", b"old-agent\n"),
+            ("skills/code_review/SKILL.md", b"old-skill\n"),
+        ];
+        let codex_old: [(&str, &[u8]); 1] =
+            [("agents/codebase-locator.toml", b"old-codex\n" as &[u8])];
+        let staged_claude_old = tmp.path().join("same-claude-old");
+        let staged_codex_old = tmp.path().join("same-codex-old");
+        stage_bundle(&staged_claude_old, "1.6.1", &claude_old);
+        stage_codex_bundle(&staged_codex_old, "1.6.1", &codex_old);
+        install_claude_bundle_set(
+            &staged_claude_old,
+            &staged_codex_old,
+            &claude_dest,
+            &codex_dest,
+            &store,
+            &bridge,
+            None,
+            "1.6.1",
+            true,
+        )
+        .unwrap();
+
+        let claude_new: [(&str, &[u8]); 2] = [
+            ("agents/codebase-locator.md", b"new-agent\n"),
+            ("skills/code_review/SKILL.md", b"new-skill\n"),
+        ];
+        let codex_new: [(&str, &[u8]); 1] =
+            [("agents/codebase-locator.toml", b"new-codex\n" as &[u8])];
+        let staged_claude_new = tmp.path().join("same-claude-new");
+        let staged_codex_new = tmp.path().join("same-codex-new");
+        stage_bundle(&staged_claude_new, "1.6.1", &claude_new);
+        stage_codex_bundle(&staged_codex_new, "1.6.1", &codex_new);
+        install_claude_bundle_set_with_failure(
+            &staged_claude_new,
+            &staged_codex_new,
+            &claude_dest,
+            &codex_dest,
+            &store,
+            &bridge,
+            None,
+            "1.6.1",
+            true,
+            Some(ActivationBoundary::Generation),
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            fs::read_to_string(store.join("1.6.1/claude/skills/code_review/SKILL.md")).unwrap(),
+            "old-skill\n"
+        );
+        assert_eq!(
+            fs::read_to_string(claude_dest.join("skills/code_review/SKILL.md")).unwrap(),
+            "old-skill\n"
+        );
+        assert_eq!(
+            fs::read_to_string(codex_dest.join("agents/codebase-locator.toml")).unwrap(),
+            "old-codex\n"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn migration_converts_known_copies_and_preserves_personal_collisions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude_dest = tmp.path().join("home/.claude");
+        let codex_dest = tmp.path().join("home/.codex");
+        let store = tmp.path().join("config/hyprlayer/agents");
+        let bridge = tmp.path().join("home/.agents/skills");
+
+        fs::create_dir_all(&claude_dest).unwrap();
+        fs::write(claude_dest.join("settings.json"), "{\"mine\":true}\n").unwrap();
+
+        let old: [(&str, &[u8]); 2] = [
+            ("agents/codebase-locator.md", b"old locator\n"),
+            ("skills/code_review/SKILL.md", b"old review\n"),
+        ];
+        for (path, bytes) in old {
+            let path = claude_dest.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, bytes).unwrap();
+        }
+        write_installed_manifest(&claude_dest, &manifest_for("1.6.0", &old)).unwrap();
+        touch(&claude_dest.join("skills/personal/SKILL.md"));
+        fs::create_dir_all(claude_dest.join("skills/empty-bundled")).unwrap();
+        fs::create_dir_all(claude_dest.join("skills/blocked")).unwrap();
+        fs::write(
+            claude_dest.join("skills/blocked/SKILL.md"),
+            "my blocked skill\n",
+        )
+        .unwrap();
+
+        let current: [(&str, &[u8]); 5] = [
+            ("settings.json", b"{}\n"),
+            ("agents/codebase-locator.md", b"new locator\n"),
+            ("skills/code_review/SKILL.md", b"new review\n"),
+            ("skills/empty-bundled/SKILL.md", b"bundle skill\n"),
+            ("skills/blocked/SKILL.md", b"bundled blocked\n"),
+        ];
+        let codex: [(&str, &[u8]); 1] = [(
+            "agents/codebase-locator.toml",
+            b"name = \"codebase-locator\"\n",
+        )];
+        let staged_claude = tmp.path().join("staged-claude");
+        let staged_codex = tmp.path().join("staged-codex");
+        stage_bundle(&staged_claude, "1.6.1", &current);
+        stage_codex_bundle(&staged_codex, "1.6.1", &codex);
+        let report = install_claude_bundle_set(
+            &staged_claude,
+            &staged_codex,
+            &claude_dest,
+            &codex_dest,
+            &store,
+            &bridge,
+            None,
+            "1.6.1",
+            true,
+        )
+        .unwrap();
+
+        assert!(
+            fs::symlink_metadata(claude_dest.join("skills/code_review"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(
+            fs::symlink_metadata(claude_dest.join("agents/codebase-locator.md"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(claude_dest.join("skills/personal/SKILL.md").is_file());
+        assert!(claude_dest.join("skills/empty-bundled").is_dir());
+        assert!(
+            !fs::symlink_metadata(claude_dest.join("skills/empty-bundled"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            fs::read_to_string(claude_dest.join("skills/blocked/SKILL.md")).unwrap(),
+            "my blocked skill\n"
+        );
+        assert_eq!(
+            fs::read_to_string(claude_dest.join("settings.json")).unwrap(),
+            "{\"mine\":true}\n"
+        );
+        assert!(report.preserved.contains(&"settings.json".to_string()));
+        assert!(
+            report
+                .preserved
+                .contains(&"skills/empty-bundled".to_string())
+        );
+        assert!(report.preserved.contains(&"skills/blocked".to_string()));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn frozen_legacy_copy_migrates_without_an_installed_record() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude_dest = tmp.path().join("home/.claude");
+        let codex_dest = tmp.path().join("home/.codex");
+        let store = tmp.path().join("config/hyprlayer/agents");
+        let bridge = tmp.path().join("home/.agents/skills");
+        let relative = "agents/codebase-locator.md";
+        let frozen_source = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("claude")
+            .join(relative);
+        let legacy_copy = claude_dest.join(relative);
+        fs::create_dir_all(legacy_copy.parent().unwrap()).unwrap();
+        fs::copy(&frozen_source, &legacy_copy).unwrap();
+        let frozen_entry = AgentTool::Claude
+            .frozen_manifest()
+            .into_iter()
+            .find(|entry| entry.path == relative)
+            .unwrap();
+        assert_eq!(sha256_of(&legacy_copy), frozen_entry.sha256);
+        assert!(!claude_dest.join(INSTALLED_MANIFEST_FILE).exists());
+
+        let claude: [(&str, &[u8]); 2] = [
+            ("agents/codebase-locator.md", b"current locator\n"),
+            ("skills/code_review/SKILL.md", b"current review\n"),
+        ];
+        let codex: [(&str, &[u8]); 1] = [(
+            "agents/codebase-locator.toml",
+            b"name = \"codebase-locator\"\n",
+        )];
+        let staged_claude = tmp.path().join("staged-claude");
+        let staged_codex = tmp.path().join("staged-codex");
+        stage_bundle(&staged_claude, "1.6.1", &claude);
+        stage_codex_bundle(&staged_codex, "1.6.1", &codex);
+        install_claude_bundle_set(
+            &staged_claude,
+            &staged_codex,
+            &claude_dest,
+            &codex_dest,
+            &store,
+            &bridge,
+            None,
+            "1.6.1",
+            true,
+        )
+        .unwrap();
+
+        assert!(
+            fs::symlink_metadata(&legacy_copy)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            fs::read_to_string(&legacy_copy).unwrap(),
+            "current locator\n"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn root_config_sync_defers_manifest_commit_until_farms_succeed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("store/claude");
+        let dest = tmp.path().join("claude");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("settings.json"), "new\n").unwrap();
+        let previous =
+            manifest_for_harness("claude", "1.6.0", &[("settings.json", b"old\n" as &[u8])]);
+        let current =
+            manifest_for_harness("claude", "1.6.1", &[("settings.json", b"new\n" as &[u8])]);
+        fs::create_dir_all(&dest).unwrap();
+        fs::write(dest.join("settings.json"), "old\n").unwrap();
+        write_installed_manifest(&dest, &previous).unwrap();
+
+        sync_claude_root_files(&source, &dest, &current, Some(&previous)).unwrap();
+        assert_eq!(
+            fs::read_to_string(dest.join("settings.json")).unwrap(),
+            "new\n"
+        );
+        assert_eq!(
+            read_installed_manifest(&dest).unwrap().version,
+            "1.6.0",
+            "the caller commits the new record only after link reconciliation"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn uninstall_reconciliation_removes_only_links_into_the_store() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let store = tmp.path().join("store");
+        let store_sibling = tmp.path().join("store-personal");
+        let external = tmp.path().join("external.toml");
+        let dest = tmp.path().join("codex/agents");
+        touch(&store.join("1/codex/agents/owned.toml"));
+        touch(&store_sibling.join("sibling.toml"));
+        touch(&external);
+        fs::create_dir_all(&dest).unwrap();
+        symlink(
+            store.join("1/codex/agents/owned.toml"),
+            dest.join("owned.toml"),
+        )
+        .unwrap();
+        symlink(&external, dest.join("external.toml")).unwrap();
+        symlink(
+            store_sibling.join("sibling.toml"),
+            dest.join("store-sibling.toml"),
+        )
+        .unwrap();
+        touch(&dest.join("personal.toml"));
+
+        let report = reconcile_link_farm(None, &dest, "agents", &store, &BTreeMap::new()).unwrap();
+        assert_eq!(report.removed, vec!["agents/owned.toml"]);
+        assert!(fs::symlink_metadata(dest.join("owned.toml")).is_err());
+        assert!(fs::symlink_metadata(dest.join("external.toml")).is_ok());
+        assert!(fs::symlink_metadata(dest.join("store-sibling.toml")).is_ok());
+        assert!(dest.join("personal.toml").is_file());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn link_farm_preserves_a_user_owned_root_and_non_utf8_personal_entries() {
+        use std::os::unix::ffi::OsStringExt;
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let store = tmp.path().join("store");
+        let source = store.join("1/codex/agents");
+        touch(&source.join("bundle.toml"));
+        let external = tmp.path().join("external-agents");
+        fs::create_dir_all(&external).unwrap();
+        let farm = tmp.path().join("codex/agents");
+        fs::create_dir_all(farm.parent().unwrap()).unwrap();
+        symlink(&external, &farm).unwrap();
+
+        let preserved =
+            reconcile_link_farm(Some(&source), &farm, "agents", &store, &BTreeMap::new()).unwrap();
+        assert_eq!(preserved.preserved, vec!["agents"]);
+        assert!(!external.join("bundle.toml").exists());
+
+        fs::remove_file(&farm).unwrap();
+        fs::create_dir_all(&farm).unwrap();
+        let non_utf8 = std::ffi::OsString::from_vec(vec![0xff, b'.', b't']);
+        touch(&farm.join(non_utf8));
+        reconcile_link_farm(Some(&source), &farm, "agents", &store, &BTreeMap::new()).unwrap();
+        assert!(farm.join("bundle.toml").exists());
+        assert_eq!(fs::read_dir(&farm).unwrap().count(), 2);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn legacy_cleanup_never_follows_a_parent_link_into_the_store() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("claude");
+        let store_skill = tmp.path().join("store/1/claude/skills/example");
+        let target = store_skill.join("SKILL.md");
+        touch(&target);
+        let target_backup = append_suffix(&target, BACKUP_SUFFIX);
+        touch(&target_backup);
+        fs::create_dir_all(dest.join("skills")).unwrap();
+        symlink(&store_skill, dest.join("skills/example")).unwrap();
+        let entries = vec![ManifestEntry {
+            path: "skills/example/SKILL.md".to_string(),
+            sha256: sha256_of(&target),
+        }];
+
+        assert!(remove_legacy_copies(&dest, &entries, None).is_empty());
+        assert!(
+            target.is_file(),
+            "cleanup followed a parent symlink into the store"
+        );
+        assert_eq!(clean_backups(&dest, &entries), 0);
+        assert!(
+            target_backup.is_file(),
+            "backup cleanup followed a parent symlink into the store"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn old_pin_without_codex_is_rejected_without_mutation() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let claude_dest = tmp.path().join("home/.claude");
+        let codex_dest = tmp.path().join("home/.codex");
+        let store = tmp.path().join("config/hyprlayer/agents");
+        let bridge = tmp.path().join("home/.agents/skills");
+        let old_codex_target = store.join("newer/codex/agents/old.toml");
+        touch(&old_codex_target);
+        fs::create_dir_all(codex_dest.join("agents")).unwrap();
+        symlink(&old_codex_target, codex_dest.join("agents/old.toml")).unwrap();
+        touch(&codex_dest.join("agents/personal.toml"));
+
+        let claude: [(&str, &[u8]); 3] = [
+            ("settings.json", b"{}\n"),
+            ("agents/codebase-locator.md", b"old locator\n"),
+            ("skills/code_review/SKILL.md", b"old review\n"),
+        ];
+        let staged = tmp.path().join("staged-old-claude");
+        stage_bundle(&staged, "1.5.9", &claude);
+        let missing_codex = tmp.path().join("missing-codex");
+        assert!(
+            install_claude_bundle_set(
+                &staged,
+                &missing_codex,
+                &claude_dest,
+                &codex_dest,
+                &store,
+                &bridge,
+                Some("1.5.9"),
+                "1.5.9",
+                true,
+            )
+            .is_err()
+        );
+
+        assert!(!claude_dest.join("skills/code_review/SKILL.md").exists());
+        assert!(fs::symlink_metadata(codex_dest.join("agents/old.toml")).is_ok());
+        assert!(codex_dest.join("agents/personal.toml").is_file());
+        assert!(old_codex_target.is_file());
+        assert!(!store.join("1.5.9").exists());
+        assert!(fs::symlink_metadata(&bridge).is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn invalid_claude_bundle_with_missing_codex_mutates_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude_dest = tmp.path().join("home/.claude");
+        let codex_dest = tmp.path().join("home/.codex");
+        let store = tmp.path().join("config/hyprlayer/agents");
+        let bridge = tmp.path().join("home/.agents/skills");
+        touch(&claude_dest.join("sentinel"));
+        touch(&codex_dest.join("sentinel"));
+
+        let files: [(&str, &[u8]); 2] = [
+            ("agents/codebase-locator.md", b"locator\n"),
+            ("skills/code_review/SKILL.md", b"review\n"),
+        ];
+        let staged = tmp.path().join("torn");
+        stage_bundle(&staged, "1.5.9", &files);
+        fs::write(staged.join("skills/code_review/SKILL.md"), "corrupt\n").unwrap();
+        assert!(
+            install_claude_bundle_set(
+                &staged,
+                &tmp.path().join("missing-codex"),
+                &claude_dest,
+                &codex_dest,
+                &store,
+                &bridge,
+                Some("1.5.9"),
+                "1.5.9",
+                true,
+            )
+            .is_err()
+        );
+        assert!(claude_dest.join("sentinel").is_file());
+        assert!(codex_dest.join("sentinel").is_file());
+        assert!(!store.exists());
+        assert!(fs::symlink_metadata(&bridge).is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn invalid_codex_companion_preflight_mutates_neither_store_nor_farms() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude_dest = tmp.path().join("home/.claude");
+        let codex_dest = tmp.path().join("home/.codex");
+        let store = tmp.path().join("config/hyprlayer/agents");
+        let bridge = tmp.path().join("home/.agents/skills");
+        touch(&claude_dest.join("sentinel"));
+        touch(&codex_dest.join("sentinel"));
+
+        let claude: [(&str, &[u8]); 2] = [
+            ("agents/codebase-locator.md", b"locator\n"),
+            ("skills/code_review/SKILL.md", b"review\n"),
+        ];
+        let codex: [(&str, &[u8]); 1] = [(
+            "agents/codebase-locator.toml",
+            b"name = \"codebase-locator\"\n",
+        )];
+        let staged_claude = tmp.path().join("claude");
+        let staged_codex = tmp.path().join("codex");
+        stage_bundle(&staged_claude, "1.6.1", &claude);
+        stage_codex_bundle(&staged_codex, "1.6.1", &codex);
+        fs::write(
+            staged_codex.join("agents/codebase-locator.toml"),
+            "corrupt\n",
+        )
+        .unwrap();
+
+        assert!(
+            install_claude_bundle_set(
+                &staged_claude,
+                &staged_codex,
+                &claude_dest,
+                &codex_dest,
+                &store,
+                &bridge,
+                None,
+                "1.6.1",
+                true,
+            )
+            .is_err()
+        );
+        assert!(claude_dest.join("sentinel").is_file());
+        assert!(codex_dest.join("sentinel").is_file());
+        assert!(!store.exists());
+        assert!(fs::symlink_metadata(&bridge).is_err());
     }
 
     /// The two files `is_installed_at` sentinels on, so a fixture bundle is
@@ -1682,9 +4347,16 @@ mod tests {
             "hyprlayer-assets-claude-1.6.0.tar.gz"
         );
         assert_eq!(
-            asset_name(AgentTool::OpenCode.repo_dir(), "1.6.0-rc.1"),
-            "hyprlayer-assets-opencode-1.6.0-rc.1.tar.gz"
+            asset_name(CODEX_HARNESS, "1.6.0-rc.1"),
+            "hyprlayer-assets-codex-1.6.0-rc.1.tar.gz"
         );
+    }
+
+    #[test]
+    fn live_fallback_paths_do_not_use_the_frozen_root_tree() {
+        assert_eq!(AgentTool::Claude.harness_slug(), "claude");
+        assert_eq!(AgentTool::Claude.live_repo_dir(), "assets/claude");
+        assert_eq!(CODEX_REPO_DIR, "assets/codex");
     }
 
     /// The resolution truth table: a pin wins, and an unpinned config falls
@@ -2054,6 +4726,30 @@ mod tests {
                 "skills/code_review/SKILL.md",
             ],
             "the bundle's own manifest.json must not land in dest"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn installed_manifest_atomic_replace_never_follows_a_leaf_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("dest");
+        let outside = tmp.path().join("outside.json");
+        fs::create_dir_all(&dest).unwrap();
+        fs::write(&outside, "personal\n").unwrap();
+        symlink(&outside, dest.join(INSTALLED_MANIFEST_FILE)).unwrap();
+
+        write_installed_manifest(&dest, &manifest_for("1.6.1", &SENTINELS)).unwrap();
+        assert_eq!(fs::read_to_string(&outside).unwrap(), "personal\n");
+        let installed = dest.join(INSTALLED_MANIFEST_FILE);
+        assert!(installed.is_file());
+        assert!(
+            !fs::symlink_metadata(installed)
+                .unwrap()
+                .file_type()
+                .is_symlink()
         );
     }
 
@@ -2483,12 +5179,23 @@ mod tests {
     }
 
     #[test]
-    fn harness_config_is_the_root_file_only() {
+    fn settings_is_the_only_mutable_root_file() {
         assert!(is_harness_config(Path::new("settings.json")));
+        assert!(!is_harness_config(Path::new("README.md")));
         assert!(!is_harness_config(
             &Path::new("skills").join("commit").join("SKILL.md")
         ));
         assert!(!is_harness_config(&Path::new("agents").join("herald.md")));
+    }
+
+    #[test]
+    fn windows_file_link_privilege_error_gives_actionable_guidance() {
+        let error = std::io::Error::from_raw_os_error(1314);
+        let message = windows_file_symlink_error(&error, Path::new(r"C:\Users\me\.codex\agents"));
+        assert!(message.contains("Developer Mode"));
+        assert!(message.contains("elevated terminal"));
+        assert!(message.contains("No agent links were changed"));
+        assert!(message.contains("1314"));
     }
 
     /// The destructive path, with every case that must *not* be deleted
@@ -2569,7 +5276,7 @@ mod tests {
     /// `dest`. Real bytes, so the embedded digests are exercised rather
     /// than a fixture's.
     fn frozen_tree(tool: AgentTool) -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join(tool.repo_dir())
+        Path::new(env!("CARGO_MANIFEST_DIR")).join(tool.harness_slug())
     }
 
     /// Copy `paths` out of the frozen tree into `dest`, reproducing what a
@@ -2717,7 +5424,7 @@ mod tests {
             let dest = tmp.path().join("dest");
             let assets = Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("assets")
-                .join(tool.repo_dir());
+                .join(tool.harness_slug());
             let frozen = frozen_tree(*tool);
 
             // The bundle, packed from the live tree the release is cut from.
@@ -3164,307 +5871,6 @@ mod tests {
     }
 
     #[test]
-    fn dest_display_opencode_contains_opencode_dir() {
-        let display = AgentTool::OpenCode.dest_display();
-        assert!(
-            display.contains("opencode"),
-            "Expected opencode in: {}",
-            display
-        );
-    }
-
-    #[test]
-    fn dest_display_copilot_contains_code_user() {
-        let display = AgentTool::Copilot.dest_display();
-        assert!(
-            display.contains(&format!("Code{SEP}User")),
-            "Expected Code{}User in: {}",
-            SEP,
-            display
-        );
-    }
-
-    #[test]
-    fn opencode_provider_serializes_to_kebab_case() {
-        let json = serde_json::to_string(&OpenCodeProvider::GithubCopilot).unwrap();
-        assert_eq!(json, "\"github-copilot\"");
-
-        let json = serde_json::to_string(&OpenCodeProvider::Anthropic).unwrap();
-        assert_eq!(json, "\"anthropic\"");
-
-        let json = serde_json::to_string(&OpenCodeProvider::Abacus).unwrap();
-        assert_eq!(json, "\"abacus\"");
-    }
-
-    #[test]
-    fn opencode_provider_deserializes_from_kebab_case() {
-        let provider: OpenCodeProvider = serde_json::from_str("\"github-copilot\"").unwrap();
-        assert_eq!(provider, OpenCodeProvider::GithubCopilot);
-
-        let provider: OpenCodeProvider = serde_json::from_str("\"anthropic\"").unwrap();
-        assert_eq!(provider, OpenCodeProvider::Anthropic);
-
-        let provider: OpenCodeProvider = serde_json::from_str("\"abacus\"").unwrap();
-        assert_eq!(provider, OpenCodeProvider::Abacus);
-    }
-
-    #[test]
-    fn opencode_provider_display_names() {
-        assert_eq!(
-            OpenCodeProvider::GithubCopilot.to_string(),
-            "GitHub Copilot"
-        );
-        assert_eq!(OpenCodeProvider::Anthropic.to_string(), "Anthropic");
-        assert_eq!(OpenCodeProvider::Abacus.to_string(), "Abacus");
-    }
-
-    #[test]
-    fn opencode_provider_sonnet_models() {
-        assert_eq!(
-            OpenCodeProvider::GithubCopilot.default_sonnet_model(),
-            "github-copilot/claude-sonnet-5"
-        );
-        assert_eq!(
-            OpenCodeProvider::Anthropic.default_sonnet_model(),
-            "anthropic/claude-sonnet-5"
-        );
-        assert_eq!(
-            OpenCodeProvider::Abacus.default_sonnet_model(),
-            "abacus/claude-sonnet-5"
-        );
-    }
-
-    #[test]
-    fn opencode_provider_opus_models() {
-        assert_eq!(
-            OpenCodeProvider::GithubCopilot.default_opus_model(),
-            "github-copilot/claude-opus-5"
-        );
-        assert_eq!(
-            OpenCodeProvider::Anthropic.default_opus_model(),
-            "anthropic/claude-opus-5"
-        );
-        assert_eq!(
-            OpenCodeProvider::Abacus.default_opus_model(),
-            "abacus/claude-opus-5"
-        );
-    }
-
-    #[test]
-    fn opencode_provider_adversarial_models() {
-        assert_eq!(
-            OpenCodeProvider::GithubCopilot.default_adversarial_model(),
-            "github-copilot/gpt-5.3-codex"
-        );
-        assert_eq!(
-            OpenCodeProvider::Anthropic.default_adversarial_model(),
-            "anthropic/claude-opus-5"
-        );
-        assert_eq!(
-            OpenCodeProvider::Abacus.default_adversarial_model(),
-            "abacus/gpt-5.3-codex-xhigh"
-        );
-    }
-
-    #[test]
-    fn opencode_provider_prefixes() {
-        assert_eq!(
-            OpenCodeProvider::GithubCopilot.provider_prefix(),
-            "github-copilot"
-        );
-        assert_eq!(OpenCodeProvider::Anthropic.provider_prefix(), "anthropic");
-        assert_eq!(OpenCodeProvider::Abacus.provider_prefix(), "abacus");
-    }
-
-    #[test]
-    fn replace_model_placeholders_replaces_sonnet() {
-        let temp_dir = std::env::temp_dir().join("hyprlayer_test_sonnet_placeholder");
-        fs::create_dir_all(&temp_dir).unwrap();
-        let file_path = temp_dir.join("test_agent.md");
-
-        let content = "---\nmodel: {{SONNET_MODEL}}\n---\n# Agent";
-        fs::write(&file_path, content).unwrap();
-
-        let updated =
-            replace_model_placeholders(&file_path, &OpenCodeProvider::GithubCopilot).unwrap();
-        assert!(updated);
-
-        let result = fs::read_to_string(&file_path).unwrap();
-        assert!(result.contains("model: github-copilot/claude-sonnet-5"));
-        assert!(!result.contains("{{SONNET_MODEL}}"));
-
-        fs::remove_dir_all(&temp_dir).ok();
-    }
-
-    #[test]
-    fn replace_model_placeholders_replaces_opus() {
-        let temp_dir = std::env::temp_dir().join("hyprlayer_test_opus_placeholder");
-        fs::create_dir_all(&temp_dir).unwrap();
-        let file_path = temp_dir.join("research.md");
-
-        let content = "---\nmodel: {{OPUS_MODEL}}\n---\n# Research";
-        fs::write(&file_path, content).unwrap();
-
-        let updated = replace_model_placeholders(&file_path, &OpenCodeProvider::Abacus).unwrap();
-        assert!(updated);
-
-        let result = fs::read_to_string(&file_path).unwrap();
-        assert!(result.contains("model: abacus/claude-opus-5"));
-        assert!(!result.contains("{{OPUS_MODEL}}"));
-
-        fs::remove_dir_all(&temp_dir).ok();
-    }
-
-    #[test]
-    fn replace_model_placeholders_replaces_adversarial() {
-        let temp_dir = std::env::temp_dir().join("hyprlayer_test_adversarial_placeholder");
-        fs::create_dir_all(&temp_dir).unwrap();
-        let file_path = temp_dir.join("adversarial-reviewer.md");
-
-        let content = "---\nmodel: {{ADVERSARIAL_MODEL}}\n---\n# Adversarial";
-        fs::write(&file_path, content).unwrap();
-
-        let updated = replace_model_placeholders(&file_path, &OpenCodeProvider::Abacus).unwrap();
-        assert!(updated);
-
-        let result = fs::read_to_string(&file_path).unwrap();
-        assert!(result.contains("model: abacus/gpt-5.3-codex-xhigh"));
-        assert!(!result.contains("{{ADVERSARIAL_MODEL}}"));
-
-        fs::remove_dir_all(&temp_dir).ok();
-    }
-
-    #[test]
-    fn replace_model_placeholders_skips_files_without_placeholders() {
-        let temp_dir = std::env::temp_dir().join("hyprlayer_test_no_placeholder");
-        fs::create_dir_all(&temp_dir).unwrap();
-        let file_path = temp_dir.join("no_placeholder.md");
-
-        let content = "---\ndescription: No model field\n---\n# Test";
-        fs::write(&file_path, content).unwrap();
-
-        let updated = replace_model_placeholders(&file_path, &OpenCodeProvider::Anthropic).unwrap();
-        assert!(!updated);
-
-        let result = fs::read_to_string(&file_path).unwrap();
-        assert_eq!(result, content);
-
-        fs::remove_dir_all(&temp_dir).ok();
-    }
-
-    #[test]
-    fn update_opencode_models_replaces_placeholders() {
-        let temp_dir = std::env::temp_dir().join("hyprlayer_test_opencode_placeholders");
-        let agents_dir = temp_dir.join("agents");
-        let commands_dir = temp_dir.join("commands");
-        fs::create_dir_all(&agents_dir).unwrap();
-        fs::create_dir_all(&commands_dir).unwrap();
-
-        // Agent with sonnet placeholder
-        fs::write(
-            agents_dir.join("analyzer.md"),
-            "---\nmodel: {{SONNET_MODEL}}\n---\n# Analyzer",
-        )
-        .unwrap();
-
-        // Command with opus placeholder
-        fs::write(
-            commands_dir.join("research.md"),
-            "---\nmodel: {{OPUS_MODEL}}\n---\n# Research",
-        )
-        .unwrap();
-
-        // Command without placeholder (should not count)
-        fs::write(
-            commands_dir.join("commit.md"),
-            "---\ndescription: Commit\n---\n# Commit",
-        )
-        .unwrap();
-
-        let count = update_opencode_models(&temp_dir, &OpenCodeProvider::GithubCopilot).unwrap();
-        assert_eq!(count, 2); // Only files with placeholders
-
-        let agent = fs::read_to_string(agents_dir.join("analyzer.md")).unwrap();
-        assert!(agent.contains("model: github-copilot/claude-sonnet-5"));
-
-        let research = fs::read_to_string(commands_dir.join("research.md")).unwrap();
-        assert!(research.contains("model: github-copilot/claude-opus-5"));
-
-        fs::remove_dir_all(&temp_dir).ok();
-    }
-
-    #[test]
-    fn update_opencode_models_replaces_adversarial_alongside_others() {
-        let temp_dir = std::env::temp_dir().join("hyprlayer_test_adversarial_with_others");
-        let agents_dir = temp_dir.join("agents");
-        fs::create_dir_all(&agents_dir).unwrap();
-
-        fs::write(
-            agents_dir.join("adversarial-reviewer.md"),
-            "---\nmodel: {{ADVERSARIAL_MODEL}}\n---\n# Adversarial",
-        )
-        .unwrap();
-        fs::write(
-            agents_dir.join("analyzer.md"),
-            "---\nmodel: {{SONNET_MODEL}}\n---\n# Analyzer",
-        )
-        .unwrap();
-
-        let count = update_opencode_models(&temp_dir, &OpenCodeProvider::Abacus).unwrap();
-        assert_eq!(count, 2);
-
-        let adversarial = fs::read_to_string(agents_dir.join("adversarial-reviewer.md")).unwrap();
-        assert!(adversarial.contains("model: abacus/gpt-5.3-codex-xhigh"));
-        assert!(!adversarial.contains("{{ADVERSARIAL_MODEL}}"));
-
-        let analyzer = fs::read_to_string(agents_dir.join("analyzer.md")).unwrap();
-        assert!(analyzer.contains("model: abacus/claude-sonnet-5"));
-
-        fs::remove_dir_all(&temp_dir).ok();
-    }
-
-    /// Round-trip test: copy the real shipped
-    /// assets/opencode/agents/adversarial-reviewer.md into a tempdir and
-    /// verify substitution leaves no `{{...}}` placeholders behind for any
-    /// provider. Catches regressions where someone removes the placeholder
-    /// from the template or adds a new placeholder without updating the
-    /// substitution machinery.
-    #[test]
-    fn opencode_adversarial_reviewer_template_substitutes_for_all_providers() {
-        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let template = manifest_dir.join("assets/opencode/agents/adversarial-reviewer.md");
-        let template_body = fs::read_to_string(&template).expect("opencode template missing");
-
-        for provider in OpenCodeProvider::ALL {
-            let temp_dir = std::env::temp_dir().join(format!(
-                "hyprlayer_test_real_template_{}",
-                provider.provider_prefix()
-            ));
-            let agents_dir = temp_dir.join("agents");
-            fs::create_dir_all(&agents_dir).unwrap();
-            fs::write(agents_dir.join("adversarial-reviewer.md"), &template_body).unwrap();
-
-            update_opencode_models(&temp_dir, provider).unwrap();
-
-            let resolved = fs::read_to_string(agents_dir.join("adversarial-reviewer.md")).unwrap();
-            assert!(
-                !resolved.contains("{{"),
-                "{:?} substitution left a `{{{{...}}}}` placeholder in the template:\n{}",
-                provider,
-                resolved
-            );
-            assert!(
-                resolved.contains(&format!("model: {}", provider.default_adversarial_model())),
-                "{:?} did not produce the expected model line. Got:\n{}",
-                provider,
-                resolved
-            );
-
-            fs::remove_dir_all(&temp_dir).ok();
-        }
-    }
-
-    #[test]
     fn claude_is_installed_requires_skills() {
         let temp_root = std::env::temp_dir().join("hyprlayer_test_claude_is_installed");
         fs::remove_dir_all(&temp_root).ok();
@@ -3475,7 +5881,7 @@ mod tests {
         assert!(AgentTool::Claude.is_installed_at(&case_full));
 
         // Existing install with the right top-level dirs but no sentinels —
-        // configure --no-force must re-run to provision the new bundle.
+        // automatic provisioning must install the new bundle.
         let case_dirs_only = temp_root.join("dirs_only");
         fs::create_dir_all(case_dirs_only.join("skills")).unwrap();
         fs::create_dir_all(case_dirs_only.join("agents")).unwrap();
@@ -3503,47 +5909,6 @@ mod tests {
         fs::remove_dir_all(&temp_root).ok();
     }
 
-    #[test]
-    fn opencode_is_installed_requires_code_review_and_codebase_locator() {
-        let temp_root = std::env::temp_dir().join("hyprlayer_test_opencode_is_installed");
-        fs::remove_dir_all(&temp_root).ok();
-
-        let case_full = temp_root.join("full");
-        touch(&case_full.join("commands/code_review.md"));
-        touch(&case_full.join("agents/codebase-locator.md"));
-        assert!(AgentTool::OpenCode.is_installed_at(&case_full));
-
-        let case_dirs_only = temp_root.join("dirs_only");
-        fs::create_dir_all(case_dirs_only.join("commands")).unwrap();
-        fs::create_dir_all(case_dirs_only.join("agents")).unwrap();
-        assert!(!AgentTool::OpenCode.is_installed_at(&case_dirs_only));
-
-        let case_no_agent = temp_root.join("no_locator_agent");
-        touch(&case_no_agent.join("commands/code_review.md"));
-        fs::create_dir_all(case_no_agent.join("agents")).unwrap();
-        assert!(!AgentTool::OpenCode.is_installed_at(&case_no_agent));
-
-        fs::remove_dir_all(&temp_root).ok();
-    }
-
-    #[test]
-    fn copilot_is_installed_requires_code_review_and_codebase_locator() {
-        let temp_root = std::env::temp_dir().join("hyprlayer_test_copilot_is_installed");
-        fs::remove_dir_all(&temp_root).ok();
-
-        let case_full = temp_root.join("full");
-        touch(&case_full.join("prompts/code_review.prompt.md"));
-        touch(&case_full.join("agents/codebase-locator.agent.md"));
-        assert!(AgentTool::Copilot.is_installed_at(&case_full));
-
-        let case_dirs_only = temp_root.join("dirs_only");
-        fs::create_dir_all(case_dirs_only.join("prompts")).unwrap();
-        fs::create_dir_all(case_dirs_only.join("agents")).unwrap();
-        assert!(!AgentTool::Copilot.is_installed_at(&case_dirs_only));
-
-        fs::remove_dir_all(&temp_root).ok();
-    }
-
     /// `has_existing_install` must accept any layout that *was* a valid
     /// install at some point — sentinel files may have moved/renamed
     /// between bundles, but the structural directories haven't. A pre-
@@ -3554,93 +5919,56 @@ mod tests {
         let temp_root = std::env::temp_dir().join("hyprlayer_test_has_existing_install");
         fs::remove_dir_all(&temp_root).ok();
 
-        for (tool, dir_a, dir_b) in [
-            (AgentTool::Claude, "skills", "agents"),
-            (AgentTool::OpenCode, "commands", "agents"),
-            (AgentTool::Copilot, "prompts", "agents"),
-        ] {
-            // Bare structural dirs (no sentinels) — `is_installed_at`
-            // would reject this; `has_existing_install_at` must accept it.
-            let dest = temp_root.join(format!("{tool:?}_dirs_only"));
-            fs::create_dir_all(dest.join(dir_a)).unwrap();
-            fs::create_dir_all(dest.join(dir_b)).unwrap();
-            assert!(
-                tool.has_existing_install_at(&dest),
-                "{tool:?} should treat bare structural dirs as a prior install"
-            );
-            assert!(
-                !tool.is_installed_at(&dest),
-                "{tool:?} strict check should reject the bare-dirs case"
-            );
+        let tool = AgentTool::Claude;
+        let (dir_a, dir_b) = ("skills", "agents");
+        // Bare structural dirs (no sentinels) — `is_installed_at`
+        // would reject this; `has_existing_install_at` must accept it.
+        let dest = temp_root.join(format!("{tool:?}_dirs_only"));
+        fs::create_dir_all(dest.join(dir_a)).unwrap();
+        fs::create_dir_all(dest.join(dir_b)).unwrap();
+        assert!(
+            tool.has_existing_install_at(&dest),
+            "{tool:?} should treat bare structural dirs as a prior install"
+        );
+        assert!(
+            !tool.is_installed_at(&dest),
+            "{tool:?} strict check should reject the bare-dirs case"
+        );
 
-            // Missing one of the two structural dirs — not a real install.
-            let partial = temp_root.join(format!("{tool:?}_partial"));
-            fs::create_dir_all(partial.join(dir_a)).unwrap();
-            assert!(
-                !tool.has_existing_install_at(&partial),
-                "{tool:?} should not treat a half-populated dir as installed"
-            );
+        // Missing one of the two structural dirs — not a real install.
+        let partial = temp_root.join(format!("{tool:?}_partial"));
+        fs::create_dir_all(partial.join(dir_a)).unwrap();
+        assert!(
+            !tool.has_existing_install_at(&partial),
+            "{tool:?} should not treat a half-populated dir as installed"
+        );
 
-            // Empty dest dir — never installed.
-            let empty = temp_root.join(format!("{tool:?}_empty"));
-            fs::create_dir_all(&empty).unwrap();
-            assert!(
-                !tool.has_existing_install_at(&empty),
-                "{tool:?} should not treat an empty dir as installed"
-            );
-        }
+        // Empty dest dir — never installed.
+        let empty = temp_root.join(format!("{tool:?}_empty"));
+        fs::create_dir_all(&empty).unwrap();
+        assert!(
+            !tool.has_existing_install_at(&empty),
+            "{tool:?} should not treat an empty dir as installed"
+        );
 
         fs::remove_dir_all(&temp_root).ok();
     }
 
     #[test]
-    fn raw_github_url_pins_to_sha_when_provided() {
-        let url = raw_github_url("opencode/plugins/hyprlayer-telemetry.ts", "abc123def456");
-        assert!(url.contains("/abc123def456/"), "missing SHA pin: {url}");
-        assert!(
-            url.starts_with("https://raw.githubusercontent.com/"),
-            "wrong host: {url}"
-        );
-        assert!(url.contains(REPO), "missing repo slug: {url}");
-    }
-
-    #[test]
-    fn raw_github_url_falls_back_to_branch() {
-        let url = raw_github_url("opencode/plugins/hyprlayer-telemetry.ts", BRANCH);
-        assert!(
-            url.contains(&format!("/{BRANCH}/")),
-            "missing branch ref: {url}"
-        );
-    }
-
-    #[test]
-    fn raw_github_url_includes_repo_path() {
-        let url = raw_github_url("opencode/plugins/hyprlayer-telemetry.ts", "deadbeef");
-        assert!(
-            url.ends_with("/opencode/plugins/hyprlayer-telemetry.ts"),
-            "wrong tail: {url}"
-        );
-    }
-
-    #[test]
-    fn update_opencode_models_with_different_providers() {
-        let temp_dir = std::env::temp_dir().join("hyprlayer_test_providers");
-        let commands_dir = temp_dir.join("commands");
-        fs::create_dir_all(&commands_dir).unwrap();
-
-        // Test with Anthropic
-        fs::write(
-            commands_dir.join("test.md"),
-            "---\nmodel: {{SONNET_MODEL}}\nopus: {{OPUS_MODEL}}\n---\n# Test",
-        )
-        .unwrap();
-
-        update_opencode_models(&temp_dir, &OpenCodeProvider::Anthropic).unwrap();
-
-        let result = fs::read_to_string(commands_dir.join("test.md")).unwrap();
-        assert!(result.contains("model: anthropic/claude-sonnet-5"));
-        assert!(result.contains("opus: anthropic/claude-opus-5"));
-
-        fs::remove_dir_all(&temp_dir).ok();
+    fn bundle_set_status_json_has_the_paired_platform_contract() {
+        let value = bundle_set_status_json(&crate::config::HyprlayerConfig::default());
+        assert_eq!(value["agentTool"], "Claude + Codex");
+        assert!(value["installed"].is_boolean());
+        assert!(value["location"].is_string());
+        let platforms = value["platforms"].as_array().unwrap();
+        assert_eq!(platforms.len(), 2);
+        assert_eq!(platforms[0]["id"], "claude");
+        assert_eq!(platforms[0]["name"], "Claude Code");
+        assert!(platforms[0]["installed"].is_boolean());
+        assert!(platforms[0]["location"].is_string());
+        assert_eq!(platforms[1]["id"], "codex");
+        assert_eq!(platforms[1]["name"], "Codex");
+        assert!(platforms[1]["installed"].is_boolean());
+        assert!(platforms[1]["location"].is_string());
     }
 }

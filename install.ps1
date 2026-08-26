@@ -83,8 +83,7 @@ finally {
 }
 
 Write-Host ""
-Write-Host "Agent files will be installed when you run 'hyprlayer thoughts init'" -ForegroundColor Yellow
-Write-Host "You'll be prompted to choose between Claude Code and GitHub Copilot."
+Write-Host "Claude and Codex agent files will be provisioned automatically on first use." -ForegroundColor Yellow
 
 $VCRuntimeInstalled = Test-Path "$env:SystemRoot\System32\vcruntime140.dll"
 if (-not $VCRuntimeInstalled) {
