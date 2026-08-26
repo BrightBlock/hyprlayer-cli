@@ -201,9 +201,10 @@ hyprlayer ai reinstall --force             # bypass the local store and download
 ```
 
 A pin survives binary upgrades, so a bundle that regresses can be held back
-until it is fixed. `hyprlayer ai status` reports `assetsVersion`, `pinnedVersion`
-and `binaryVersion` so the skew is visible. A pin is refused if its bundle needs
-a newer CLI than the one running.
+until it is fixed. `hyprlayer ai status` shows one compact version and calls out
+a pin or CLI skew only when relevant; `--json` exposes `assetsVersion`,
+`pinnedVersion` and `binaryVersion` separately. A pin is refused if its bundle
+needs a newer CLI than the one running.
 
 `ai versions` is the only new API call, it runs on demand rather than at
 startup, and its result is cached for an hour — repeated calls do not spend the
@@ -249,6 +250,11 @@ cannot be retargeted. It is not a live installation source. Current Claude
 and Codex work happens in `assets/`, which is where release bundles are cut
 from. See
 [assets/FROZEN.md](assets/FROZEN.md).
+
+Once the paired Claude + Codex setup is healthy, an upgrade also retires the
+Copilot and OpenCode files installed by pre-1.6.0 Hyprlayer clients. Cleanup is
+per-file and digest-guarded: known unmodified Hyprlayer files are removed,
+while edited files, personal files, and the shared harness roots remain.
 
 ## Configuration
 

@@ -66,6 +66,20 @@ machine that last refreshed before the freeze holds older bytes for files we
 still ship, and treating those as "not ours" would freeze it on them forever.
 See `sync_tree` in `src/agents.rs`.
 
+## Retired Copilot and OpenCode trees
+
+The paired Claude + Codex setup also retired the repository's old `copilot/`
+and `opencode/` trees. Their roots no longer need to remain available to old
+clients, but their known file digests are embedded in
+`src/agents/frozen/*-retired.json` so an upgrade can remove the copies those
+clients left in the shared harness directories without touching user files.
+
+Those manifests cover every distinct blob in each tree's history through
+`d705a48094606e267f817226f553a5c5a9764072`, the last commit before their
+removal. The OpenCode manifest additionally covers all three model-resolved
+variants produced by the legacy installer. Regenerate both with
+`scripts/build-retired-agent-manifests.sh`.
+
 ## Making a deliberate change to a frozen tree
 
 Don't, except to fix something actively broken for pre-1.6.0 clients. If you

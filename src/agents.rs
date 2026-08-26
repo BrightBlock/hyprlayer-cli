@@ -19,6 +19,12 @@ use crate::integrity;
 
 pub(crate) const REPO: &str = "BrightBlock/hyprlayer-cli";
 
+/// Last commit whose repository tree still carried the Copilot and OpenCode
+/// bundles consumed by pre-1.6.0 clients. The embedded retirement manifests
+/// contain every distinct file digest from that commit's history, plus the
+/// three model-resolved OpenCode variants the old installer could produce.
+const RETIRED_HARNESS_FREEZE: &str = "d705a48094606e267f817226f553a5c5a9764072";
+
 /// Record of the bundle currently installed in a harness directory, written
 /// after every successful asset install. It is the previous-state the next
 /// install diffs against: which files are ours, and what they hashed to when
@@ -501,7 +507,18 @@ pub(crate) fn install_bundle_set(
     quiet: bool,
 ) -> Result<InstallOutcome> {
     let _lock = acquire_bundle_lock()?;
-    AgentTool::Claude.install(pinned_version, quiet)
+    let mut outcome = AgentTool::Claude.install(pinned_version, quiet)?;
+    let desired = resolve_assets_version(pinned_version);
+    if bundle_set_is_installed(desired) {
+        let removed = cleanup_retired_harnesses();
+        if !quiet {
+            for path in &removed {
+                println!("  {:<60}", format!("Removed retired {path}"));
+            }
+        }
+        outcome.changed += removed.len();
+    }
+    Ok(outcome)
 }
 
 fn codex_skills_dir() -> Result<PathBuf> {
@@ -2003,6 +2020,75 @@ fn remove_legacy_copies(
     removed
 }
 
+/// Parse one of the embedded manifests for harnesses retired by the paired
+/// Claude + Codex setup. A bad built-in manifest must never make an otherwise
+/// valid install fail; it degrades to preserving every legacy file.
+fn retired_harness_manifest(name: &str, json: &str) -> Vec<ManifestEntry> {
+    serde_json::from_str(json).unwrap_or_else(|error| {
+        eprintln!(
+            "warning: the built-in {name} retirement manifest from \
+             {RETIRED_HARNESS_FREEZE} did not parse ({error}); preserving its legacy files"
+        );
+        Vec::new()
+    })
+}
+
+/// Remove a retired harness only when its two characteristic content roots
+/// are present, matching the old installer's own prior-install test. Every
+/// individual deletion remains digest-guarded by `remove_legacy_copies`.
+fn cleanup_retired_harness_at(
+    dest: &Path,
+    roots: [&str; 2],
+    manifest: &[ManifestEntry],
+) -> Vec<String> {
+    if !roots.iter().all(|root| dest.join(root).is_dir()) {
+        return Vec::new();
+    }
+    remove_legacy_copies(dest, manifest, None)
+}
+
+/// Clear Copilot and OpenCode files written by pre-1.6.0 Hyprlayer clients.
+/// The enclosing harness directories are shared user namespaces, so this is
+/// deliberately a per-file, known-digest sweep rather than directory removal.
+fn cleanup_retired_harnesses() -> Vec<String> {
+    let mut removed = Vec::new();
+
+    if let Some(config) = dirs::config_dir() {
+        let manifest = retired_harness_manifest(
+            "Copilot",
+            include_str!("agents/frozen/copilot-retired.json"),
+        );
+        removed.extend(
+            cleanup_retired_harness_at(
+                &config.join("Code").join("User"),
+                ["prompts", "agents"],
+                &manifest,
+            )
+            .into_iter()
+            .map(|path| format!("Copilot {path}")),
+        );
+    }
+
+    if let Some(home) = dirs::home_dir() {
+        let manifest = retired_harness_manifest(
+            "OpenCode",
+            include_str!("agents/frozen/opencode-retired.json"),
+        );
+        removed.extend(
+            cleanup_retired_harness_at(
+                &home.join(".config").join("opencode"),
+                ["commands", "agents"],
+                &manifest,
+            )
+            .into_iter()
+            .map(|path| format!("OpenCode {path}")),
+        );
+    }
+
+    removed.sort();
+    removed
+}
+
 fn root_only_manifest(manifest: &BundleManifest) -> BundleManifest {
     BundleManifest {
         version: manifest.version.clone(),
@@ -2642,7 +2728,12 @@ pub(crate) fn repair_bundle_set_links(version: &str) -> Result<Option<usize>> {
         }
     };
     transaction.commit();
-    Ok(Some(report.changed))
+    let retired_removed = if bundle_set_is_installed(version) {
+        cleanup_retired_harnesses().len()
+    } else {
+        0
+    };
+    Ok(Some(report.changed + retired_removed))
 }
 
 pub(crate) fn bundle_set_status_json(config: &crate::config::HyprlayerConfig) -> serde_json::Value {
@@ -2688,6 +2779,40 @@ pub(crate) fn bundle_set_status_json(config: &crate::config::HyprlayerConfig) ->
     })
 }
 
+/// One compact version label for the human status output.
+///
+/// The normal case is just the installed version. Target and CLI versions are
+/// implementation details until they differ, while a pin remains worth naming
+/// even when it currently matches the CLI because it will survive an upgrade.
+fn bundle_version_summary(config: &crate::config::HyprlayerConfig) -> String {
+    let installed = config
+        .agents_installed_version
+        .as_deref()
+        .unwrap_or("unknown");
+    let target = config.desired_assets_version();
+    let cli = env!("CARGO_PKG_VERSION");
+    let mut notes = Vec::new();
+
+    if config.agents_pinned_version.is_some() {
+        if installed == target {
+            notes.push("pinned".to_string());
+        } else {
+            notes.push(format!("pinned target {target}"));
+        }
+        if target != cli {
+            notes.push(format!("CLI {cli}"));
+        }
+    } else if installed != target {
+        notes.push(format!("target {target}"));
+    }
+
+    if notes.is_empty() {
+        installed.to_string()
+    } else {
+        format!("{installed} ({})", notes.join("; "))
+    }
+}
+
 pub(crate) fn print_bundle_set_status(config: &crate::config::HyprlayerConfig) {
     use colored::Colorize;
 
@@ -2697,11 +2822,10 @@ pub(crate) fn print_bundle_set_status(config: &crate::config::HyprlayerConfig) {
     } else {
         "needs repair".red()
     };
-    println!("  AI Platforms: {}", "Claude Code + Codex".cyan());
     println!("  Status: {status}");
-    println!("  Claude: {}", AgentTool::Claude.dest_display().cyan());
+    println!("  Version: {}", bundle_version_summary(config).cyan());
+    println!("  Claude Code: {}", AgentTool::Claude.dest_display().cyan());
     println!("  Codex: {}", format!("~{SEP}.codex{SEP}").cyan());
-    println!("  Desired assets: {}", desired.cyan());
 }
 
 /// Parse a staged bundle's own `manifest.json`, or `None` for legacy
@@ -4857,6 +4981,96 @@ mod tests {
     }
 
     #[test]
+    fn retired_harness_cleanup_removes_only_digest_matched_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("opencode");
+        fs::create_dir_all(dest.join("commands")).unwrap();
+        fs::create_dir_all(dest.join("agents")).unwrap();
+        fs::create_dir_all(dest.join("plugins")).unwrap();
+
+        fs::write(dest.join("commands/owned.md"), "shipped\n").unwrap();
+        fs::write(dest.join("agents/edited.md"), "user changed this\n").unwrap();
+        fs::write(dest.join("agents/personal.md"), "personal\n").unwrap();
+        fs::write(dest.join("plugins/owned.ts"), "plugin\n").unwrap();
+
+        let manifest = vec![
+            ManifestEntry {
+                path: "commands/owned.md".to_string(),
+                sha256: sha256_bytes(b"shipped\n"),
+            },
+            ManifestEntry {
+                path: "agents/edited.md".to_string(),
+                sha256: sha256_bytes(b"original\n"),
+            },
+            ManifestEntry {
+                path: "plugins/owned.ts".to_string(),
+                sha256: sha256_bytes(b"plugin\n"),
+            },
+        ];
+
+        let removed = cleanup_retired_harness_at(&dest, ["commands", "agents"], &manifest);
+
+        assert_eq!(removed, vec!["commands/owned.md", "plugins/owned.ts"]);
+        assert!(!dest.join("commands/owned.md").exists());
+        assert!(!dest.join("plugins/owned.ts").exists());
+        assert_eq!(
+            fs::read_to_string(dest.join("agents/edited.md")).unwrap(),
+            "user changed this\n"
+        );
+        assert!(dest.join("agents/personal.md").is_file());
+    }
+
+    #[test]
+    fn retired_harness_cleanup_requires_the_legacy_layout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("partial");
+        fs::create_dir_all(dest.join("commands")).unwrap();
+        fs::write(dest.join("commands/owned.md"), "shipped\n").unwrap();
+        let manifest = vec![ManifestEntry {
+            path: "commands/owned.md".to_string(),
+            sha256: sha256_bytes(b"shipped\n"),
+        }];
+
+        assert!(cleanup_retired_harness_at(&dest, ["commands", "agents"], &manifest).is_empty());
+        assert!(dest.join("commands/owned.md").is_file());
+    }
+
+    #[test]
+    fn retired_harness_manifests_cover_the_old_sentinels() {
+        for (name, json, sentinels) in [
+            (
+                "Copilot",
+                include_str!("agents/frozen/copilot-retired.json"),
+                [
+                    "prompts/code_review.prompt.md",
+                    "agents/codebase-locator.agent.md",
+                ],
+            ),
+            (
+                "OpenCode",
+                include_str!("agents/frozen/opencode-retired.json"),
+                ["commands/code_review.md", "agents/codebase-locator.md"],
+            ),
+        ] {
+            let manifest = retired_harness_manifest(name, json);
+            assert!(!manifest.is_empty(), "{name} retirement manifest is empty");
+            assert!(
+                sentinels
+                    .iter()
+                    .all(|sentinel| manifest.iter().any(|entry| entry.path == *sentinel))
+            );
+            assert!(manifest.iter().all(|entry| {
+                entry.sha256.len() == 64
+                    && entry
+                        .sha256
+                        .chars()
+                        .all(|character| character.is_ascii_hexdigit())
+                    && manifest::relative_key(Path::new(&entry.path)).is_some()
+            }));
+        }
+    }
+
+    #[test]
     fn windows_file_link_privilege_error_gives_actionable_guidance() {
         let error = std::io::Error::from_raw_os_error(1314);
         let message = windows_file_symlink_error(&error, Path::new(r"C:\Users\me\.codex\agents"));
@@ -5480,5 +5694,37 @@ mod tests {
         assert_eq!(platforms[1]["name"], "Codex");
         assert!(platforms[1]["installed"].is_boolean());
         assert!(platforms[1]["location"].is_string());
+    }
+
+    #[test]
+    fn bundle_version_summary_is_compact_when_everything_matches() {
+        let config = crate::config::HyprlayerConfig {
+            agents_installed_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!(bundle_version_summary(&config), env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn bundle_version_summary_only_expands_for_meaningful_skew() {
+        let pinned = crate::config::HyprlayerConfig {
+            agents_installed_version: Some("1.5.9".to_string()),
+            agents_pinned_version: Some("1.5.9".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            bundle_version_summary(&pinned),
+            format!("1.5.9 (pinned; CLI {})", env!("CARGO_PKG_VERSION"))
+        );
+
+        let stale = crate::config::HyprlayerConfig {
+            agents_installed_version: Some("1.5.9".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            bundle_version_summary(&stale),
+            format!("1.5.9 (target {})", env!("CARGO_PKG_VERSION"))
+        );
     }
 }

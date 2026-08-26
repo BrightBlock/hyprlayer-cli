@@ -395,7 +395,7 @@ fn ensure_bundle_set_in(cfg: &mut config::HyprlayerConfig, now: i64) -> bool {
         Ok(Some(changed)) => {
             if agents::bundle_set_is_installed(&desired) {
                 if changed > 0 {
-                    eprintln!("Repaired Claude + Codex agent links ({changed} links).")
+                    eprintln!("Repaired Claude + Codex agent setup ({changed} changes).")
                 }
                 cfg.record_assets_version(&desired);
                 crate::commands::ai::install_claude_hook_if_applicable(cfg);

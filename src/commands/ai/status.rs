@@ -47,35 +47,17 @@ pub fn status(args: AiStatusArgs) -> Result<()> {
     Ok(())
 }
 
-/// Render which assets bundle is installed, whether it is pinned, and the
-/// legacy SHA + last-check timestamp, under the paired-platform status block.
+/// Render exceptional legacy/retry details below the compact status block.
 ///
-/// The version triple is the human counterpart of `status_json`'s
-/// `assetsVersion` / `pinnedVersion` / `binaryVersion`, and is what makes a
-/// skew visible: a pin held across a binary upgrade shows an assets version
-/// that is deliberately not the binary's own.
-///
-/// The `Pinned:` line is omitted when there is no pin, and the SHA and
-/// last-check lines when there is nothing cached — a pre-1.6.0 install
-/// carries a SHA and no version, a 1.6.0 one the reverse, and neither
-/// should show empty placeholders for the other's state.
+/// A SHA beside a modern version is stale migration bookkeeping, not another
+/// useful version identifier, so it is shown only when the installed version
+/// is genuinely unknown. `last_agent_check` now records a failed setup attempt
+/// for retry backoff, hence "Last attempt" rather than the old "Last check".
 fn print_bundle_freshness(config: &HyprlayerConfig) {
-    println!();
-    println!(
-        "  Assets version: {}",
-        config
-            .agents_installed_version
-            .as_deref()
-            .unwrap_or("unknown")
-            .cyan()
-    );
-    if let Some(pinned) = config.agents_pinned_version.as_deref() {
-        println!("  Pinned: {}", pinned.cyan());
-    }
-    println!("  Binary version: {}", env!("CARGO_PKG_VERSION").cyan());
-
-    if let Some(sha) = config.agents_installed_sha.as_deref() {
-        println!("  Bundle SHA: {}", sha.get(..7).unwrap_or(sha).cyan());
+    if config.agents_installed_version.is_none()
+        && let Some(sha) = config.agents_installed_sha.as_deref()
+    {
+        println!("  Legacy revision: {}", sha.get(..7).unwrap_or(sha).cyan());
     }
 
     let last_check = config.last_agent_check.and_then(|t| {
@@ -85,7 +67,7 @@ fn print_bundle_freshness(config: &HyprlayerConfig) {
     });
     if let Some(ht) = last_check {
         println!(
-            "  Last check: {}",
+            "  Last attempt: {}",
             ht.to_text_en(Accuracy::Rough, Tense::Past).cyan()
         );
     }
