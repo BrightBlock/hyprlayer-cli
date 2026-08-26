@@ -32,6 +32,11 @@ const MAX_RELEASES_RESPONSE_BYTES: u64 = 1024 * 1024;
 /// repeated `ai versions` calls off the rate limit.
 const CACHE_TTL_SECS: u64 = 60 * 60;
 
+/// A release becomes visible before its assets have necessarily finished
+/// uploading. An empty filtered page is therefore only briefly trustworthy;
+/// otherwise a query during that window hides the new bundle for a full hour.
+const EMPTY_CACHE_TTL_SECS: u64 = 60;
+
 const CACHE_DIR: &str = "cache";
 
 /// One release that actually carries a bundle for the harness in question.
@@ -64,7 +69,7 @@ pub fn versions(args: AiVersionsArgs) -> Result<()> {
             serde_json::to_string_pretty(&versions_json(&hyprlayer_config, &releases))?
         );
     } else {
-        print_versions(&hyprlayer_config, &releases, limit);
+        print_versions(&hyprlayer_config, &releases);
     }
 
     Ok(())
@@ -225,7 +230,12 @@ fn cache_path(harness: &str) -> Result<PathBuf> {
 /// entry is refetched on the next run either way.
 fn cached_releases(path: &Path, limit: u32, now: u64) -> Option<Vec<BundleRelease>> {
     let cache: ReleaseCache = serde_json::from_str(&fs::read_to_string(path).ok()?).ok()?;
-    if cache.limit != limit || now.saturating_sub(cache.fetched_at) >= CACHE_TTL_SECS {
+    let ttl = if cache.releases.is_empty() {
+        EMPTY_CACHE_TTL_SECS
+    } else {
+        CACHE_TTL_SECS
+    };
+    if cache.limit != limit || now.saturating_sub(cache.fetched_at) >= ttl {
         return None;
     }
     Some(cache.releases)
@@ -279,7 +289,6 @@ fn versions_json(config: &HyprlayerConfig, releases: &[BundleRelease]) -> serde_
         .collect();
 
     serde_json::json!({
-        "harness": "claude-codex",
         "assetsVersion": config.agents_installed_version,
         "pinnedVersion": config.agents_pinned_version,
         "binaryVersion": env!("CARGO_PKG_VERSION"),
@@ -297,18 +306,14 @@ fn published_date(release: &BundleRelease) -> &str {
         .unwrap_or("unpublished")
 }
 
-fn print_versions(config: &HyprlayerConfig, releases: &[BundleRelease], limit: u32) {
-    println!();
-    println!("  {} bundle versions:", "Claude + Codex".cyan());
-    println!();
-
+fn print_versions(config: &HyprlayerConfig, releases: &[BundleRelease]) {
     if releases.is_empty() {
-        println!(
-            "  {}",
-            format!("None of the {limit} most recent releases carry one.").bright_black()
-        );
         return;
     }
+
+    println!();
+    println!("  {}", "Agents:".cyan());
+    println!();
 
     for release in releases {
         let (current, pinned) = marks(config, &release.version);
@@ -491,6 +496,16 @@ mod tests {
     }
 
     #[test]
+    fn empty_versions_cache_expires_quickly_during_release_uploads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("releases-claude.json");
+        write_cache(&path, &ReleaseCache::new(1_000_000, 10, Vec::new()));
+
+        assert!(cached_releases(&path, 10, 1_000_000 + EMPTY_CACHE_TTL_SECS - 1).is_some());
+        assert!(cached_releases(&path, 10, 1_000_000 + EMPTY_CACHE_TTL_SECS).is_none());
+    }
+
+    #[test]
     fn versions_cache_is_not_reused_for_a_different_limit() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_cache_fixture(dir.path(), 1_000_000, 10);
@@ -521,7 +536,6 @@ mod tests {
 
         let value = versions_json(&config, &releases);
 
-        assert_eq!(value["harness"], "claude-codex");
         assert_eq!(value["assetsVersion"], "1.6.0-rc.1");
         assert_eq!(value["pinnedVersion"], "1.6.0-rc.1");
         assert_eq!(value["binaryVersion"], env!("CARGO_PKG_VERSION"));
