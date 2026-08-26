@@ -527,9 +527,7 @@ pub struct HyprlayerConfig {
     pub agents_installed_sha: Option<String>,
     /// Assets bundle version the last install resolved to — the pin when one
     /// was set, otherwise the binary's own version. It records what the
-    /// install was *for*, not necessarily what served it: a repository
-    /// fallback records it too, or a dev build with no matching release
-    /// would reinstall on every startup.
+    /// install was *for*, rather than a repository revision.
     ///
     /// `None` on a config written before 1.6.0, which is what makes the
     /// first 1.6.0 run install once and then settle (see

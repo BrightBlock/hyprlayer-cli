@@ -1,49 +1,18 @@
-//! Hardened tar.gz extraction for the two bundle shapes an install can
-//! come from: a per-harness release asset (`extract_bundle`, paths already
-//! relative to the harness root) and a whole-repo `codeload.github.com`
-//! tarball from which one tool's subtree is taken (`extract_subdir`).
-//!
-//! `codeload.github.com` is not on the REST core rate-limit bucket, so the
-//! repo-tarball path replaces ~30 rate-limited Contents API calls per
-//! install with one plain HTTPS download plus local extraction. See
-//! `download_directory` in `agents.rs` for the API-based walk this augments
-//! and falls back to.
+//! Hardened tar.gz extraction for per-harness release assets. Bundle paths
+//! are already relative to the harness root; extraction rejects links,
+//! special files, path traversal, and absolute paths.
 
 use anyhow::{Context, Result};
 use flate2::read::GzDecoder;
 use std::fs;
 use std::path::{Component, Path};
-use std::time::Duration;
 use tar::Archive as TarArchive;
-
-use super::REPO;
-use crate::http;
 
 /// Full repo tarball is ~360 KB today and a per-harness release bundle is
 /// smaller still. 64 MiB is two orders of magnitude of headroom and stops a
 /// hostile or misconfigured source from filling the temp dir before we ever
 /// open the archive.
 pub(crate) const MAX_ARCHIVE_BYTES: u64 = 64 * 1024 * 1024;
-
-pub(crate) fn codeload_url(git_ref: &str) -> String {
-    format!("https://codeload.github.com/{REPO}/tar.gz/{git_ref}")
-}
-
-/// Download the repo archive pinned to `git_ref` and extract `repo_path`'s
-/// subtree into `dest`. Returns the number of files written.
-pub(crate) fn fetch_and_extract(repo_path: &str, git_ref: &str, dest: &Path) -> Result<usize> {
-    let url = codeload_url(git_ref);
-    let tmp = tempfile::NamedTempFile::new()
-        .context("Failed to create a temp file for the archive download")?;
-    http::download_file_capped(
-        &url,
-        tmp.path(),
-        Duration::from_secs(30),
-        Some(MAX_ARCHIVE_BYTES),
-    )
-    .map_err(|e| anyhow::anyhow!("Failed to download archive from {url}: {e}"))?;
-    extract_subdir(tmp.path(), repo_path, dest)
-}
 
 /// How the archive's leading path component is treated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,6 +22,7 @@ enum RootHandling {
     /// `hyprlayer-cli-master/` for a branch ref but `hyprlayer-cli-<sha>/`
     /// for a SHA ref. Every subsequent entry must share it, and it is
     /// stripped before matching `subdir`.
+    #[cfg(test)]
     StripSingleRoot,
     /// Entries are already relative to the bundle root, as in the
     /// per-harness release assets `scripts/build-asset-bundles.sh` packs.
@@ -63,6 +33,7 @@ enum RootHandling {
 /// Extract every entry under `<root>/<subdir>/` into `dest`, stripping both
 /// the archive's single root component and `subdir`. Returns the file
 /// count. This is the codeload repo-tarball shape.
+#[cfg(test)]
 pub(crate) fn extract_subdir(archive: &Path, subdir: &str, dest: &Path) -> Result<usize> {
     extract(archive, dest, RootHandling::StripSingleRoot, Some(subdir))
 }
@@ -114,6 +85,7 @@ fn extract(
     let decoder = GzDecoder::new(file);
     let mut tar = TarArchive::new(decoder);
 
+    #[cfg(test)]
     let mut root: Option<String> = None;
     let mut count = 0usize;
 
@@ -162,6 +134,7 @@ fn extract(
 
         // Everything the entry contributes below the archive's own root.
         let rest: &[std::ffi::OsString] = match root_handling {
+            #[cfg(test)]
             RootHandling::StripSingleRoot => {
                 let (root_component, rest) = parts
                     .split_first()
@@ -678,27 +651,8 @@ mod tests {
         assert!(dest.is_dir());
     }
 
-    #[test]
-    fn codeload_url_branch_ref_shape() {
-        let url = codeload_url("master");
-        assert_eq!(
-            url,
-            "https://codeload.github.com/BrightBlock/hyprlayer-cli/tar.gz/master"
-        );
-    }
-
-    #[test]
-    fn codeload_url_sha_ref_shape() {
-        let sha = "1f7370976053d293da0718c00aab5faa78396e6a";
-        let url = codeload_url(sha);
-        assert_eq!(
-            url,
-            format!("https://codeload.github.com/BrightBlock/hyprlayer-cli/tar.gz/{sha}")
-        );
-    }
-
     /// Sanity check that our in-memory tarball builder round-trips through
-    /// `flate2`/`tar` the way a real codeload response would.
+    /// `flate2`/`tar` the way a real bundle response would.
     #[test]
     fn build_archive_round_trips_through_gzip() {
         let bytes = build_archive(&[TestEntry::File("root/claude/x.md", b"hello")]);

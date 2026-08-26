@@ -4,11 +4,8 @@
 //! `ai reinstall --version`.
 //!
 //! **On demand only, never on startup.** `{api}/releases` is a REST call
-//! against the same 60 requests/hour unauthenticated bucket that
-//! `agents::fetch_master_sha` and the codeload archive path exist to avoid
-//! spending; a startup probe would burn it on every invocation and take the
-//! install path down with it. The on-disk cache below keeps a desktop that
-//! polls `--json` to one request an hour.
+//! against GitHub's 60 requests/hour unauthenticated bucket. The on-disk
+//! cache below keeps a desktop that polls `--json` to one request an hour.
 
 use anyhow::{Context, Result};
 use colored::Colorize;
@@ -168,9 +165,8 @@ fn releases_with_bundle_pair(body: &str) -> Result<Vec<BundleRelease>> {
 /// Turn GitHub's error object into a user-facing error, or `None` when the
 /// body is not one (a genuinely malformed array, say).
 ///
-/// The rate-limit branch mirrors `agents::classify_github_error` but points
-/// at the cache rather than at `ai reinstall`: nothing here has a fallback
-/// source to try, and the answer is to wait.
+/// The rate-limit branch points at the cache rather than at `ai reinstall`:
+/// the answer is to wait.
 fn classify_release_list_error(body: &str) -> Option<anyhow::Error> {
     let message = serde_json::from_str::<GitHubErrorBody>(body)
         .ok()?

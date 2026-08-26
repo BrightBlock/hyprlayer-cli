@@ -1,9 +1,9 @@
 //! Integration test for `hyprlayer ai reinstall` with no network available.
 //!
-//! The install path (both the archive download and its Contents-API
-//! fallback) is genuinely network-bound, so rather than mock it, this
-//! asserts the property that matters for offline CI and for a user with a
-//! dead connection: a fully-offline `ai reinstall` fails cleanly, prints an
+//! The release metadata and asset downloads are genuinely network-bound, so
+//! rather than mock them, this asserts the property that matters for offline
+//! CI and for a user with a dead connection: a fully-offline `ai reinstall`
+//! fails cleanly, prints an
 //! actionable message rather than panicking, and leaves the destination
 //! directory untouched (Phase 4's staging guarantee — see
 //! `2026-08-19-agent-bundle-archive-download.md`).

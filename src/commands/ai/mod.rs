@@ -18,9 +18,8 @@ use crate::telemetry;
 /// `desired_assets_version`. `record_assets_version` also clears
 /// `last_agent_check`, the failed-refresh backoff.
 ///
-/// `sha = None` (commits API was unreachable) leaves the cached SHA
-/// untouched; the install itself still happened, so the version is recorded
-/// either way.
+/// `sha = None` (the normal release-bundle path) leaves a cached legacy SHA
+/// untouched; the install itself still happened, so the version is recorded.
 pub(crate) fn record_install(
     config: &mut HyprlayerConfig,
     config_path: &Path,

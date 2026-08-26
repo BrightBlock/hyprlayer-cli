@@ -18,7 +18,6 @@ use crate::http;
 use crate::integrity;
 
 pub(crate) const REPO: &str = "BrightBlock/hyprlayer-cli";
-const BRANCH: &str = "master";
 
 /// Record of the bundle currently installed in a harness directory, written
 /// after every successful asset install. It is the previous-state the next
@@ -33,15 +32,12 @@ const INSTALLED_MANIFEST_FILE: &str = ".hyprlayer-manifest.json";
 /// Claude and Codex are installed as one supported bundle set: the shared skill source remains
 /// `~/.claude/skills`, while standalone Codex also receives custom-agent
 /// definitions and a native-root bridge into that source tree.
-const CLAUDE_REPO_DIR: &str = "assets/claude";
 const CODEX_HARNESS: &str = "codex";
-const CODEX_REPO_DIR: &str = "assets/codex";
 const AGENT_STORE_DIR: &str = "agents";
 
-/// GitHub Contents/commits API responses for a single directory listing run
-/// a few KB. 1 MiB is two orders of magnitude of headroom and stops a
-/// hostile or misconfigured source from buffering an unbounded `String`.
-/// Mirrors `MAX_RELEASE_API_BYTES` in `src/commands/self_update.rs`.
+/// A GitHub release response runs a few hundred KB at most. 1 MiB leaves
+/// ample headroom while preventing a hostile or misconfigured source from
+/// buffering an unbounded `String`.
 const MAX_API_RESPONSE_BYTES: u64 = 1024 * 1024;
 
 pub(crate) fn github_api_repo_url() -> String {
@@ -94,12 +90,6 @@ impl AgentTool {
     fn harness_slug(&self) -> &str {
         match self {
             Self::Claude => "claude",
-        }
-    }
-
-    fn live_repo_dir(&self) -> &str {
-        match self {
-            Self::Claude => CLAUDE_REPO_DIR,
         }
     }
 
@@ -181,25 +171,19 @@ impl AgentTool {
     /// automatic provisioning installs the new bundle. Bump these whenever
     /// we ship a top-level file existing users should pick up.
     ///
-    /// **Scope, since 1.6.0**: as a completeness gate this now governs only
-    /// the frozen-legacy-tree fallback. An asset install carries a
+    /// **Scope, since 1.6.0**: as a completeness gate this governs only
+    /// legacy manifestless staged input. A release asset carries a
     /// `manifest.json` and is gated on that instead — every listed file
     /// present and hashing correctly — which is a far stronger check than
-    /// two hardcoded paths. This remains the gate for the `master`-tree
-    /// fallback, which has no manifest, and remains the "is anything
-    /// installed here" probe for both. See `install_staged`.
+    /// two hardcoded paths. See `install_staged`.
     fn is_installed_at(&self, dest: &Path) -> bool {
         match self {
             // This sentinel doubles as the staged-download completeness
-            // gate for the legacy fallback (`is_installed_at` failing there
+            // gate for legacy manifestless input (`is_installed_at` failing there
             // after a staged fetch is a hard `bail!`, not a soft warning).
             // It may therefore only ever name long-lived, load-bearing
-            // files that ship on every release — never a file from a branch
-            // not yet on `master`, or reverting that file turns a benign
-            // rollback into every user's next automatic install/`ai reinstall`
-            // failing outright. The frozen trees make that hazard mostly
-            // historical: they no longer change. Both paths below are
-            // present in the freeze and in every asset bundle.
+            // files that ship on every release. Both paths below are present
+            // in the frozen legacy tree and in every asset bundle.
             Self::Claude => {
                 dest.join("skills/code_review/SKILL.md").is_file()
                     && dest.join("agents/codebase-locator.md").is_file()
@@ -210,22 +194,16 @@ impl AgentTool {
     /// Download agent files from GitHub and install to the destination.
     ///
     /// Downloads into a temporary staging directory first, refuses to
-    /// touch `dest` at all unless the staged bundle looks complete (see
-    /// `is_installed_at`). Claude then populates the versioned central store
+    /// touch `dest` at all unless both staged manifests validate. Claude then
+    /// populates the versioned central store
     /// and reconciles the Claude/Codex link farms as one rollback-safe
     /// activation. A mid-download failure — network drop, rate limit,
     /// truncated archive — therefore cannot leave a live harness tree
     /// half-downloaded.
     ///
-    /// `InstallOutcome::sha` is `Some` when we successfully captured the
-    /// repo's `master` HEAD SHA *before* the download (the next 24h
-    /// auto-check uses this as the freshness baseline), and `None` when
-    /// the ref advertisement was unreachable but the download still
-    /// succeeded — the install is still good, but we have no SHA to
-    /// cache, so the next auto-check will treat the bundle as stale and
-    /// refresh again. We don't fail the whole install when only ref
-    /// resolution is unreachable because `ai reinstall` can continue by
-    /// falling back to the `master` branch name.
+    /// Release-bundle installs are version-addressed, so
+    /// `InstallOutcome::sha` remains `None`; the field is retained only for
+    /// callers migrating configuration written by the old repo-tree flow.
     ///
     /// `pinned_version` is the caller's `agentsPinnedVersion`, if any: it
     /// selects which release asset to fetch and, because a pinned bundle may
@@ -234,29 +212,24 @@ impl AgentTool {
     fn install(&self, pinned_version: Option<&str>, quiet: bool) -> Result<InstallOutcome> {
         let dest = self.dest_dir()?;
 
-        // Recording a post-download SHA could mask `master`-advances that
-        // happen mid-install — next-day's check would then compare against
-        // an at-or-newer cache and skip the necessary re-sync.
-        let sha = fetch_master_sha().ok();
-        let git_ref = sha.as_deref().unwrap_or(BRANCH);
-
         let staging = tempfile::tempdir().context("Failed to create a staging directory")?;
         let staged = staging.path().join(self.harness_slug());
-        self.fetch_into(&staged, git_ref, pinned_version, quiet)?;
-
-        // Fetch and validate the same-version companion before touching the
-        // store or either harness directory. A release carrying only one
-        // half is not an installable generation.
         let codex_staged = staging.path().join("codex-companion");
-        let primary_is_release = staged.join(MANIFEST_FILE_NAME).is_file();
-        fetch_codex_companion_into(
-            &codex_staged,
-            git_ref,
-            pinned_version,
-            primary_is_release,
-            quiet,
-        )?;
         let version = resolve_assets_version(pinned_version);
+
+        // Resolve and preflight the pair before downloading either archive.
+        // A missing release or one-sided release must fail without fetching
+        // a fallback tree (which may belong to a different version and may
+        // not contain the companion at all).
+        if !quiet {
+            println!("Downloading agent files...");
+        }
+        let release_body = fetch_bundle_release(version)?;
+        preflight_bundle_pair(&release_body, version)?;
+
+        let claude_count = self.fetch_into(&staged, &release_body, pinned_version)?;
+        let codex_count = fetch_codex_companion_into(&codex_staged, &release_body, pinned_version)?;
+
         let report = install_claude_bundle_set(
             &staged,
             &codex_staged,
@@ -269,11 +242,18 @@ impl AgentTool {
             quiet,
         )?;
         if !quiet {
+            println!(
+                "  {:<60}",
+                format!(
+                    "Downloaded and installed {} files from the v{version} release",
+                    claude_count + codex_count
+                )
+            );
             report.print();
         }
         let changed = report.changed;
 
-        Ok(InstallOutcome { sha, changed })
+        Ok(InstallOutcome { sha: None, changed })
     }
 
     /// The post-fetch half of `install`: refuse to touch `dest` unless the
@@ -286,8 +266,8 @@ impl AgentTool {
     /// drives everything: completeness (every listed file present and
     /// hashing to what was recorded), which files in `dest` are ours to
     /// overwrite, and which of the previous bundle's files are now orphans.
-    /// The legacy `master`-tree fallback has no manifest, so it keeps the
-    /// hardcoded sentinel gate and the historical additive-only sync.
+    /// Legacy manifestless fixtures keep the hardcoded sentinel gate and the
+    /// historical additive-only sync.
     ///
     /// Orphan removal reads one more record: the frozen tree
     /// (`frozen_manifest`), which is what pre-1.6.0 installs wrote and no
@@ -368,95 +348,81 @@ impl AgentTool {
         Ok(report)
     }
 
-    /// Populate `staged` with this tool's bundle, trying each source in
-    /// turn and keeping the first that works.
-    ///
-    /// 1. The versioned release asset, verified against the SHA256 digest
-    ///    GitHub computed server-side. This is the bundle that matches the
-    ///    running binary.
-    /// 2. The single-request codeload archive of the frozen legacy tree at
-    ///    `git_ref` (zero REST API requests, see
-    ///    `archive::fetch_and_extract`).
-    /// 3. The old Contents-API walk, in case codeload itself is out.
-    ///
-    /// For an unpinned install the asset step may fail softly — a dev build with no
-    /// matching release, a release predating the bundles, a mid-download
-    /// network drop, a digest mismatch — because a legacy-tree install is
-    /// still a working install. What it must never do is install an
-    /// *unverified* asset, so a release that advertises no digest for the
-    /// bundle drops through to the fallback rather than downloading it
-    /// anyway. An explicit pin has no fallbacks: it resolves to that exact
-    /// release asset or fails.
-    ///
-    /// Every source writes into `staged`, so the completeness check and
-    /// rollback guarantee in `install_staged` cover the fallbacks too: a
-    /// rate-limited fallback aborts cleanly instead of leaving a partial
-    /// `dest`.
+    /// Download and validate this half of the already-preflighted release
+    /// pair. There is deliberately no repository fallback: an install for
+    /// one version must not silently substitute files from another source.
     fn fetch_into(
         &self,
         staged: &Path,
-        git_ref: &str,
+        release_body: &str,
         pinned_version: Option<&str>,
-        quiet: bool,
-    ) -> Result<()> {
-        if !quiet {
-            println!("Downloading {} agent files...", self);
-        }
-
+    ) -> Result<usize> {
         let version = resolve_assets_version(pinned_version);
-        let mut sources: Vec<BundleSource<'_>> = vec![(
-            format!("the v{version} release asset"),
-            Box::new(move |dest: &Path| self.fetch_asset_into(dest, version)),
-        )];
-        // A pin is a request for one exact asset version. Falling through
-        // to master would silently install current files while recording
-        // the requested old version, and could pair Claude with Codex from
-        // different revisions. Unpinned development builds retain the
-        // legacy frozen-tree fallbacks.
-        if pinned_version.is_none() {
-            sources.push((
-                format!("the {BRANCH} repo archive"),
-                Box::new(move |dest: &Path| {
-                    archive::fetch_and_extract(self.live_repo_dir(), git_ref, dest)
-                }),
-            ));
-            sources.push((
-                format!("the GitHub API walk of {BRANCH}"),
-                Box::new(move |dest: &Path| {
-                    let mut count = 0;
-                    download_directory(self.live_repo_dir(), git_ref, dest, &mut count, quiet)?;
-                    Ok(count)
-                }),
-            ));
-        }
-
-        let (label, count) = fetch_first_available(staged, sources, quiet)?;
-        if !quiet {
-            println!("  {:<60}", format!("Downloaded {count} files from {label}"));
-        }
-        Ok(())
-    }
-
-    /// Download this tool's `hyprlayer-assets-<harness>-<version>.tar.gz`
-    /// from the release tagged `v<version>`, verify it against the release
-    /// API's per-asset SHA256 digest, and extract it into `staged`.
-    ///
-    /// Mirrors `direct_update` in `src/commands/self_update.rs`, which runs
-    /// the same fetch-digest-then-verify sequence for the binary itself.
-    fn fetch_asset_into(&self, staged: &Path, version: &str) -> Result<usize> {
-        fetch_harness_asset_into(self.harness_slug(), staged, version)
+        let tag = format!("v{version}");
+        let asset = asset_name(self.harness_slug(), version);
+        let count = fetch_harness_asset_from_release(release_body, &tag, &asset, staged)?;
+        claude_staged_manifest(staged, pinned_version, version)?;
+        Ok(count)
     }
 }
 
-fn fetch_harness_asset_into(harness: &str, staged: &Path, version: &str) -> Result<usize> {
-    let asset = asset_name(harness, version);
+/// Fetch one release response for the whole pair. GitHub error bodies are
+/// intentionally not surfaced verbatim: they contain API-shaped JSON and a
+/// documentation URL, neither of which helps someone repair the install.
+fn fetch_bundle_release(version: &str) -> Result<String> {
     let tag = format!("v{version}");
-
     let api_url = format!("{}/releases/tags/{tag}", github_api_repo_url());
-    let release_body =
-        http::get_text_capped(&api_url, Duration::from_secs(15), MAX_API_RESPONSE_BYTES)
-            .map_err(|e| anyhow::anyhow!("Unable to fetch release {tag} from GitHub: {e}"))?;
-    fetch_harness_asset_from_release(&release_body, &tag, &asset, staged)
+    http::get_text_capped(&api_url, Duration::from_secs(15), MAX_API_RESPONSE_BYTES)
+        .map_err(|error| friendly_release_fetch_error(version, error))
+}
+
+fn friendly_release_fetch_error(version: &str, error: http::HttpError) -> anyhow::Error {
+    let tag = format!("v{version}");
+    match error {
+        http::HttpError::Status(404, _) => anyhow::anyhow!(
+            "Agent files for hyprlayer {version} are not available: GitHub has no {tag} release. \
+             Run 'hyprlayer ai versions' to list releases that include both Claude and Codex bundles."
+        ),
+        http::HttpError::Status(code, body) => {
+            let detail = serde_json::from_str::<GitHubError>(&body)
+                .ok()
+                .and_then(|error| error.message)
+                .filter(|message| !message.trim().is_empty());
+            match detail {
+                Some(message) => anyhow::anyhow!(
+                    "GitHub could not provide agent files for {tag} (HTTP {code}: {message})"
+                ),
+                None => {
+                    anyhow::anyhow!("GitHub could not provide agent files for {tag} (HTTP {code})")
+                }
+            }
+        }
+        other => anyhow::anyhow!("Could not check agent files for {tag}: {other}"),
+    }
+}
+
+/// Confirm both named, digested assets exist before the first archive is
+/// downloaded. This is the fail-fast boundary that prevents a one-sided
+/// release from producing a misleading partial-download success.
+fn preflight_bundle_pair(release_body: &str, version: &str) -> Result<()> {
+    let tag = format!("v{version}");
+    let required = [
+        asset_name(AgentTool::Claude.harness_slug(), version),
+        asset_name(CODEX_HARNESS, version),
+    ];
+
+    for asset in &required {
+        if !release_lists_asset(release_body, asset)? {
+            anyhow::bail!(
+                "The {tag} release does not include the complete Claude + Codex agent bundle. \
+                 Run 'hyprlayer ai versions' to list installable releases."
+            );
+        }
+        // Presence alone is insufficient: fail before any download if the
+        // release does not advertise the digest needed to verify this half.
+        asset_digest_from_release(release_body, &tag, asset)?;
+    }
+    Ok(())
 }
 
 fn fetch_harness_asset_from_release(
@@ -476,9 +442,31 @@ fn fetch_harness_asset_from_release(
         Duration::from_secs(30),
         Some(archive::MAX_ARCHIVE_BYTES),
     )
-    .map_err(|e| anyhow::anyhow!("Failed to download {url}: {e}"))?;
+    .map_err(|error| friendly_asset_download_error(tag, asset, error))?;
 
     verify_and_extract_bundle(&archive_path, asset, &expected, staged)
+}
+
+fn friendly_asset_download_error(tag: &str, asset: &str, error: http::HttpError) -> anyhow::Error {
+    match error {
+        http::HttpError::Status(404, _) => anyhow::anyhow!(
+            "The agent bundle `{asset}` is missing from the {tag} release. \
+             Run 'hyprlayer ai versions' to list installable releases."
+        ),
+        http::HttpError::Status(code, body) => {
+            let detail = serde_json::from_str::<GitHubError>(&body)
+                .ok()
+                .and_then(|error| error.message)
+                .filter(|message| !message.trim().is_empty());
+            match detail {
+                Some(message) => {
+                    anyhow::anyhow!("GitHub could not download `{asset}` (HTTP {code}: {message})")
+                }
+                None => anyhow::anyhow!("GitHub could not download `{asset}` (HTTP {code})"),
+            }
+        }
+        other => anyhow::anyhow!("Could not download `{asset}` from {tag}: {other}"),
+    }
 }
 
 fn codex_dest_dir() -> Result<PathBuf> {
@@ -530,80 +518,18 @@ fn codex_skill_bridge_dir() -> Result<PathBuf> {
     Ok(home.join(".agents").join("skills"))
 }
 
-/// Fetch the Codex companion from the same version and source as Claude.
-/// Missing companion assets are hard errors: the supported install is an
-/// atomic pair, including for old explicit pins.
+/// Fetch and validate the Codex half of an already-preflighted release pair.
 fn fetch_codex_companion_into(
     staged: &Path,
-    git_ref: &str,
+    release_body: &str,
     pinned_version: Option<&str>,
-    primary_is_release: bool,
-    quiet: bool,
-) -> Result<()> {
-    if !quiet {
-        println!("Downloading Codex companion agent files...");
-    }
+) -> Result<usize> {
     let version = resolve_assets_version(pinned_version);
-    if pinned_version.is_some() {
-        let asset = asset_name(CODEX_HARNESS, version);
-        let tag = format!("v{version}");
-        let api_url = format!("{}/releases/tags/{tag}", github_api_repo_url());
-        let release_body =
-            http::get_text_capped(&api_url, Duration::from_secs(15), MAX_API_RESPONSE_BYTES)
-                .map_err(|e| anyhow::anyhow!("Unable to fetch release {tag} from GitHub: {e}"))?;
-        if !release_lists_asset(&release_body, &asset)? {
-            anyhow::bail!(
-                "Release {tag} does not carry the required Codex companion asset `{asset}`. \
-                 Choose a release that includes both Claude and Codex bundles."
-            );
-        }
-        let count = fetch_harness_asset_from_release(&release_body, &tag, &asset, staged)?;
-        codex_staged_manifest(staged, pinned_version, version)?;
-        if !quiet {
-            println!(
-                "  {:<60}",
-                format!("Downloaded {count} files from the {tag} release asset")
-            );
-        }
-        return Ok(());
-    }
-
-    // Keep both halves on one origin as well as one version: a verified
-    // Claude release asset pairs only with the Codex release asset, while a
-    // development/frozen-tree fallback pairs only with the same repo SHA.
-    let sources: Vec<BundleSource<'_>> = if primary_is_release {
-        vec![(
-            format!("the v{version} release asset"),
-            Box::new(move |dest: &Path| fetch_harness_asset_into(CODEX_HARNESS, dest, version)),
-        )]
-    } else {
-        vec![
-            (
-                format!("the {BRANCH} repo archive"),
-                Box::new(move |dest: &Path| {
-                    archive::fetch_and_extract(CODEX_REPO_DIR, git_ref, dest)
-                }),
-            ),
-            (
-                format!("the GitHub API walk of {BRANCH}"),
-                Box::new(move |dest: &Path| {
-                    let mut count = 0;
-                    download_directory(CODEX_REPO_DIR, git_ref, dest, &mut count, quiet)?;
-                    Ok(count)
-                }),
-            ),
-        ]
-    };
-
-    let (label, count) = fetch_first_available(staged, sources, quiet)?;
-    // Validate now, before the caller mutates ~/.claude. `install_codex_staged`
-    // repeats the check at the write boundary so this preflight cannot drift
-    // away from the actual install gate.
+    let tag = format!("v{version}");
+    let asset = asset_name(CODEX_HARNESS, version);
+    let count = fetch_harness_asset_from_release(release_body, &tag, &asset, staged)?;
     codex_staged_manifest(staged, pinned_version, version)?;
-    if !quiet {
-        println!("  {:<60}", format!("Downloaded {count} files from {label}"));
-    }
-    Ok(())
+    Ok(count)
 }
 
 fn release_lists_asset(release_body: &str, asset: &str) -> Result<bool> {
@@ -723,51 +649,11 @@ fn install_codex_staged(
     Ok(report)
 }
 
-/// One named way to populate a staging directory, used by `fetch_into`.
-type BundleSource<'a> = (String, Box<dyn FnOnce(&Path) -> Result<usize> + 'a>);
-
-/// Run `sources` in order and keep the first that succeeds, returning its
-/// label and file count.
-///
-/// `staged` is cleared before each attempt, so a source that fails partway
-/// through extraction can't leak files into the bundle the next source
-/// produces — the completeness gate in `install_staged` would otherwise be
-/// judging a mixture of two downloads.
-///
-/// The error from the *last* source is what propagates when every source
-/// fails, which keeps the Contents-API walk's rate-limit guidance (see
-/// `classify_github_error`) as the message the user actually sees.
-fn fetch_first_available(
-    staged: &Path,
-    sources: Vec<BundleSource<'_>>,
-    quiet: bool,
-) -> Result<(String, usize)> {
-    let mut last_error = None;
-    for (label, fetch) in sources {
-        if staged.exists() {
-            fs::remove_dir_all(staged)
-                .with_context(|| format!("Failed to clear staging dir {}", staged.display()))?;
-        }
-        match fetch(staged) {
-            Ok(count) => return Ok((label, count)),
-            Err(e) => {
-                if !quiet {
-                    eprintln!("  Fetching {label} failed ({e}); trying the next source.");
-                }
-                last_error = Some(e);
-            }
-        }
-    }
-    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("No bundle download sources are configured")))
-}
-
 /// Pick the SHA256 digest the release advertises for `asset`.
 ///
-/// Pure — no I/O — so the "this release carries no bundle for me" case that
-/// triggers the legacy fallback is directly unit-testable. A release with no
-/// digest for the asset is an error rather than an unverified download: the
-/// caller falls back to the frozen legacy tree, which is an older bundle but
-/// not an unverified one.
+/// Pure — no I/O — so a release that advertises an unusable bundle is
+/// directly unit-testable. A release with no digest is a hard error: no
+/// unverified asset is downloaded and no alternate source is attempted.
 fn asset_digest_from_release(release_body: &str, tag: &str, asset: &str) -> Result<String> {
     integrity::digests_from_release_json(release_body)
         .remove(asset)
@@ -796,9 +682,8 @@ fn verify_and_extract_bundle(
 /// Result of a successful Claude/Codex bundle-set install.
 #[derive(Debug)]
 pub struct InstallOutcome {
-    /// The repo's `master` HEAD SHA captured before the download, if ref
-    /// resolution succeeded. `None` means the install still succeeded but
-    /// there's no fresh SHA to cache.
+    /// Legacy repo-tree revision field. Release-bundle installs leave this
+    /// `None`, allowing callers to preserve any pre-existing migration value.
     pub sha: Option<String>,
     /// Number of store files, mutable settings/records, or links changed.
     /// `0` means the requested layout was already current.
@@ -901,7 +786,7 @@ fn is_harness_config(relative: &Path) -> bool {
 /// reported. That is what stops the bundled `settings.json` clobbering
 /// `~/.claude/settings.json` on every install.
 ///
-/// With no `previous` — a legacy `master`-tree install, or the first
+/// With no `previous` — a legacy manifestless install, or the first
 /// manifest install on top of a pre-1.6.0 one — there is no way to tell our
 /// own files from the user's, and skipping every differing file would leave
 /// every pre-1.6.0 user frozen on the bundle they already have. Content is
@@ -2912,8 +2797,8 @@ pub(crate) fn print_bundle_set_status(config: &crate::config::HyprlayerConfig) {
     println!("  Desired assets: {}", desired.cyan());
 }
 
-/// Parse a staged bundle's own `manifest.json`, or `None` for a legacy
-/// `master`-tree download, which has none.
+/// Parse a staged bundle's own `manifest.json`, or `None` for legacy
+/// manifestless input.
 ///
 /// A manifest that exists but does not parse is a hard error: it is the
 /// completeness gate's only evidence, and refusing here leaves `dest`
@@ -2984,10 +2869,9 @@ fn write_installed_manifest(dest: &Path, manifest: &BundleManifest) -> Result<()
 /// does not exist here yet, whose skills would then reference commands this
 /// binary has no idea about.
 ///
-/// This is a hard error rather than a fallback: `fetch_into` treats a failed
-/// asset fetch as "try the legacy tree", and silently installing something
-/// other than what was pinned is worse than refusing. `dest` is untouched
-/// either way — the check runs before the sync.
+/// This is a hard error: silently installing something other than what was
+/// pinned is worse than refusing. `dest` is untouched because the check runs
+/// before the sync.
 fn verify_pin_is_supported(manifest: &BundleManifest, pinned_version: Option<&str>) -> Result<()> {
     let Some(pinned) = pinned_version else {
         return Ok(());
@@ -3074,165 +2958,9 @@ fn walk_files(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(out)
 }
 
-/// Ref advertisements run a few KB. 1 MiB is two orders of magnitude of
-/// headroom and stops a hostile or misconfigured source from streaming
-/// gigabytes into a `String`.
-const MAX_REFS_BYTES: u64 = 1024 * 1024;
-
-/// Resolve `master`'s HEAD SHA via git's smart-HTTP ref advertisement.
-/// This is the same data `git ls-remote` prints, over plain HTTPS, and
-/// costs zero REST API requests — unlike the commits endpoint it
-/// replaces, which shares the 60/hr unauthenticated bucket with
-/// everything else.
-pub(crate) fn fetch_master_sha() -> Result<String> {
-    let url = format!("https://github.com/{REPO}.git/info/refs?service=git-upload-pack");
-    let body = http::get_text_capped(&url, Duration::from_secs(10), MAX_REFS_BYTES)
-        .map_err(|e| anyhow::anyhow!("Failed to resolve {BRANCH}: {e}"))?;
-    parse_ref_sha(&body, &format!("refs/heads/{BRANCH}"))
-}
-
-/// Scan pkt-lines for `<40-hex-sha> <refname>`. Each line is prefixed by a
-/// 4-hex length header which we skip past rather than parse — we only need
-/// to locate one ref, and the SHA is fixed-width.
-///
-/// The match requires an exact refname at the line's end (or immediately
-/// before a NUL-separated capabilities list), so `refs/heads/master` can't
-/// be fooled by a line advertising `refs/heads/master-old`.
-fn parse_ref_sha(body: &str, refname: &str) -> Result<String> {
-    body.lines()
-        .find_map(|line| {
-            // Capabilities (if any) trail the refname after a NUL on the
-            // first advertised ref; strip them before comparing tails.
-            let line = line.split('\0').next().unwrap_or(line).trim_end();
-            if !line.ends_with(refname) {
-                return None;
-            }
-            // The SHA ends immediately before the space preceding refname.
-            let idx = line.len() - refname.len();
-            let sha = line.get(idx.checked_sub(41)?..idx.checked_sub(1)?)?;
-            (sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit())).then(|| sha.to_string())
-        })
-        .ok_or_else(|| anyhow::anyhow!("No {refname} in ref advertisement"))
-}
-
-/// Download a directory from the repo using the GitHub Contents API.
-/// Recursively fetches subdirectories and downloads each file individually.
-///
-/// `git_ref` is the resolved commit SHA (or branch name) to pin every
-/// listing + raw fetch to. Pinning across the recursion prevents a
-/// mid-install `master` advance from producing a torn install where
-/// some files come from commit A and others from commit B.
-fn download_directory(
-    repo_path: &str,
-    git_ref: &str,
-    dest: &Path,
-    count: &mut usize,
-    quiet: bool,
-) -> Result<()> {
-    let api_url = format!(
-        "{}/contents/{repo_path}?ref={git_ref}",
-        github_api_repo_url()
-    );
-
-    let json = github_get_json(&api_url, Some(15))?;
-
-    // The API returns a JSON object with a "message" field on errors (e.g. 404).
-    if let Some(err) = classify_github_error(&json, repo_path) {
-        return Err(err);
-    }
-
-    let entries: Vec<GitHubEntry> =
-        serde_json::from_str(&json).context("Failed to parse GitHub API response")?;
-
-    for entry in entries {
-        let dest_path = dest.join(&entry.name);
-        match entry.entry_type.as_str() {
-            "file" => {
-                // The contents API's `download_url` is already pinned to
-                // the `?ref=<git_ref>` we requested, so reusing it keeps
-                // the whole download tied to a single SHA.
-                let url = entry
-                    .download_url
-                    .ok_or_else(|| anyhow::anyhow!("No download URL for {}", entry.path))?;
-                if !quiet {
-                    print!("  {:<60}\r", entry.path);
-                    std::io::stdout().flush().ok();
-                }
-                download_file_to(&url, &dest_path)?;
-                *count += 1;
-            }
-            "dir" => {
-                // No explicit `create_dir_all` here — `download_file_to`
-                // creates each file's parent on demand, which covers this
-                // subdir as soon as we download anything into it.
-                download_directory(&entry.path, git_ref, &dest_path, count, quiet)?;
-            }
-            _ => {} // skip symlinks, submodules, etc.
-        }
-    }
-
-    Ok(())
-}
-
-/// Inspect a Contents API response body for GitHub's error-object shape
-/// (`{"message": "..."}`, e.g. on a 403 rate limit or a 404) and turn it
-/// into a user-facing error. Returns `None` for a normal entry-array
-/// response, so the caller can fall through to parsing it. Pure — no I/O —
-/// so the rate-limit-vs-not-found distinction is directly unit-testable.
-fn classify_github_error(json: &str, repo_path: &str) -> Option<anyhow::Error> {
-    let err: GitHubError = serde_json::from_str(json).ok()?;
-    let message = err.message?;
-    if message.contains("rate limit") {
-        return Some(anyhow::anyhow!(
-            "GitHub API rate limit exceeded (60 requests/hour for unauthenticated \
-             clients, shared across your whole network). The archive download that \
-             normally avoids this was unavailable. Retry in an hour, or run \
-             'hyprlayer ai reinstall' once codeload.github.com is reachable."
-        ));
-    }
-    Some(anyhow::anyhow!(
-        "Agent files for '{repo_path}' are not available on GitHub ({message})"
-    ))
-}
-
 #[derive(Deserialize)]
 struct GitHubError {
     message: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct GitHubEntry {
-    name: String,
-    path: String,
-    #[serde(rename = "type")]
-    entry_type: String,
-    download_url: Option<String>,
-}
-
-/// GET a URL and return the response body as a string, with the GitHub API
-/// `Accept` header set. `timeout_secs` defaults to 30s.
-pub(crate) fn github_get_json(url: &str, timeout_secs: Option<u32>) -> Result<String> {
-    let timeout = Duration::from_secs(timeout_secs.unwrap_or(30) as u64);
-    http::get_text_capped_with_headers(
-        url,
-        timeout,
-        MAX_API_RESPONSE_BYTES,
-        &[("Accept", "application/vnd.github.v3+json")],
-    )
-    .map_err(|e| anyhow::anyhow!("GitHub API request failed: {e}"))
-}
-
-/// Download a single bundle member to disk.
-///
-/// `ureq` returns `Err` on HTTP 4xx/5xx by default, so a 404 HTML page or
-/// rate-limit JSON envelope can never be persisted as a fake "agent file" —
-/// matching what `--fail-with-body` bought us. The 30s timeout caps the
-/// per-file fetch so a stalled connection on the startup auto-reinstall
-/// path can't hang the user's command indefinitely. `download_file_capped`
-/// already removes a partial file on failure.
-fn download_file_to(url: &str, dest: &Path) -> Result<()> {
-    http::download_file_capped(url, dest, Duration::from_secs(30), None)
-        .map_err(|e| anyhow::anyhow!("Failed to download {}: {e}", dest.display()))
 }
 
 #[cfg(test)]
@@ -4352,13 +4080,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn live_fallback_paths_do_not_use_the_frozen_root_tree() {
-        assert_eq!(AgentTool::Claude.harness_slug(), "claude");
-        assert_eq!(AgentTool::Claude.live_repo_dir(), "assets/claude");
-        assert_eq!(CODEX_REPO_DIR, "assets/codex");
-    }
-
     /// The resolution truth table: a pin wins, and an unpinned config falls
     /// back to the binary's own version — which is what makes a binary
     /// upgrade move the skills and a pin survive one.
@@ -4389,9 +4110,8 @@ mod tests {
         assert_eq!(digest, RC_CLAUDE_DIGEST);
     }
 
-    /// The fallback trigger: a release exists but carries no bundle for this
-    /// harness/version (a pre-Phase-3 release, or a dev build whose version
-    /// was never tagged).
+    /// A release that lacks the requested asset is a hard error. The caller
+    /// must not substitute files from another source or version.
     #[test]
     fn asset_digest_from_release_missing_asset_is_an_error() {
         let body = release_json_with_all_bundles();
@@ -4677,9 +4397,8 @@ mod tests {
         );
     }
 
-    /// The legacy `master`-tree fallback carries no manifest, so it keeps
-    /// the sentinel gate — and leaves no install record, which is what
-    /// makes the *next* install treat it as pre-manifest.
+    /// Legacy manifestless input keeps the sentinel gate and leaves no
+    /// install record, which makes the next install treat it as pre-manifest.
     #[test]
     fn a_bundle_without_a_manifest_still_uses_the_sentinel_gate() {
         let tmp = tempfile::tempdir().unwrap();
@@ -5621,224 +5340,48 @@ mod tests {
     }
 
     #[test]
-    fn fetch_first_available_falls_back_when_the_asset_is_absent() {
-        let tmp = tempfile::tempdir().unwrap();
-        let staged = tmp.path().join("staged");
+    fn release_preflight_requires_both_bundles_before_downloading() {
+        let complete = release_json_with_all_bundles();
+        preflight_bundle_pair(&complete, "1.6.0-rc.1").unwrap();
 
-        let sources: Vec<BundleSource<'_>> = vec![
-            (
-                "the v9.9.9 release asset".to_string(),
-                Box::new(|_: &Path| {
-                    anyhow::bail!(
-                        "GitHub release `v9.9.9` exposes no SHA256 digest for asset \
-                         `hyprlayer-assets-claude-9.9.9.tar.gz`."
-                    )
-                }),
-            ),
-            (
-                "the master repo archive".to_string(),
-                Box::new(|dest: &Path| {
-                    touch(&dest.join("agents/codebase-locator.md"));
-                    touch(&dest.join("skills/code_review/SKILL.md"));
-                    Ok(2)
-                }),
-            ),
-        ];
-
-        let (label, count) = fetch_first_available(&staged, sources, true).unwrap();
-        assert_eq!(label, "the master repo archive");
-        assert_eq!(count, 2);
-        assert!(
-            AgentTool::Claude.is_installed_at(&staged),
-            "the fallback's output is what gets staged"
-        );
-    }
-
-    #[test]
-    fn fetch_first_available_prefers_the_first_working_source() {
-        let tmp = tempfile::tempdir().unwrap();
-        let staged = tmp.path().join("staged");
-
-        let sources: Vec<BundleSource<'_>> = vec![
-            (
-                "the release asset".to_string(),
-                Box::new(|dest: &Path| {
-                    touch(&dest.join("from-asset.md"));
-                    Ok(1)
-                }),
-            ),
-            (
-                "the master repo archive".to_string(),
-                Box::new(|_: &Path| panic!("later sources must not run after a success")),
-            ),
-        ];
-
-        let (label, count) = fetch_first_available(&staged, sources, true).unwrap();
-        assert_eq!(label, "the release asset");
-        assert_eq!(count, 1);
-        assert!(staged.join("from-asset.md").is_file());
-    }
-
-    /// A source that fails partway through extraction must not leave files
-    /// behind for the next source to be judged on — the completeness gate
-    /// would otherwise pass on a mixture of two downloads.
-    #[test]
-    fn fetch_first_available_discards_a_failed_sources_partial_output() {
-        let tmp = tempfile::tempdir().unwrap();
-        let staged = tmp.path().join("staged");
-
-        let sources: Vec<BundleSource<'_>> = vec![
-            (
-                "the release asset".to_string(),
-                Box::new(|dest: &Path| {
-                    touch(&dest.join("agents/half-written.md"));
-                    anyhow::bail!("connection reset mid-extraction")
-                }),
-            ),
-            (
-                "the master repo archive".to_string(),
-                Box::new(|dest: &Path| {
-                    touch(&dest.join("agents/complete.md"));
-                    Ok(1)
-                }),
-            ),
-        ];
-
-        fetch_first_available(&staged, sources, true).unwrap();
-        assert_eq!(
-            walk_files(&staged).unwrap(),
-            vec![staged.join("agents/complete.md")],
-            "the failed source's leftovers must not survive into the fallback"
-        );
-    }
-
-    /// The last source is the Contents-API walk, whose error carries the
-    /// rate-limit guidance; that's the message the user must end up seeing.
-    #[test]
-    fn fetch_first_available_propagates_the_last_error() {
-        let tmp = tempfile::tempdir().unwrap();
-        let staged = tmp.path().join("staged");
-
-        let sources: Vec<BundleSource<'_>> = vec![
-            (
-                "the release asset".to_string(),
-                Box::new(|_: &Path| anyhow::bail!("no such release")),
-            ),
-            (
-                "the master repo archive".to_string(),
-                Box::new(|_: &Path| anyhow::bail!("codeload unreachable")),
-            ),
-            (
-                "the GitHub API walk".to_string(),
-                Box::new(|_: &Path| anyhow::bail!("GitHub API rate limit exceeded")),
-            ),
-        ];
-
-        let err = fetch_first_available(&staged, sources, true).unwrap_err();
-        assert!(err.to_string().contains("rate limit"), "{err}");
-    }
-
-    #[test]
-    fn fetch_first_available_with_no_sources_errors() {
-        let tmp = tempfile::tempdir().unwrap();
-        assert!(fetch_first_available(&tmp.path().join("staged"), vec![], true).is_err());
-    }
-
-    #[test]
-    fn classify_github_error_rate_limit_names_the_rate_limit() {
-        let json =
-            r#"{"message":"API rate limit exceeded for 1.2.3.4.","documentation_url":"..."}"#;
-        let err = classify_github_error(json, "claude").expect("should classify as an error");
-        assert!(
-            err.to_string().contains("rate limit"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn classify_github_error_not_found_names_the_path() {
-        let json = r#"{"message":"Not Found","documentation_url":"..."}"#;
-        let err = classify_github_error(json, "claude/skills/foo").expect("should classify");
+        let mut missing_codex: serde_json::Value = serde_json::from_str(&complete).unwrap();
+        missing_codex["assets"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|asset| {
+                asset["name"].as_str() != Some("hyprlayer-assets-codex-1.6.0-rc.1.tar.gz")
+            });
+        let missing_codex = serde_json::to_string(&missing_codex).unwrap();
+        let err = preflight_bundle_pair(&missing_codex, "1.6.0-rc.1").unwrap_err();
         let text = err.to_string();
-        assert!(
-            text.contains("claude/skills/foo"),
-            "unexpected error: {text}"
+        assert!(text.contains("complete Claude + Codex"), "{text}");
+        assert!(text.contains("ai versions"), "{text}");
+    }
+
+    #[test]
+    fn release_404_error_is_concise_and_hides_the_github_response() {
+        let raw = r#"{"message":"Not Found","documentation_url":"https://docs.github.com/rest/releases/releases#get-a-release-by-tag-name","status":"404"}"#;
+        let err = friendly_release_fetch_error(
+            "1.6.2-dev",
+            http::HttpError::Status(404, raw.to_string()),
         );
-        assert!(text.contains("Not Found"), "unexpected error: {text}");
-        assert!(!text.contains("rate limit"), "unexpected error: {text}");
+        let text = err.to_string();
+        assert!(text.contains("GitHub has no v1.6.2-dev release"), "{text}");
+        assert!(text.contains("ai versions"), "{text}");
+        assert!(!text.contains("documentation_url"), "{text}");
+        assert!(!text.contains("docs.github.com"), "{text}");
+        assert!(!text.contains('{'), "{text}");
     }
 
     #[test]
-    fn classify_github_error_valid_entries_is_none() {
-        let json = r#"[{"name":"a.md","path":"claude/a.md","type":"file","download_url":"https://example.com/a.md"}]"#;
-        assert!(classify_github_error(json, "claude").is_none());
-    }
-
-    #[test]
-    fn classify_github_error_malformed_json_is_none() {
-        // Not our job to diagnose a malformed body — the caller's own JSON
-        // parse of the entry array will surface that error.
-        assert!(classify_github_error("not json", "claude").is_none());
-    }
-
-    #[test]
-    fn parse_ref_sha_happy_path() {
-        // Captured shape of a real `info/refs?service=git-upload-pack`
-        // advertisement (length-prefix headers included but not parsed).
-        let body = "001e# service=git-upload-pack\n\
-                     0000\
-                     0032aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa HEAD\0multi_ack thin-pack\n\
-                     003f1f7370976053d293da0718c00aab5faa78396e6a refs/heads/master\n\
-                     0000";
-        assert_eq!(
-            parse_ref_sha(body, "refs/heads/master").unwrap(),
-            "1f7370976053d293da0718c00aab5faa78396e6a"
-        );
-    }
-
-    #[test]
-    fn parse_ref_sha_ignores_similarly_named_refs() {
-        let body = "001e# service=git-upload-pack\n\
-                     003faaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa refs/heads/master-old\n\
-                     003fbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb refs/heads/master\n";
-        assert_eq!(
-            parse_ref_sha(body, "refs/heads/master").unwrap(),
-            "b".repeat(40)
-        );
-    }
-
-    #[test]
-    fn parse_ref_sha_head_only_advertisement_has_no_master() {
-        let body = "001e# service=git-upload-pack\n\
-                     0032aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa HEAD\0multi_ack\n\
-                     0000";
-        let err = parse_ref_sha(body, "refs/heads/master").unwrap_err();
-        assert!(err.to_string().contains("refs/heads/master"), "{err}");
-    }
-
-    #[test]
-    fn parse_ref_sha_malformed_body_errors() {
-        let err = parse_ref_sha("not a ref advertisement", "refs/heads/master").unwrap_err();
-        assert!(err.to_string().contains("refs/heads/master"), "{err}");
-    }
-
-    #[test]
-    fn parse_ref_sha_empty_body_errors() {
-        assert!(parse_ref_sha("", "refs/heads/master").is_err());
-    }
-
-    #[test]
-    fn parse_ref_sha_rejects_short_sha_field() {
-        // Line ends with the refname but has too little text before it to
-        // contain a 40-hex SHA.
-        let body = "master refs/heads/master\n";
-        assert!(parse_ref_sha(body, "refs/heads/master").is_err());
-    }
-
-    #[test]
-    fn parse_ref_sha_rejects_non_hex_sha_field() {
-        let body = format!("{} refs/heads/master\n", "z".repeat(40));
-        assert!(parse_ref_sha(&body, "refs/heads/master").is_err());
+    fn other_github_status_errors_show_only_the_useful_message() {
+        let raw = r#"{"message":"API rate limit exceeded","documentation_url":"https://docs.github.com/rest"}"#;
+        let err =
+            friendly_release_fetch_error("1.6.2", http::HttpError::Status(403, raw.to_string()));
+        let text = err.to_string();
+        assert!(text.contains("HTTP 403: API rate limit exceeded"), "{text}");
+        assert!(!text.contains("documentation_url"), "{text}");
+        assert!(!text.contains("docs.github.com"), "{text}");
     }
 
     #[test]
