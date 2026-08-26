@@ -181,11 +181,14 @@ no network I/O at all.
 On every supported OS, bundle bytes live in
 `~/.config/hyprlayer/agents/<version>/{claude,codex}`. Claude and Codex agent
 and skill locations are per-entry link farms into that central generation,
-and `~/.agents/skills` links Codex's standard skill root to
-`~/.claude/skills`. Windows uses directory junctions where a directory
-symlink is unavailable, while file entries remain symlinks. If Windows does
-not permit file symlinks, setup stops with Developer Mode/elevation guidance
-instead of silently creating divergent copies.
+matching Omarchy's mixed-directory convention: Hyprlayer creates the native
+directory and links each named entry into it without replacing unrelated
+skills or agents. Claude skills go to `~/.claude/skills`; Codex-compatible
+skills go to both `~/.agents/skills` and `~/.codex/skills`, as Omarchy does;
+custom agents go to each harness's `agents` directory. Windows uses directory
+junctions where a directory symlink is unavailable, while file entries remain
+symlinks. If Windows does not permit file symlinks, setup stops with Developer
+Mode/elevation guidance instead of silently creating divergent copies.
 
 ### Choosing a version
 
@@ -194,6 +197,7 @@ hyprlayer ai versions                      # releases carrying both supported bu
 hyprlayer ai versions --json --limit 20
 hyprlayer ai reinstall --version 1.6.0     # pin to a version and install it
 hyprlayer ai reinstall --unpin             # back to the binary's own bundle
+hyprlayer ai reinstall --force             # bypass the local store and download again
 ```
 
 A pin survives binary upgrades, so a bundle that regresses can be held back

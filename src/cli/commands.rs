@@ -220,6 +220,12 @@ pub struct AiStatusArgs {
     about = "Repair or reinstall Claude and Codex agent files"
 )]
 pub struct AiReinstallArgs {
+    #[arg(
+        short = 'f',
+        long,
+        help = "Download a fresh bundle even when a verified local generation exists"
+    )]
+    pub force: bool,
     // The pin is persisted and survives binary upgrades, so a bundle that
     // regressed can be held back until it is fixed.
     #[arg(
@@ -625,6 +631,7 @@ mod tests {
         let args = reinstall_args(&["reinstall", "--version", "1.5.9"]);
         assert_eq!(args.version.as_deref(), Some("1.5.9"));
         assert!(!args.unpin);
+        assert!(!args.force);
     }
 
     #[test]
@@ -639,6 +646,13 @@ mod tests {
         let args = reinstall_args(&["reinstall"]);
         assert!(args.version.is_none());
         assert!(!args.unpin);
+        assert!(!args.force);
+    }
+
+    #[test]
+    fn reinstall_args_accept_force_long_and_short() {
+        assert!(reinstall_args(&["reinstall", "--force"]).force);
+        assert!(reinstall_args(&["reinstall", "-f"]).force);
     }
 
     #[test]

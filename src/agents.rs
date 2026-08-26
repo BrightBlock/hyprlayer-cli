@@ -29,9 +29,8 @@ pub(crate) const REPO: &str = "BrightBlock/hyprlayer-cli";
 /// own file globs.
 const INSTALLED_MANIFEST_FILE: &str = ".hyprlayer-manifest.json";
 
-/// Claude and Codex are installed as one supported bundle set: the shared skill source remains
-/// `~/.claude/skills`, while standalone Codex also receives custom-agent
-/// definitions and a native-root bridge into that source tree.
+/// Claude and Codex are installed as one supported bundle set. Each harness
+/// receives per-entry links in its native skill and custom-agent directories.
 const CODEX_HARNESS: &str = "codex";
 const AGENT_STORE_DIR: &str = "agents";
 
@@ -236,7 +235,7 @@ impl AgentTool {
             &dest,
             &codex_dest_dir()?,
             &agent_store_root()?,
-            &codex_skill_bridge_dir()?,
+            &codex_skills_dir()?,
             pinned_version,
             version,
             quiet,
@@ -505,7 +504,7 @@ pub(crate) fn install_bundle_set(
     AgentTool::Claude.install(pinned_version, quiet)
 }
 
-fn codex_skill_bridge_dir() -> Result<PathBuf> {
+fn codex_skills_dir() -> Result<PathBuf> {
     let home =
         dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
     Ok(home.join(".agents").join("skills"))
@@ -727,13 +726,6 @@ impl SyncReport {
             );
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SkillBridgeOutcome {
-    Created,
-    AlreadyCorrect,
-    SkippedExisting,
 }
 
 /// Suffix 1.6.0's first-manifest install used for the copy it took of each
@@ -2123,112 +2115,13 @@ fn sync_claude_root_files(
     Ok(report)
 }
 
-fn paths_resolve_same(a: &Path, b: &Path) -> bool {
-    matches!((fs::canonicalize(a), fs::canonicalize(b)), (Ok(a), Ok(b)) if a == b)
-}
-
-struct SkillBridgePlan {
-    source: PathBuf,
-    link: PathBuf,
-    preflight_target: PathBuf,
-    outcome: SkillBridgeOutcome,
-}
-
-fn plan_skill_bridge(
-    source: &Path,
-    link: &Path,
-    preflight_target: &Path,
-) -> Result<SkillBridgePlan> {
-    let outcome = match fs::symlink_metadata(link) {
-        Ok(_) if paths_resolve_same(link, source) || link_targets_exactly(link, source) => {
-            SkillBridgeOutcome::AlreadyCorrect
-        }
-        Ok(_) => SkillBridgeOutcome::SkippedExisting,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => SkillBridgeOutcome::Created,
-        Err(error) => {
-            return Err(error).with_context(|| format!("Failed to inspect {}", link.display()));
-        }
-    };
-    Ok(SkillBridgePlan {
-        source: source.to_path_buf(),
-        link: link.to_path_buf(),
-        preflight_target: preflight_target.to_path_buf(),
-        outcome,
-    })
-}
-
-fn preflight_skill_bridge(plan: &SkillBridgePlan) -> Result<()> {
-    if plan.outcome != SkillBridgeOutcome::Created {
-        return Ok(());
-    }
-    let parent = plan
-        .link
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("Codex skill bridge has no parent"))?;
-    preflight_managed_link(&plan.preflight_target, parent, ManagedLinkKind::Directory)
-}
-
-fn apply_skill_bridge(
-    plan: &SkillBridgePlan,
-    transaction: &mut ActivationTransaction,
-) -> Result<SkillBridgeOutcome> {
-    if plan.outcome != SkillBridgeOutcome::Created {
-        return Ok(plan.outcome);
-    }
-    if !plan.source.is_dir() {
-        anyhow::bail!(
-            "Codex skill bridge source does not exist: {}",
-            plan.source.display()
-        );
-    }
-    transaction.replace_with_link(&plan.link, &plan.source, ManagedLinkKind::Directory)?;
-    Ok(SkillBridgeOutcome::Created)
-}
-
-#[cfg(test)]
-fn ensure_skill_bridge(source: &Path, link: &Path) -> Result<SkillBridgeOutcome> {
-    let plan = plan_skill_bridge(source, link, source)?;
-    let mut transaction = ActivationTransaction::default();
-    if plan.outcome == SkillBridgeOutcome::Created {
-        transaction.ensure_dir(
-            link.parent()
-                .ok_or_else(|| anyhow::anyhow!("Codex skill bridge has no parent"))?,
-        )?;
-    }
-    let outcome = match preflight_skill_bridge(&plan)
-        .and_then(|()| apply_skill_bridge(&plan, &mut transaction))
-    {
-        Ok(outcome) => outcome,
-        Err(error) => {
-            if let Err(rollback) = transaction.rollback() {
-                return Err(
-                    error.context(format!("Skill bridge rollback also failed: {rollback:#}"))
-                );
-            }
-            return Err(error);
-        }
-    };
-    transaction.commit();
-    Ok(outcome)
-}
-
-fn warn_if_bridge_skipped(outcome: SkillBridgeOutcome, source: &Path, link: &Path) {
-    if outcome == SkillBridgeOutcome::SkippedExisting {
-        eprintln!(
-            "warning: left existing {} untouched; standalone Codex skills remain unbridged to {}",
-            link.display(),
-            source.display()
-        );
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ActivationBoundary {
     Generation,
     ClaudeSkills,
     ClaudeAgents,
     CodexAgents,
-    Bridge,
+    CodexSkills,
     Settings,
     Manifest,
 }
@@ -2256,8 +2149,8 @@ fn file_needs_replacement(path: &Path, bytes: &[u8]) -> Result<bool> {
 
 /// Install the same-version Claude/Codex pair through one rollback log.
 /// Bundle bytes first become one immutable store generation; the generation,
-/// all three mixed-namespace link farms, the skill bridge, mutable
-/// `settings.json`, and the ownership record are then committed together.
+/// all five mixed-namespace link farms, mutable `settings.json`, and the
+/// ownership record are then committed together.
 #[allow(clippy::too_many_arguments)]
 fn install_claude_bundle_set(
     claude_staged: &Path,
@@ -2265,7 +2158,7 @@ fn install_claude_bundle_set(
     claude_dest: &Path,
     codex_dest: &Path,
     store_root: &Path,
-    bridge: &Path,
+    codex_skills_dest: &Path,
     pinned_version: Option<&str>,
     version: &str,
     quiet: bool,
@@ -2276,7 +2169,7 @@ fn install_claude_bundle_set(
         claude_dest,
         codex_dest,
         store_root,
-        bridge,
+        codex_skills_dest,
         pinned_version,
         version,
         quiet,
@@ -2291,10 +2184,10 @@ fn install_claude_bundle_set_with_failure(
     claude_dest: &Path,
     codex_dest: &Path,
     store_root: &Path,
-    bridge: &Path,
+    codex_skills_dest: &Path,
     pinned_version: Option<&str>,
     version: &str,
-    quiet: bool,
+    _quiet: bool,
     failure: Option<ActivationBoundary>,
 ) -> Result<SyncReport> {
     // These gates all run before the first destination mutation.
@@ -2349,17 +2242,27 @@ fn install_claude_bundle_set_with_failure(
         store_root,
         &codex_known,
     )?;
+    let codex_skills = plan_link_farm(
+        Some(&prepared.claude_layout.join("skills")),
+        Some(&claude_store.join("skills")),
+        codex_skills_dest,
+        "skills",
+        store_root,
+        &claude_known,
+    )?;
+    let codex_native_skills = plan_link_farm(
+        Some(&prepared.claude_layout.join("skills")),
+        Some(&claude_store.join("skills")),
+        &codex_dest.join("skills"),
+        "skills",
+        store_root,
+        &claude_known,
+    )?;
     let root_files = plan_claude_root_files(
         &prepared.claude_layout,
         claude_dest,
         &claude_manifest,
         previous_claude.as_ref(),
-    )?;
-    let bridge_source = claude_dest.join("skills");
-    let bridge_plan = plan_skill_bridge(
-        &bridge_source,
-        bridge,
-        &prepared.claude_layout.join("skills"),
     )?;
     let root_manifest = root_only_manifest(&claude_manifest);
     let root_manifest_bytes = serde_json::to_string_pretty(&root_manifest)
@@ -2372,23 +2275,23 @@ fn install_claude_bundle_set_with_failure(
         .is_ok_and(|metadata| metadata.is_file() && !metadata_is_link(&metadata));
 
     let mut transaction = ActivationTransaction::default();
-    let activation = (|| -> Result<(SyncReport, SkillBridgeOutcome)> {
-        for plan in [&claude_skills, &claude_agents, &codex_agents] {
+    let activation = (|| -> Result<SyncReport> {
+        for plan in [
+            &claude_skills,
+            &claude_agents,
+            &codex_agents,
+            &codex_skills,
+            &codex_native_skills,
+        ] {
             if plan.active {
                 transaction.ensure_dir(&plan.dest)?;
             }
         }
-        if bridge_plan.outcome == SkillBridgeOutcome::Created {
-            transaction.ensure_dir(
-                bridge
-                    .parent()
-                    .ok_or_else(|| anyhow::anyhow!("Codex skill bridge has no parent"))?,
-            )?;
-        }
         preflight_farm(&claude_skills)?;
         preflight_farm(&claude_agents)?;
         preflight_farm(&codex_agents)?;
-        preflight_skill_bridge(&bridge_plan)?;
+        preflight_farm(&codex_skills)?;
+        preflight_farm(&codex_native_skills)?;
 
         if let Some(staged) = prepared.staged.as_deref() {
             transaction.replace_with_path(staged, &prepared.generation)?;
@@ -2405,12 +2308,12 @@ fn install_claude_bundle_set_with_failure(
         inject_activation_failure(failure, ActivationBoundary::ClaudeAgents)?;
         merge_sync_report(&mut report, apply_farm(&codex_agents, &mut transaction)?);
         inject_activation_failure(failure, ActivationBoundary::CodexAgents)?;
-
-        let bridge_outcome = apply_skill_bridge(&bridge_plan, &mut transaction)?;
-        if bridge_outcome == SkillBridgeOutcome::Created {
-            report.changed += 1;
-        }
-        inject_activation_failure(failure, ActivationBoundary::Bridge)?;
+        merge_sync_report(&mut report, apply_farm(&codex_skills, &mut transaction)?);
+        merge_sync_report(
+            &mut report,
+            apply_farm(&codex_native_skills, &mut transaction)?,
+        );
+        inject_activation_failure(failure, ActivationBoundary::CodexSkills)?;
 
         merge_sync_report(
             &mut report,
@@ -2427,10 +2330,10 @@ fn install_claude_bundle_set_with_failure(
             report.changed += 1;
         }
         inject_activation_failure(failure, ActivationBoundary::Manifest)?;
-        Ok((report, bridge_outcome))
+        Ok(report)
     })();
 
-    let (mut report, bridge_outcome) = match activation {
+    let mut report = match activation {
         Ok(success) => success,
         Err(error) => {
             if let Err(rollback) = transaction.rollback() {
@@ -2466,18 +2369,6 @@ fn install_claude_bundle_set_with_failure(
             &previous.files,
             Some(&codex_manifest),
         ));
-    }
-
-    warn_if_bridge_skipped(bridge_outcome, &bridge_source, bridge);
-    if bridge_outcome == SkillBridgeOutcome::Created && !quiet {
-        println!(
-            "  {:<60}",
-            format!(
-                "Linked standalone Codex skills {} -> {}",
-                bridge.display(),
-                bridge_source.display()
-            )
-        );
     }
 
     report.preserved.sort();
@@ -2585,17 +2476,17 @@ fn link_farm_matches(source: &Path, dest: &Path, store_root: &Path) -> bool {
     true
 }
 
-/// Per-platform health plus the shared skill bridge. This is version-aware
+/// Per-platform health across all native link farms. This is version-aware
 /// so a config that says "current" cannot accept farms still targeting an
 /// older store generation.
 fn bundle_set_health(version: &str) -> (bool, bool, bool) {
     let Ok(Some(stored)) = stored_bundle_set(version) else {
         return (false, false, false);
     };
-    let (Ok(claude_dest), Ok(codex_dest), Ok(bridge)) = (
+    let (Ok(claude_dest), Ok(codex_dest), Ok(codex_skills_dest)) = (
         AgentTool::Claude.dest_dir(),
         codex_dest_dir(),
-        codex_skill_bridge_dir(),
+        codex_skills_dir(),
     ) else {
         return (false, false, false);
     };
@@ -2618,14 +2509,22 @@ fn bundle_set_health(version: &str) -> (bool, bool, bool) {
         &store_root,
     );
 
-    let bridge_healthy = paths_resolve_same(&bridge, &claude_dest.join("skills"));
-    (claude_healthy, codex_healthy, bridge_healthy)
+    let codex_skills_healthy = link_farm_matches(
+        &stored.claude.join("skills"),
+        &codex_skills_dest,
+        &store_root,
+    ) && link_farm_matches(
+        &stored.claude.join("skills"),
+        &codex_dest.join("skills"),
+        &store_root,
+    );
+    (claude_healthy, codex_healthy, codex_skills_healthy)
 }
 
 /// Whether every managed link points at the exact requested generation.
 pub(crate) fn bundle_set_is_installed(version: &str) -> bool {
-    let (claude, codex, bridge) = bundle_set_health(version);
-    claude && codex && bridge
+    let (claude, codex_agents, codex_skills) = bundle_set_health(version);
+    claude && codex_agents && codex_skills
 }
 
 /// Looser migration/startup gate: does either managed platform already have
@@ -2633,7 +2532,7 @@ pub(crate) fn bundle_set_is_installed(version: &str) -> bool {
 pub(crate) fn bundle_set_has_existing_install() -> bool {
     AgentTool::Claude.has_existing_install()
         || codex_dest_dir().is_ok_and(|dest| dest.join("agents").is_dir())
-        || codex_skill_bridge_dir().is_ok_and(|bridge| fs::symlink_metadata(bridge).is_ok())
+        || codex_skills_dir().is_ok_and(|skills| fs::symlink_metadata(skills).is_ok())
 }
 
 /// Repoint a complete local generation without network access. Returns
@@ -2646,7 +2545,7 @@ pub(crate) fn repair_bundle_set_links(version: &str) -> Result<Option<usize>> {
     let claude_dest = AgentTool::Claude.dest_dir()?;
     let codex_dest = codex_dest_dir()?;
     let store_root = agent_store_root()?;
-    let bridge = codex_skill_bridge_dir()?;
+    let codex_skills_dest = codex_skills_dir()?;
     let previous_claude = read_installed_manifest(&claude_dest);
     let previous_codex = read_installed_manifest(&codex_dest);
     let frozen = AgentTool::Claude.frozen_manifest();
@@ -2685,38 +2584,53 @@ pub(crate) fn repair_bundle_set_links(version: &str) -> Result<Option<usize>> {
         &store_root,
         &codex_known,
     )?;
-    let bridge_source = claude_dest.join("skills");
-    let bridge_plan = plan_skill_bridge(&bridge_source, &bridge, &stored.claude.join("skills"))?;
+    let codex_skills = plan_link_farm(
+        Some(&stored.claude.join("skills")),
+        Some(&stored.claude.join("skills")),
+        &codex_skills_dest,
+        "skills",
+        &store_root,
+        &claude_known,
+    )?;
+    let codex_native_skills = plan_link_farm(
+        Some(&stored.claude.join("skills")),
+        Some(&stored.claude.join("skills")),
+        &codex_dest.join("skills"),
+        "skills",
+        &store_root,
+        &claude_known,
+    )?;
 
     let mut transaction = ActivationTransaction::default();
-    let activation = (|| -> Result<(SyncReport, SkillBridgeOutcome)> {
-        for plan in [&claude_skills, &claude_agents, &codex_agents] {
+    let activation = (|| -> Result<SyncReport> {
+        for plan in [
+            &claude_skills,
+            &claude_agents,
+            &codex_agents,
+            &codex_skills,
+            &codex_native_skills,
+        ] {
             if plan.active {
                 transaction.ensure_dir(&plan.dest)?;
             }
         }
-        if bridge_plan.outcome == SkillBridgeOutcome::Created {
-            transaction.ensure_dir(
-                bridge
-                    .parent()
-                    .ok_or_else(|| anyhow::anyhow!("Codex skill bridge has no parent"))?,
-            )?;
-        }
         preflight_farm(&claude_skills)?;
         preflight_farm(&claude_agents)?;
         preflight_farm(&codex_agents)?;
-        preflight_skill_bridge(&bridge_plan)?;
+        preflight_farm(&codex_skills)?;
+        preflight_farm(&codex_native_skills)?;
 
         let mut report = apply_farm(&claude_skills, &mut transaction)?;
         merge_sync_report(&mut report, apply_farm(&claude_agents, &mut transaction)?);
         merge_sync_report(&mut report, apply_farm(&codex_agents, &mut transaction)?);
-        let bridge_outcome = apply_skill_bridge(&bridge_plan, &mut transaction)?;
-        if bridge_outcome == SkillBridgeOutcome::Created {
-            report.changed += 1;
-        }
-        Ok((report, bridge_outcome))
+        merge_sync_report(&mut report, apply_farm(&codex_skills, &mut transaction)?);
+        merge_sync_report(
+            &mut report,
+            apply_farm(&codex_native_skills, &mut transaction)?,
+        );
+        Ok(report)
     })();
-    let (report, _bridge_outcome) = match activation {
+    let report = match activation {
         Ok(success) => success,
         Err(error) => {
             if let Err(rollback) = transaction.rollback() {
@@ -2733,8 +2647,8 @@ pub(crate) fn repair_bundle_set_links(version: &str) -> Result<Option<usize>> {
 
 pub(crate) fn bundle_set_status_json(config: &crate::config::HyprlayerConfig) -> serde_json::Value {
     let desired = config.desired_assets_version();
-    let (claude_healthy, codex_agents_healthy, bridge_healthy) = bundle_set_health(desired);
-    let codex_healthy = codex_agents_healthy && bridge_healthy;
+    let (claude_healthy, codex_agents_healthy, codex_skills_healthy) = bundle_set_health(desired);
+    let codex_healthy = codex_agents_healthy && codex_skills_healthy;
     let installed = claude_healthy && codex_healthy;
     let claude_location = AgentTool::Claude
         .dest_dir()
@@ -3333,40 +3247,6 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn standalone_skill_bridge_creates_noops_and_never_clobbers_a_real_directory() {
-        let tmp = tempfile::tempdir().unwrap();
-        let source = tmp.path().join("claude/skills");
-        touch(&source.join("example/SKILL.md"));
-        let link = tmp.path().join("agents/skills");
-
-        assert_eq!(
-            ensure_skill_bridge(&source, &link).unwrap(),
-            SkillBridgeOutcome::Created
-        );
-        assert_eq!(fs::read_link(&link).unwrap(), source);
-        assert!(link.join("example/SKILL.md").is_file());
-        assert_eq!(
-            ensure_skill_bridge(&source, &link).unwrap(),
-            SkillBridgeOutcome::AlreadyCorrect
-        );
-
-        let planted = tmp.path().join("other-agents/skills");
-        touch(&planted.join("personal/SKILL.md"));
-        assert_eq!(
-            ensure_skill_bridge(&source, &planted).unwrap(),
-            SkillBridgeOutcome::SkippedExisting
-        );
-        assert!(planted.join("personal/SKILL.md").is_file());
-        assert!(
-            !fs::symlink_metadata(&planted)
-                .unwrap()
-                .file_type()
-                .is_symlink()
-        );
-    }
-
-    #[test]
-    #[cfg(unix)]
     fn store_install_is_idempotent_and_repoints_each_link_on_version_change() {
         let tmp = tempfile::tempdir().unwrap();
         let claude_dest = tmp.path().join("home/.claude");
@@ -3416,7 +3296,17 @@ mod tests {
             store.join("1.6.1/codex/agents/codebase-locator.toml")
         );
         assert!(claude_dest.join("skills/personal/SKILL.md").is_file());
-        assert_eq!(fs::read_link(&bridge).unwrap(), claude_dest.join("skills"));
+        let codex_skills_metadata = fs::symlink_metadata(&bridge).unwrap();
+        assert!(codex_skills_metadata.is_dir());
+        assert!(!codex_skills_metadata.file_type().is_symlink());
+        assert_eq!(
+            fs::read_link(bridge.join("code_review")).unwrap(),
+            store.join("1.6.1/claude/skills/code_review")
+        );
+        assert_eq!(
+            fs::read_link(codex_dest.join("skills/code_review")).unwrap(),
+            store.join("1.6.1/claude/skills/code_review")
+        );
 
         let second = install_claude_bundle_set(
             &staged_claude_v1,
@@ -3466,8 +3356,71 @@ mod tests {
             fs::read_link(codex_dest.join("agents/codebase-locator.toml")).unwrap(),
             store.join("1.6.2/codex/agents/codebase-locator.toml")
         );
+        assert_eq!(
+            fs::read_link(bridge.join("code_review")).unwrap(),
+            store.join("1.6.2/claude/skills/code_review")
+        );
+        assert_eq!(
+            fs::read_link(codex_dest.join("skills/code_review")).unwrap(),
+            store.join("1.6.2/claude/skills/code_review")
+        );
         assert!(fs::symlink_metadata(claude_dest.join("agents/retired.md")).is_err());
         assert!(fs::symlink_metadata(codex_dest.join("agents/retired.toml")).is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn store_install_merges_skills_into_an_existing_codex_skill_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude_dest = tmp.path().join("home/.claude");
+        let codex_dest = tmp.path().join("home/.codex");
+        let store = tmp.path().join("config/hyprlayer/agents");
+        let bridge = tmp.path().join("home/.agents/skills");
+        touch(&bridge.join("personal/SKILL.md"));
+
+        let claude: [(&str, &[u8]); 2] = [
+            ("agents/codebase-locator.md", b"locator\n"),
+            ("skills/code_review/SKILL.md", b"review\n"),
+        ];
+        let codex: [(&str, &[u8]); 1] = [(
+            "agents/codebase-locator.toml",
+            b"name = \"codebase-locator\"\n",
+        )];
+        let staged_claude = tmp.path().join("staged-claude");
+        let staged_codex = tmp.path().join("staged-codex");
+        stage_bundle(&staged_claude, "1.6.1", &claude);
+        stage_codex_bundle(&staged_codex, "1.6.1", &codex);
+
+        install_claude_bundle_set(
+            &staged_claude,
+            &staged_codex,
+            &claude_dest,
+            &codex_dest,
+            &store,
+            &bridge,
+            None,
+            "1.6.1",
+            true,
+        )
+        .unwrap();
+
+        let bridge_metadata = fs::symlink_metadata(&bridge).unwrap();
+        assert!(bridge_metadata.is_dir());
+        assert!(!bridge_metadata.file_type().is_symlink());
+        assert!(bridge.join("personal/SKILL.md").is_file());
+        assert_eq!(
+            fs::read_link(bridge.join("code_review")).unwrap(),
+            store.join("1.6.1/claude/skills/code_review")
+        );
+        assert_eq!(
+            fs::read_link(codex_dest.join("skills/code_review")).unwrap(),
+            store.join("1.6.1/claude/skills/code_review")
+        );
+        assert!(link_farm_matches(
+            &store.join("1.6.1/claude/skills"),
+            &bridge,
+            &store
+        ));
     }
 
     #[test]
@@ -3552,7 +3505,10 @@ mod tests {
             read_installed_manifest(&claude_dest).unwrap().version,
             "1.6.1"
         );
-        assert!(paths_resolve_same(&bridge, &claude_dest.join("skills")));
+        assert_eq!(
+            fs::read_link(bridge.join("code_review")).unwrap(),
+            store.join("1.6.1/claude/skills/code_review")
+        );
         assert!(!store.join("1.6.2").exists());
         assert_eq!(
             fs::read_to_string(store.join("1.6.1/claude/skills/code_review/SKILL.md")).unwrap(),
