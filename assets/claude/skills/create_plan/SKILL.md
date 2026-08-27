@@ -54,7 +54,7 @@ orchestration:
       requires: [read-mentioned]
       inline: true
       produces: areas
-      track-with: TodoWrite
+      track-with: task-list
       judgment: >
         Which areas of the codebase does this task touch, and which exact
         directories does each one own? See "Decomposing the task" below.
@@ -165,7 +165,7 @@ orchestration:
       requires: [verify-corrections]
       fanout: cartographer
       over: follow-up-areas
-      track-with: TodoWrite
+      track-with: task-list
       given:
         - { value: repo-root,           src: pwd }
         - { value: exact-directories,   src: "the areas the first round surfaced" }

@@ -4,8 +4,6 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::agents::{AgentTool, OpenCodeProvider};
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
 pub enum BackendKind {
@@ -305,19 +303,6 @@ pub struct ThoughtsConfig {
     pub profiles: HashMap<String, ProfileConfig>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AiConfig {
-    #[serde(default)]
-    pub agent_tool: Option<AgentTool>,
-    #[serde(default)]
-    pub opencode_provider: Option<OpenCodeProvider>,
-    #[serde(default)]
-    pub opencode_sonnet_model: Option<String>,
-    #[serde(default)]
-    pub opencode_opus_model: Option<String>,
-}
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum TelemetryMode {
@@ -542,14 +527,12 @@ pub struct HyprlayerConfig {
     pub agents_installed_sha: Option<String>,
     /// Assets bundle version the last install resolved to — the pin when one
     /// was set, otherwise the binary's own version. It records what the
-    /// install was *for*, not necessarily what served it: a legacy-tree
-    /// fallback records it too, or a dev build with no matching release
-    /// would reinstall on every startup.
+    /// install was *for*, rather than a repository revision.
     ///
     /// `None` on a config written before 1.6.0, which is what makes the
     /// first 1.6.0 run install once and then settle (see
     /// `assets_need_refresh`). The bundle that actually landed is recorded
-    /// in `<dest>/.hyprlayer-manifest.json`, not here.
+    /// in the central generation manifests, not here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agents_installed_version: Option<String>,
     /// Explicit assets version pin. Takes precedence over the binary's own
@@ -562,12 +545,8 @@ pub struct HyprlayerConfig {
     /// Enables silent startup auto-update for direct-swap install methods.
     #[serde(default)]
     pub auto_update: bool,
-    #[serde(default)]
-    pub copilot_deprecation_warned: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thoughts: Option<ThoughtsConfig>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ai: Option<AiConfig>,
     #[serde(default)]
     pub telemetry: TelemetryConfig,
 }
@@ -583,9 +562,7 @@ impl Default for HyprlayerConfig {
             agents_pinned_version: None,
             disable_update_check: false,
             auto_update: false,
-            copilot_deprecation_warned: false,
             thoughts: None,
-            ai: None,
             telemetry: TelemetryConfig::default(),
         }
     }
@@ -603,14 +580,6 @@ struct V1ThoughtsConfig {
     global_dir: String,
     #[serde(default)]
     user: String,
-    #[serde(default)]
-    agent_tool: Option<AgentTool>,
-    #[serde(default)]
-    opencode_provider: Option<OpenCodeProvider>,
-    #[serde(default)]
-    opencode_sonnet_model: Option<String>,
-    #[serde(default)]
-    opencode_opus_model: Option<String>,
     #[serde(default)]
     repo_mappings: HashMap<String, RepoMapping>,
     #[serde(default)]
@@ -698,8 +667,6 @@ struct V2HyprlayerConfig {
     disable_update_check: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     thoughts: Option<V2ThoughtsConfig>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    ai: Option<AiConfig>,
 }
 
 #[derive(Deserialize)]
@@ -709,7 +676,7 @@ struct VersionPeek {
 }
 
 impl HyprlayerConfig {
-    /// Load config from a file path, auto-migrating older shapes (v1, v2) to v3.
+    /// Load config from a file path, auto-migrating older shapes to v4.
     pub fn load(config_path: &Path) -> Result<Self> {
         let content = fs::read_to_string(config_path)
             .with_context(|| format!("Failed to read config file: {}", config_path.display()))?;
@@ -797,10 +764,6 @@ impl HyprlayerConfig {
         self.thoughts.get_or_insert_with(ThoughtsConfig::default)
     }
 
-    pub fn ai_mut(&mut self) -> &mut AiConfig {
-        self.ai.get_or_insert_with(AiConfig::default)
-    }
-
     /// The assets bundle version this config should be running: the pin when
     /// one is set, otherwise the binary's own version.
     pub fn desired_assets_version(&self) -> &str {
@@ -858,13 +821,6 @@ impl HyprlayerConfig {
             profiles: old.profiles,
         };
 
-        let ai = AiConfig {
-            agent_tool: old.agent_tool,
-            opencode_provider: old.opencode_provider,
-            opencode_sonnet_model: old.opencode_sonnet_model,
-            opencode_opus_model: old.opencode_opus_model,
-        };
-
         Ok(V2HyprlayerConfig {
             version: Some(2),
             last_version_check: old.last_version_check,
@@ -872,7 +828,6 @@ impl HyprlayerConfig {
             agents_installed_sha: None,
             disable_update_check: old.disable_update_check,
             thoughts: Some(thoughts),
-            ai: Some(ai),
         })
     }
 
@@ -925,9 +880,7 @@ impl HyprlayerConfig {
             agents_pinned_version: None,
             disable_update_check: v2.disable_update_check,
             auto_update: false,
-            copilot_deprecation_warned: false,
             thoughts,
-            ai: v2.ai,
             telemetry: TelemetryConfig::default(),
         })
     }
@@ -1029,15 +982,6 @@ mod tests {
     }
 
     #[test]
-    fn ai_config_default_values() {
-        let config = AiConfig::default();
-        assert!(config.agent_tool.is_none());
-        assert!(config.opencode_provider.is_none());
-        assert!(config.opencode_sonnet_model.is_none());
-        assert!(config.opencode_opus_model.is_none());
-    }
-
-    #[test]
     fn hyprlayer_config_save_load_round_trip() {
         let temp_dir = std::env::temp_dir().join("hyprlayer_test_config_round_trip");
         let config_path = temp_dir.join("config.json");
@@ -1051,12 +995,7 @@ mod tests {
             agents_pinned_version: Some("1.5.9".to_string()),
             disable_update_check: true,
             auto_update: true,
-            copilot_deprecation_warned: true,
             thoughts: Some(git_thoughts("~/thoughts", "repos", "global")),
-            ai: Some(AiConfig {
-                agent_tool: Some(AgentTool::Claude),
-                ..Default::default()
-            }),
             telemetry: TelemetryConfig::default(),
         };
 
@@ -1071,7 +1010,6 @@ mod tests {
         assert_eq!(loaded.agents_pinned_version.as_deref(), Some("1.5.9"));
         assert!(loaded.disable_update_check);
         assert!(loaded.auto_update);
-        assert!(loaded.copilot_deprecation_warned);
 
         let thoughts = loaded.thoughts.unwrap();
         assert_eq!(
@@ -1080,10 +1018,6 @@ mod tests {
         );
         assert_eq!(thoughts.user, "testuser");
         assert!(thoughts.repo_mappings.is_empty());
-
-        let ai = loaded.ai.unwrap();
-        assert!(matches!(ai.agent_tool, Some(AgentTool::Claude)));
-        assert!(ai.opencode_provider.is_none());
 
         fs::remove_dir_all(&temp_dir).ok();
     }
@@ -1097,9 +1031,6 @@ mod tests {
                 "globalDir": "global",
                 "user": "testuser",
                 "agentTool": "claude",
-                "opencodeProvider": null,
-                "opencodeSonnetModel": null,
-                "opencodeOpusModel": null,
                 "repoMappings": {},
                 "profiles": {},
                 "lastVersionCheck": 1700000000,
@@ -1115,30 +1046,28 @@ mod tests {
         assert_eq!(config.last_version_check, Some(1700000000));
         assert!(!config.disable_update_check);
 
-        let thoughts = config.thoughts.unwrap();
+        let thoughts = config.thoughts.as_ref().unwrap();
         let git = thoughts.backend.as_git().unwrap();
         assert_eq!(git.thoughts_repo, "~/thoughts");
         assert_eq!(thoughts.user, "testuser");
 
-        let ai = config.ai.unwrap();
-        assert!(matches!(ai.agent_tool, Some(AgentTool::Claude)));
+        let serialized = serde_json::to_value(config).unwrap();
+        assert!(serialized.get("ai").is_none());
     }
 
     #[test]
-    fn migrate_v1_ai_only() {
+    fn migrate_v1_ignores_retired_agent_selector() {
         let json = r#"{
             "thoughts": {
                 "thoughtsRepo": "",
                 "reposDir": "",
                 "globalDir": "",
                 "user": "",
-                "agentTool": "copilot"
+                "agentTool": "retired-tool"
             }
         }"#;
         let v2 = HyprlayerConfig::migrate_v1(json).unwrap();
         let config = HyprlayerConfig::migrate_v2(&serde_json::to_string(&v2).unwrap()).unwrap();
-        let ai = config.ai.unwrap();
-        assert!(matches!(ai.agent_tool, Some(AgentTool::Copilot)));
 
         let thoughts = config.thoughts.unwrap();
         assert!(!thoughts.is_thoughts_configured());
@@ -1152,7 +1081,6 @@ mod tests {
         let config = HyprlayerConfig::migrate_v3(v3);
         assert_eq!(config.version, Some(4));
         assert!(config.thoughts.is_none());
-        assert!(config.ai.is_none());
     }
 
     #[test]
@@ -1169,9 +1097,6 @@ mod tests {
         let git = thoughts.backend.as_git().unwrap();
         assert_eq!(git.thoughts_repo, "~/t");
         assert!(thoughts.is_thoughts_configured());
-
-        let ai = config.ai.unwrap();
-        assert!(ai.agent_tool.is_none());
     }
 
     #[test]
@@ -1420,10 +1345,6 @@ mod tests {
         assert_eq!(cfg.last_agent_check, Some(1700000001));
         assert_eq!(cfg.agents_installed_sha.as_deref(), Some("abc123"));
         assert_eq!(cfg.thoughts.as_ref().unwrap().user, "alice");
-        assert!(matches!(
-            cfg.ai.as_ref().unwrap().agent_tool,
-            Some(AgentTool::Claude)
-        ));
         assert_eq!(cfg.telemetry.mode, TelemetryMode::Off);
         assert!(cfg.telemetry.installation_id.is_none());
         assert!(cfg.telemetry.api_key.is_none());
@@ -1433,6 +1354,10 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
         assert_eq!(on_disk["version"], 4);
         assert_eq!(on_disk["telemetry"]["mode"], "off");
+        assert!(
+            on_disk.get("ai").is_none(),
+            "retired agent selectors should be dropped during migration"
+        );
 
         fs::remove_dir_all(&temp_dir).ok();
     }

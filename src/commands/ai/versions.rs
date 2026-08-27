@@ -1,14 +1,11 @@
 //! `hyprlayer ai versions` — the releases that carry an assets bundle for
-//! the configured harness, and which of them is installed or pinned. The
+//! both Claude and Codex bundles, and which of them is installed or pinned. The
 //! list the desktop drives its rollback picker from, and the input to
 //! `ai reinstall --version`.
 //!
 //! **On demand only, never on startup.** `{api}/releases` is a REST call
-//! against the same 60 requests/hour unauthenticated bucket that
-//! `agents::fetch_master_sha` and the codeload archive path exist to avoid
-//! spending; a startup probe would burn it on every invocation and take the
-//! install path down with it. The on-disk cache below keeps a desktop that
-//! polls `--json` to one request an hour per harness.
+//! against GitHub's 60 requests/hour unauthenticated bucket. The on-disk
+//! cache below keeps a desktop that polls `--json` to one request an hour.
 
 use anyhow::{Context, Result};
 use colored::Colorize;
@@ -17,7 +14,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::agents::{self, AgentTool};
+use crate::agents;
 use crate::cli::AiVersionsArgs;
 use crate::config::HyprlayerConfig;
 use crate::http;
@@ -34,6 +31,11 @@ const MAX_RELEASES_RESPONSE_BYTES: u64 = 1024 * 1024;
 /// times a month, so an hour of staleness costs nothing and is what keeps
 /// repeated `ai versions` calls off the rate limit.
 const CACHE_TTL_SECS: u64 = 60 * 60;
+
+/// A release becomes visible before its assets have necessarily finished
+/// uploading. An empty filtered page is therefore only briefly trustworthy;
+/// otherwise a query during that window hides the new bundle for a full hour.
+const EMPTY_CACHE_TTL_SECS: u64 = 60;
 
 const CACHE_DIR: &str = "cache";
 
@@ -58,40 +60,30 @@ pub fn versions(args: AiVersionsArgs) -> Result<()> {
         config,
     } = args;
 
-    let hyprlayer_config = config.load_if_exists()?.ok_or_else(|| {
-        anyhow::anyhow!("No configuration found. Run 'hyprlayer ai configure' first.")
-    })?;
-    let agent_tool = hyprlayer_config
-        .ai
-        .as_ref()
-        .and_then(|ai| ai.agent_tool)
-        .ok_or_else(|| {
-            anyhow::anyhow!("No AI tool configured. Run 'hyprlayer ai configure' first.")
-        })?;
-
-    let releases = bundle_releases(agent_tool, limit)?;
+    let hyprlayer_config = config.load_if_exists()?.unwrap_or_default();
+    let releases = bundle_releases(limit)?;
 
     if json {
         println!(
             "{}",
-            serde_json::to_string_pretty(&versions_json(agent_tool, &hyprlayer_config, &releases))?
+            serde_json::to_string_pretty(&versions_json(&hyprlayer_config, &releases))?
         );
     } else {
-        print_versions(agent_tool, &hyprlayer_config, &releases, limit);
+        print_versions(&hyprlayer_config, &releases);
     }
 
     Ok(())
 }
 
-/// The releases carrying a bundle for `tool`, from the cache when it is
+/// The releases carrying the atomic Claude + Codex bundle pair, from the cache when it is
 /// fresh and from GitHub otherwise.
 ///
 /// Every cache failure — unreadable, unparseable, unwritable — degrades to
 /// a plain fetch rather than an error. The cache is a rate-limit courtesy,
 /// not a source of truth.
-fn bundle_releases(tool: AgentTool, limit: u32) -> Result<Vec<BundleRelease>> {
+fn bundle_releases(limit: u32) -> Result<Vec<BundleRelease>> {
     let now = unix_now();
-    let path = cache_path(tool.repo_dir()).ok();
+    let path = cache_path("claude-codex").ok();
 
     if let Some(path) = &path
         && let Some(cached) = cached_releases(path, limit, now)
@@ -100,7 +92,7 @@ fn bundle_releases(tool: AgentTool, limit: u32) -> Result<Vec<BundleRelease>> {
     }
 
     let body = fetch_release_page(limit)?;
-    let releases = releases_with_bundle_for(&body, tool.repo_dir())?;
+    let releases = releases_with_bundle_pair(&body)?;
 
     if let Some(path) = &path {
         write_cache(path, &ReleaseCache::new(now, limit, releases.clone()));
@@ -141,15 +133,13 @@ struct GitHubErrorBody {
     message: Option<String>,
 }
 
-/// Keep only the releases that carry `hyprlayer-assets-<harness>-<version>
-/// .tar.gz`, which is exactly the set `ai reinstall --version` can install:
-/// a release predating the bundles, or one whose build dropped a harness,
-/// would offer a version that silently falls back to the frozen legacy
-/// tree. Drafts are skipped — their assets are not downloadable.
+/// Keep only releases that carry both version-matched Claude and Codex
+/// assets, exactly the set `ai reinstall --version` can install atomically.
+/// Drafts are skipped because their assets are not downloadable.
 ///
 /// Pure — no I/O — so the filtering is unit-testable against a real
 /// response body.
-fn releases_with_bundle_for(body: &str, harness: &str) -> Result<Vec<BundleRelease>> {
+fn releases_with_bundle_pair(body: &str) -> Result<Vec<BundleRelease>> {
     let releases: Vec<GitHubRelease> = serde_json::from_str(body).map_err(|e| {
         classify_release_list_error(body)
             .unwrap_or_else(|| anyhow::anyhow!("Failed to parse the GitHub release list: {e}"))
@@ -162,8 +152,11 @@ fn releases_with_bundle_for(body: &str, harness: &str) -> Result<Vec<BundleRelea
                 return None;
             }
             let version = release.tag_name.trim_start_matches('v').to_string();
-            let asset = agents::asset_name(harness, &version);
-            if !release.assets.iter().any(|a| a.name == asset) {
+            let claude = agents::asset_name("claude", &version);
+            let codex = agents::asset_name("codex", &version);
+            if !release.assets.iter().any(|a| a.name == claude)
+                || !release.assets.iter().any(|a| a.name == codex)
+            {
                 return None;
             }
             Some(BundleRelease {
@@ -177,9 +170,8 @@ fn releases_with_bundle_for(body: &str, harness: &str) -> Result<Vec<BundleRelea
 /// Turn GitHub's error object into a user-facing error, or `None` when the
 /// body is not one (a genuinely malformed array, say).
 ///
-/// The rate-limit branch mirrors `agents::classify_github_error` but points
-/// at the cache rather than at `ai reinstall`: nothing here has a fallback
-/// source to try, and the answer is to wait.
+/// The rate-limit branch points at the cache rather than at `ai reinstall`:
+/// the answer is to wait.
 fn classify_release_list_error(body: &str) -> Option<anyhow::Error> {
     let message = serde_json::from_str::<GitHubErrorBody>(body)
         .ok()?
@@ -238,7 +230,12 @@ fn cache_path(harness: &str) -> Result<PathBuf> {
 /// entry is refetched on the next run either way.
 fn cached_releases(path: &Path, limit: u32, now: u64) -> Option<Vec<BundleRelease>> {
     let cache: ReleaseCache = serde_json::from_str(&fs::read_to_string(path).ok()?).ok()?;
-    if cache.limit != limit || now.saturating_sub(cache.fetched_at) >= CACHE_TTL_SECS {
+    let ttl = if cache.releases.is_empty() {
+        EMPTY_CACHE_TTL_SECS
+    } else {
+        CACHE_TTL_SECS
+    };
+    if cache.limit != limit || now.saturating_sub(cache.fetched_at) >= ttl {
         return None;
     }
     Some(cache.releases)
@@ -277,11 +274,7 @@ fn marks(config: &HyprlayerConfig, version: &str) -> (bool, bool) {
 /// The `--json` payload. The three top-level version fields mirror
 /// `ai status --json`, so a consumer reading one does not have to call the
 /// other to learn what is installed.
-fn versions_json(
-    tool: AgentTool,
-    config: &HyprlayerConfig,
-    releases: &[BundleRelease],
-) -> serde_json::Value {
+fn versions_json(config: &HyprlayerConfig, releases: &[BundleRelease]) -> serde_json::Value {
     let versions: Vec<serde_json::Value> = releases
         .iter()
         .map(|release| {
@@ -296,7 +289,6 @@ fn versions_json(
         .collect();
 
     serde_json::json!({
-        "harness": tool.repo_dir(),
         "assetsVersion": config.agents_installed_version,
         "pinnedVersion": config.agents_pinned_version,
         "binaryVersion": env!("CARGO_PKG_VERSION"),
@@ -314,23 +306,14 @@ fn published_date(release: &BundleRelease) -> &str {
         .unwrap_or("unpublished")
 }
 
-fn print_versions(
-    tool: AgentTool,
-    config: &HyprlayerConfig,
-    releases: &[BundleRelease],
-    limit: u32,
-) {
-    println!();
-    println!("  {} bundle versions:", tool.to_string().cyan());
-    println!();
-
+fn print_versions(config: &HyprlayerConfig, releases: &[BundleRelease]) {
     if releases.is_empty() {
-        println!(
-            "  {}",
-            format!("None of the {limit} most recent releases carry one.").bright_black()
-        );
         return;
     }
+
+    println!();
+    println!("  {}", "Agents:".cyan());
+    println!();
 
     for release in releases {
         let (current, pinned) = marks(config, &release.version);
@@ -358,7 +341,7 @@ fn print_versions(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AiConfig, HyprlayerConfig};
+    use crate::config::HyprlayerConfig;
 
     /// Shaped like a real `GET /releases?per_page=N` page: `v1.6.0-rc.1`
     /// carries all three bundles, `v1.5.9` predates them and carries only
@@ -374,8 +357,7 @@ mod tests {
             "assets": [
                 { "name": "hyprlayer-x86_64-unknown-linux-gnu.tar.gz" },
                 { "name": "hyprlayer-assets-claude-1.6.0-rc.1.tar.gz" },
-                { "name": "hyprlayer-assets-copilot-1.6.0-rc.1.tar.gz" },
-                { "name": "hyprlayer-assets-opencode-1.6.0-rc.1.tar.gz" }
+                { "name": "hyprlayer-assets-codex-1.6.0-rc.1.tar.gz" }
             ]
         },
         {
@@ -401,8 +383,8 @@ mod tests {
         }
     ]"#;
 
-    fn versions_in(body: &str, harness: &str) -> Vec<String> {
-        releases_with_bundle_for(body, harness)
+    fn versions_in(body: &str) -> Vec<String> {
+        releases_with_bundle_pair(body)
             .unwrap()
             .into_iter()
             .map(|r| r.version)
@@ -410,13 +392,13 @@ mod tests {
     }
 
     #[test]
-    fn versions_keeps_only_releases_carrying_the_harness_asset() {
-        assert_eq!(versions_in(RELEASES_PAGE, "claude"), vec!["1.6.0-rc.1"]);
+    fn versions_keeps_only_releases_carrying_both_assets() {
+        assert_eq!(versions_in(RELEASES_PAGE), vec!["1.6.0-rc.1"]);
     }
 
     #[test]
     fn versions_records_the_publication_date() {
-        let releases = releases_with_bundle_for(RELEASES_PAGE, "claude").unwrap();
+        let releases = releases_with_bundle_pair(RELEASES_PAGE).unwrap();
         assert_eq!(
             releases[0].published_at.as_deref(),
             Some("2026-08-24T01:06:31Z")
@@ -427,11 +409,11 @@ mod tests {
     #[test]
     fn versions_skips_draft_releases() {
         // The draft is the only release carrying a 1.6.0-rc.2 bundle.
-        assert!(!versions_in(RELEASES_PAGE, "claude").contains(&"1.6.0-rc.2".to_string()));
+        assert!(!versions_in(RELEASES_PAGE).contains(&"1.6.0-rc.2".to_string()));
     }
 
     #[test]
-    fn versions_filter_is_per_harness() {
+    fn versions_require_the_atomic_pair() {
         let body = r#"[
             {
                 "tag_name": "v1.6.0",
@@ -440,9 +422,7 @@ mod tests {
                 "assets": [{ "name": "hyprlayer-assets-claude-1.6.0.tar.gz" }]
             }
         ]"#;
-        assert_eq!(versions_in(body, "claude"), vec!["1.6.0"]);
-        assert!(versions_in(body, "opencode").is_empty());
-        assert!(versions_in(body, "copilot").is_empty());
+        assert!(versions_in(body).is_empty());
     }
 
     #[test]
@@ -457,14 +437,14 @@ mod tests {
                 "assets": [{ "name": "hyprlayer-assets-claude-1.6.0.tar.gz" }]
             }
         ]"#;
-        assert!(versions_in(body, "claude").is_empty());
+        assert!(versions_in(body).is_empty());
     }
 
     #[test]
     fn versions_reports_a_rate_limited_response() {
         let body = r#"{ "message": "API rate limit exceeded for 203.0.113.7.",
                         "documentation_url": "https://docs.github.com/rest" }"#;
-        let err = releases_with_bundle_for(body, "claude").unwrap_err();
+        let err = releases_with_bundle_pair(body).unwrap_err();
         assert!(
             err.to_string().contains("rate limit"),
             "expected rate-limit guidance, got: {err}"
@@ -474,13 +454,13 @@ mod tests {
     #[test]
     fn versions_reports_other_github_errors() {
         let body = r#"{ "message": "Not Found" }"#;
-        let err = releases_with_bundle_for(body, "claude").unwrap_err();
+        let err = releases_with_bundle_pair(body).unwrap_err();
         assert!(err.to_string().contains("Not Found"), "got: {err}");
     }
 
     #[test]
     fn versions_reject_a_body_that_is_not_json() {
-        assert!(releases_with_bundle_for("<html>502</html>", "claude").is_err());
+        assert!(releases_with_bundle_pair("<html>502</html>").is_err());
     }
 
     fn write_cache_fixture(dir: &Path, fetched_at: u64, limit: u32) -> PathBuf {
@@ -516,6 +496,16 @@ mod tests {
     }
 
     #[test]
+    fn empty_versions_cache_expires_quickly_during_release_uploads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("releases-claude.json");
+        write_cache(&path, &ReleaseCache::new(1_000_000, 10, Vec::new()));
+
+        assert!(cached_releases(&path, 10, 1_000_000 + EMPTY_CACHE_TTL_SECS - 1).is_some());
+        assert!(cached_releases(&path, 10, 1_000_000 + EMPTY_CACHE_TTL_SECS).is_none());
+    }
+
+    #[test]
     fn versions_cache_is_not_reused_for_a_different_limit() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_cache_fixture(dir.path(), 1_000_000, 10);
@@ -533,10 +523,6 @@ mod tests {
 
     fn config_with(installed: Option<&str>, pinned: Option<&str>) -> HyprlayerConfig {
         HyprlayerConfig {
-            ai: Some(AiConfig {
-                agent_tool: Some(AgentTool::Claude),
-                ..Default::default()
-            }),
             agents_installed_version: installed.map(str::to_string),
             agents_pinned_version: pinned.map(str::to_string),
             ..Default::default()
@@ -545,12 +531,11 @@ mod tests {
 
     #[test]
     fn versions_json_marks_the_installed_and_pinned_entries() {
-        let releases = releases_with_bundle_for(RELEASES_PAGE, "claude").unwrap();
+        let releases = releases_with_bundle_pair(RELEASES_PAGE).unwrap();
         let config = config_with(Some("1.6.0-rc.1"), Some("1.6.0-rc.1"));
 
-        let value = versions_json(AgentTool::Claude, &config, &releases);
+        let value = versions_json(&config, &releases);
 
-        assert_eq!(value["harness"], "claude");
         assert_eq!(value["assetsVersion"], "1.6.0-rc.1");
         assert_eq!(value["pinnedVersion"], "1.6.0-rc.1");
         assert_eq!(value["binaryVersion"], env!("CARGO_PKG_VERSION"));
@@ -562,10 +547,10 @@ mod tests {
 
     #[test]
     fn versions_json_reports_an_unpinned_install_as_current_only() {
-        let releases = releases_with_bundle_for(RELEASES_PAGE, "claude").unwrap();
+        let releases = releases_with_bundle_pair(RELEASES_PAGE).unwrap();
         let config = config_with(Some("1.6.0-rc.1"), None);
 
-        let value = versions_json(AgentTool::Claude, &config, &releases);
+        let value = versions_json(&config, &releases);
 
         assert_eq!(value["pinnedVersion"], serde_json::Value::Null);
         assert_eq!(value["versions"][0]["current"], true);
@@ -574,10 +559,10 @@ mod tests {
 
     #[test]
     fn versions_json_marks_a_pin_that_is_not_installed_yet() {
-        let releases = releases_with_bundle_for(RELEASES_PAGE, "claude").unwrap();
+        let releases = releases_with_bundle_pair(RELEASES_PAGE).unwrap();
         let config = config_with(Some("1.5.9"), Some("1.6.0-rc.1"));
 
-        let value = versions_json(AgentTool::Claude, &config, &releases);
+        let value = versions_json(&config, &releases);
 
         assert_eq!(value["versions"][0]["current"], false);
         assert_eq!(value["versions"][0]["pinned"], true);

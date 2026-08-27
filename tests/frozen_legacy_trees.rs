@@ -1,5 +1,5 @@
-//! Guards the freeze described in `assets/FROZEN.md`: the root `claude/`,
-//! `copilot/`, and `opencode/` trees serve pre-1.6.0 clients whose download
+//! Guards the freeze described in `assets/FROZEN.md`: the root `claude/`
+//! tree serves pre-1.6.0 Claude clients whose download
 //! paths are hardcoded (`repo_dir()`, `src/agents.rs:113-119`) and must
 //! never drift from the recorded state again.
 //!
@@ -57,22 +57,14 @@ fn root_trees_are_byte_identical_to_the_freeze_sha() {
 
     let out = Command::new("git")
         .current_dir(repo_root())
-        .args([
-            "diff",
-            "--quiet",
-            FROZEN_SHA,
-            "--",
-            "claude/",
-            "copilot/",
-            "opencode/",
-        ])
+        .args(["diff", "--quiet", FROZEN_SHA, "--", "claude/"])
         .output()
         .expect("git should be runnable — checked by git_available");
 
     assert!(
         out.status.success(),
-        "root claude/, copilot/, opencode/ trees have drifted from the \
-         freeze commit {FROZEN_SHA}; these trees are frozen (see \
+        "root claude/ has drifted from the freeze commit {FROZEN_SHA}; \
+         this tree is frozen (see \
          assets/FROZEN.md) — either revert the drift or, if the change was \
          deliberate, update FROZEN_SHA here and the SHA recorded in \
          assets/FROZEN.md together.\nstdout: {}\nstderr: {}",

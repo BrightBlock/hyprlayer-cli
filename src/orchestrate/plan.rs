@@ -216,7 +216,7 @@ mod tests {
         let env = FactEnv::new();
         let sched = schedule::schedule(&b.steps, &env, &BTreeMap::new()).unwrap();
         let v1 = build(&b, &sched, "x", Target::Claude, "x.md");
-        let v2 = build(&b, &sched, "x", Target::OpenCode, "x.md");
+        let v2 = build(&b, &sched, "x", Target::Codex, "x.md");
         assert_ne!(v1["planHash"], v2["planHash"]);
     }
 }

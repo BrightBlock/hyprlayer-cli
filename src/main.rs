@@ -21,10 +21,7 @@ use cli::{
     AiCommands, CodexCommands, OrchestrateCommands, ProfileCommands, StorageCommands,
     TelemetryCommands, TelemetryHookAction, ThoughtsCommands,
 };
-use commands::ai::{
-    configure as ai_configure, reinstall as ai_reinstall, status as ai_status,
-    versions as ai_versions,
-};
+use commands::ai::{reinstall as ai_reinstall, status as ai_status, versions as ai_versions};
 use commands::codex::stream as codex_stream;
 use commands::orchestrate::check as orchestrate_check;
 use commands::orchestrate::compile as orchestrate_compile;
@@ -57,7 +54,11 @@ fn main() -> Result<()> {
 
     let config_path = cli.config_args().and_then(|a| a.path().ok());
     if !cli.skip_startup_checks() {
-        version::run_startup_checks(config_path.as_deref(), cli.allows_background_flush());
+        version::run_startup_checks(
+            config_path.as_deref(),
+            cli.allows_background_flush(),
+            cli.allows_agent_provision(),
+        );
     }
 
     let cmd_name = cli.subcommand_name();
@@ -97,7 +98,6 @@ fn dispatch(cli: cli::Cli) -> Result<()> {
             },
         },
         cli::Cli::Ai { command } => match command {
-            AiCommands::Configure(args) => ai_configure::configure(args)?,
             AiCommands::Status(args) => ai_status::status(args)?,
             AiCommands::Reinstall(args) => ai_reinstall::reinstall(args)?,
             AiCommands::Versions(args) => ai_versions::versions(args)?,

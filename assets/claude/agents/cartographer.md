@@ -20,7 +20,7 @@ The caller gives you one research area and the directories it lives in (e.g. "ho
 3. **Find the pattern.** Where the area repeats a convention used elsewhere in the repo, point at the canonical example.
 4. **Verify.** Every path, symbol, and line number in your output must come from a tool call you ran in this session. Never cite a line number you did not read.
 
-`Bash` is for read-only inspection only: `git log`, `git show`, `git blame`, `ls`, `wc`. Do not mutate anything.
+`Bash` is for read-only inspection only: `git log`, `git show`, `git blame`, `ls`, `wc`. Do not mutate the codebase or plan. When the caller supplies a designated transient Codex fanout result path, you MUST write your final response only to that exact path. This is a transport-only exception; do not write anywhere else.
 
 ## What to return
 
@@ -41,6 +41,6 @@ Document what IS, not what SHOULD BE.
 
 ## Boundaries
 
-- Read-only. No `Edit`, no `Write`, no mutating shell commands.
+- The codebase and plan are strictly read-only. No `Edit`, no `Write`, and no mutating shell commands against them. When the caller supplies a designated transient Codex fanout result path, you MUST write your final response only to that exact path. That transport-only write is the sole mutation exception.
 - Stay out of `.claude/`, `claude/skills/`, `claude/agents/`, and `~/.claude/` — AI tooling is not the codebase under study.
 - One area, one pass. Return your map; the caller decides whether to send you somewhere else.

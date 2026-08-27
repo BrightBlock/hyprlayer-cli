@@ -1,9 +1,7 @@
 use anyhow::{Context, Result, bail};
 use colored::Colorize;
 
-use crate::agents::AgentTool;
 use crate::cli::OrchestrateCompileArgs;
-use crate::config;
 use crate::orchestrate::block;
 use crate::orchestrate::expr;
 use crate::orchestrate::facts::{self, FactInputs};
@@ -101,10 +99,8 @@ pub fn compile(args: OrchestrateCompileArgs) -> Result<()> {
 }
 
 /// `compile` takes exactly one target — a plan is executed by a single
-/// harness. Defaults to `ai.agentTool` from config, then `claude`.
-/// `AgentTool::Copilot` is not a `Target`; a config set to Copilot falls
-/// through to the `claude` default rather than erroring, since Copilot is
-/// deprecated in-product and would not carry these blocks anyway.
+/// harness. Without an explicit target, Claude is the stable default;
+/// installation no longer records a selected harness.
 fn resolve_single_target(target: &[Target]) -> Result<Target> {
     // Deduplicate first: clap's `Vec<Target>` accepts repeats, and
     // `--target claude --target claude` still names exactly one harness,
@@ -122,17 +118,6 @@ fn resolve_single_target(target: &[Target]) -> Result<Target> {
         return Ok(t);
     }
 
-    let path = config::get_default_config_path()?;
-    if path.exists()
-        && let Ok(cfg) = config::HyprlayerConfig::load(&path)
-        && let Some(tool) = cfg.ai.and_then(|ai| ai.agent_tool)
-    {
-        return Ok(match tool {
-            AgentTool::Claude => Target::Claude,
-            AgentTool::OpenCode => Target::OpenCode,
-            AgentTool::Copilot => Target::Claude,
-        });
-    }
     Ok(Target::Claude)
 }
 

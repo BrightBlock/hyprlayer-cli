@@ -211,15 +211,24 @@ enum ReleaseCheckOutcome {
 
 /// Run startup checks using the same config path as the selected command.
 /// Exits the process with status 0 if a silent auto-update succeeded.
-pub fn run_startup_checks(config_path: Option<&std::path::Path>, allow_background_flush: bool) {
+pub fn run_startup_checks(
+    config_path: Option<&std::path::Path>,
+    allow_background_flush: bool,
+    allow_agent_provision: bool,
+) {
     let resolved = config_path
         .map(std::path::Path::to_path_buf)
         .or_else(|| config::get_default_config_path().ok());
     let Some(config_path) = resolved else {
         return;
     };
-    let Ok(mut cfg) = config::HyprlayerConfig::load(&config_path) else {
-        return;
+    let mut cfg = if config_path.exists() {
+        let Ok(cfg) = config::HyprlayerConfig::load(&config_path) else {
+            return;
+        };
+        cfg
+    } else {
+        config::HyprlayerConfig::default()
     };
 
     let now = unix_now();
@@ -229,7 +238,15 @@ pub fn run_startup_checks(config_path: Option<&std::path::Path>, allow_backgroun
     let allow_shellout = should_run_discovery(cfg.telemetry.last_enrollment_check, now);
     let _ = telemetry::lifecycle::auto_enroll_and_enforce(&mut cfg, &config_path, allow_shellout);
 
+    // Agent provisioning is a local runtime invariant, not an update
+    // notification. It runs even when release checks are disabled and can
+    // bootstrap a machine with no prior agent installation or config file.
+    let agents_changed = allow_agent_provision && ensure_bundle_set_in(&mut cfg, now);
+
     if cfg.disable_update_check {
+        if agents_changed {
+            let _ = cfg.save(&config_path);
+        }
         return;
     }
 
@@ -247,7 +264,6 @@ pub fn run_startup_checks(config_path: Option<&std::path::Path>, allow_backgroun
     }
 
     let release_changed = !matches!(release_outcome, ReleaseCheckOutcome::Throttled);
-    let agents_changed = reinstall_agents_in(&mut cfg, now);
     let telemetry_changed =
         allow_background_flush && maybe_flush_telemetry_in(&mut cfg, now, &config_path);
 
@@ -352,7 +368,7 @@ fn should_notify(current: &str, latest_for_method: Option<&str>) -> bool {
     }
 }
 
-/// Startup auto-refresh of the agent bundle.
+/// Startup ensure for the atomic Claude + Codex bundle set.
 ///
 /// Freshness is a version comparison against what the last install recorded
 /// (`assets_need_refresh`), not a timer and not a `master` HEAD lookup: an
@@ -365,92 +381,93 @@ fn should_notify(current: &str, latest_for_method: Option<&str>) -> bool {
 /// single command; with it, a failure costs one attempt per day. A
 /// successful refresh clears the anchor (`record_assets_version`), so it
 /// never delays the next legitimately-stale refresh.
-fn reinstall_agents_in(cfg: &mut config::HyprlayerConfig, now: i64) -> bool {
-    // Auto-reinstall only refreshes an existing install — it never
-    // bootstraps a new one for a user who has not run `ai configure`.
-    let Some(ai) = cfg.ai.as_ref() else {
-        return false;
-    };
-    let Some(tool) = ai.agent_tool else {
-        return false;
-    };
-    if !tool.has_existing_install() {
+fn ensure_bundle_set_in(cfg: &mut config::HyprlayerConfig, now: i64) -> bool {
+    let desired = cfg.desired_assets_version().to_string();
+    if !cfg.assets_need_refresh() && agents::bundle_set_is_installed(&desired) {
         return false;
     }
-    let opencode_provider = ai.opencode_provider.clone();
+    let setup_backed_off = agent_setup_is_backed_off(cfg.last_agent_check, now);
 
-    let mut changed = false;
-
-    if cfg.assets_need_refresh()
-        && !should_skip_due_to_throttle(cfg.last_agent_check.unwrap_or(0), now, CHECK_INTERVAL_SECS)
-    {
-        // Bump the anchor *before* the attempt, so a failure that never
-        // reaches `record_assets_version` still backs off.
-        cfg.last_agent_check = Some(now);
-        let desired = cfg.desired_assets_version().to_string();
-        try_refresh_agents(cfg, tool, opencode_provider.as_ref(), &desired);
-        changed = true;
-    }
-
-    // Independent of the refresh: a Copilot user whose bundle is already
-    // current still has to be told the harness is going away.
-    if tool == agents::AgentTool::Copilot && !cfg.copilot_deprecation_warned {
-        eprintln!(
-            "Note: Copilot support in hyprlayer is deprecated and will be removed in a\n\
-             future release. To switch to Claude Code or OpenCode, run `hyprlayer ai configure`."
-        );
-        cfg.copilot_deprecation_warned = true;
-        changed = true;
-    }
-
-    changed
-}
-
-/// Install the bundle for `desired_version` and record that we did.
-///
-/// The caller has already decided a refresh is due, so there is no
-/// freshness lookup here — in particular no `master` ref advertisement
-/// before the decision, which is what the pre-1.6.0 shape did on every
-/// throttled check.
-///
-/// `desired_version` is recorded on success whichever source served the
-/// install. The release asset is the normal one, but a dev build or a
-/// release predating the bundles falls back to the frozen legacy tree
-/// (`agents::fetch_into`); recording only on the asset path would leave
-/// those users stale-by-definition and reinstalling on every startup.
-fn try_refresh_agents(
-    cfg: &mut config::HyprlayerConfig,
-    tool: agents::AgentTool,
-    opencode_provider: Option<&agents::OpenCodeProvider>,
-    desired_version: &str,
-) {
-    match tool.install(
-        opencode_provider,
-        cfg.agents_pinned_version.as_deref(),
-        true,
-    ) {
-        Ok(outcome) => {
-            if outcome.changed > 0 {
-                eprintln!(
-                    "Updated agent files for {} ({} files).",
-                    tool, outcome.changed
-                );
+    // A complete generation can repair a missing/repointed link farm without
+    // touching the network. This also adopts a store installed before the
+    // config existed.
+    match agents::repair_bundle_set_links(&desired) {
+        Ok(Some(changed)) => {
+            if agents::bundle_set_is_installed(&desired) {
+                if changed > 0 {
+                    eprintln!("Repaired Claude + Codex agent setup ({changed} changes).")
+                }
+                cfg.record_assets_version(&desired);
+                crate::commands::ai::install_claude_hook_if_applicable(cfg);
+                return true;
             }
-            // Still cached for the legacy fallback, which has no bundle
-            // version of its own.
+
+            // A complete local generation plus unhealthy live farms means a
+            // user-owned collision was deliberately preserved (including a
+            // real ~/.agents/skills). Re-downloading identical bytes cannot
+            // resolve that, and retrying on every command would be noisy.
+            if setup_backed_off {
+                return false;
+            }
+            cfg.last_agent_check = Some(now);
+            eprintln!(
+                "Claude + Codex agent setup remains incomplete because an existing path was left untouched. \
+                 Run 'hyprlayer ai status' for details, then 'hyprlayer ai reinstall' after resolving the collision."
+            );
+            return true;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            if setup_backed_off {
+                return false;
+            }
+            eprintln!(
+                "Failed to repair Claude + Codex agent links: {error}. \
+                 Run 'hyprlayer ai reinstall' to retry."
+            );
+        }
+    }
+
+    if setup_backed_off {
+        return false;
+    }
+
+    // Bump before the attempt so an offline machine retries at most daily.
+    cfg.last_agent_check = Some(now);
+    let had_install = agents::bundle_set_has_existing_install();
+    match agents::install_bundle_set(cfg.agents_pinned_version.as_deref(), true) {
+        Ok(outcome) => {
             if let Some(sha) = outcome.sha {
                 cfg.agents_installed_sha = Some(sha);
             }
-            cfg.record_assets_version(desired_version);
+            if agents::bundle_set_is_installed(&desired) {
+                if outcome.changed > 0 {
+                    eprintln!(
+                        "{} Claude + Codex agent files ({} links).",
+                        if had_install { "Updated" } else { "Installed" },
+                        outcome.changed
+                    );
+                }
+                cfg.record_assets_version(&desired);
+            } else {
+                eprintln!(
+                    "Claude + Codex bundles were downloaded, but an existing path prevented the full link set. \
+                     Run 'hyprlayer ai status' for details."
+                );
+            }
         }
         Err(e) => eprintln!(
-            "Failed to update agent files: {}. Run 'hyprlayer ai reinstall' to retry.",
+            "Failed to provision Claude + Codex agent files: {}. \
+             Run 'hyprlayer ai reinstall' to retry.",
             e
         ),
     }
-    crate::commands::ai::install_claude_hook_if_applicable(tool, cfg);
-    // Keep lifecycle artifacts consistent with the refreshed bundle.
-    crate::commands::ai::install_opencode_plugin_if_applicable(tool, cfg);
+    crate::commands::ai::install_claude_hook_if_applicable(cfg);
+    true
+}
+
+fn agent_setup_is_backed_off(last_agent_check: Option<i64>, now: i64) -> bool {
+    should_skip_due_to_throttle(last_agent_check.unwrap_or(0), now, CHECK_INTERVAL_SECS)
 }
 
 /// Writes to stderr so it never pollutes stdout-piped output.
@@ -573,7 +590,7 @@ mod tests {
     fn a_failed_refresh_backs_off_for_a_day() {
         let now: i64 = 2_000_000_000;
 
-        // `reinstall_agents_in` bumps the anchor before attempting; the
+        // `ensure_bundle_set_in` bumps the anchor before attempting; the
         // install then errored, so no version was recorded.
         let cfg = config::HyprlayerConfig {
             last_agent_check: Some(now),
@@ -599,6 +616,23 @@ mod tests {
                 CHECK_INTERVAL_SECS
             ),
             "a day later: retry"
+        );
+    }
+
+    #[test]
+    fn preserved_agent_collision_warning_obeys_the_refresh_backoff() {
+        let now = 2_000_000_000;
+        assert!(
+            !agent_setup_is_backed_off(None, now),
+            "the first incomplete local repair should be reported"
+        );
+        assert!(
+            agent_setup_is_backed_off(Some(now), now + 60),
+            "the same preserved collision must not warn on every command"
+        );
+        assert!(
+            !agent_setup_is_backed_off(Some(now), now + CHECK_INTERVAL_SECS),
+            "the user gets another actionable reminder after the backoff"
         );
     }
 

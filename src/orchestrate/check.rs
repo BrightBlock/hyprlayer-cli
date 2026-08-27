@@ -636,6 +636,7 @@ fn check_agents_for_target(
     } else {
         agents_dir.to_vec()
     };
+    let builtins: BTreeSet<&str> = registry.builtins().iter().copied().collect();
 
     let names = match registry.resolve(&dirs) {
         AgentSource::Resolved(names) => names,
@@ -656,7 +657,6 @@ fn check_agents_for_target(
             return;
         }
     };
-    let builtins: BTreeSet<&str> = registry.builtins().iter().copied().collect();
 
     for step in &block.steps {
         let sid = step.id.as_deref().unwrap_or("?");
@@ -698,17 +698,6 @@ fn check_agent_ref(
                 ),
                 target,
             );
-            // The point of validating against more than one target: a
-            // name valid for Claude can be missing from a harness that
-            // loads the very same file without the author doing anything.
-            let finding = if target == Target::OpenCode {
-                with_hint(
-                    finding,
-                    "this file IS loaded by opencode — it reads ~/.claude/skills/ directly",
-                )
-            } else {
-                finding
-            };
             findings.push(finding);
         }
     }

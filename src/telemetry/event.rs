@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-use crate::agents::AgentTool;
 use crate::config::{HyprlayerConfig, TelemetryMode};
 
 pub const SCHEMA_VERSION: u32 = 1;
@@ -55,20 +54,10 @@ impl std::str::FromStr for Outcome {
 #[serde(rename_all = "snake_case")]
 pub enum Harness {
     Claude,
-    Copilot,
+    ClaudeCodex,
     Opencode,
     #[default]
     Unknown,
-}
-
-impl From<&AgentTool> for Harness {
-    fn from(tool: &AgentTool) -> Self {
-        match tool {
-            AgentTool::Claude => Harness::Claude,
-            AgentTool::Copilot => Harness::Copilot,
-            AgentTool::OpenCode => Harness::Opencode,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,13 +115,6 @@ impl Event {
                 .filter(|u| !u.is_empty()),
             _ => None,
         };
-        let harness = config
-            .ai
-            .as_ref()
-            .and_then(|a| a.agent_tool.as_ref())
-            .map(Harness::from)
-            .unwrap_or_default();
-
         Self {
             event_id: uuid::Uuid::new_v4().to_string(),
             schema_version: SCHEMA_VERSION,
@@ -143,7 +125,7 @@ impl Event {
             org_id: config.telemetry.org_id.clone(),
             session_id: None,
             hyprlayer_version: env!("CARGO_PKG_VERSION").to_string(),
-            harness,
+            harness: Harness::Unknown,
             os: std::env::consts::OS.to_string(),
             arch: std::env::consts::ARCH.to_string(),
             command: None,
@@ -276,6 +258,21 @@ mod tests {
         assert_eq!(EventType::Install.as_str(), "install");
         assert_eq!(EventType::Error.as_str(), "error");
         assert_eq!(EventType::Identify.as_str(), "$identify");
+    }
+
+    #[test]
+    fn paired_install_harness_serializes_as_claude_codex() {
+        assert_eq!(
+            serde_json::to_string(&Harness::ClaudeCodex).unwrap(),
+            "\"claude_codex\""
+        );
+    }
+
+    #[test]
+    fn base_events_do_not_infer_a_harness_from_retired_config() {
+        let cfg = config_with_mode(TelemetryMode::Anonymous);
+        let event = Event::cli_command("ai.status", 0, Outcome::Success, None, &cfg);
+        assert_eq!(event.harness, Harness::Unknown);
     }
 
     #[test]

@@ -2,7 +2,7 @@
 //! HTTP calls.
 //!
 //! All GitHub-facing network calls route through here rather than shelling
-//! out to `curl` — see `agents.rs` for the GitHub API / codeload callers.
+//! out to `curl` — see `agents.rs` for the release API and asset callers.
 
 use std::io::Read as _;
 use std::path::Path;

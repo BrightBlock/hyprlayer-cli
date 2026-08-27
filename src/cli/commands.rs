@@ -206,19 +206,7 @@ pub struct ProfileDeleteArgs {
 // AI command argument structs
 
 #[derive(Debug, Args)]
-#[command(
-    name = "configure",
-    about = "Configure AI tool and install agent files"
-)]
-pub struct AiConfigureArgs {
-    #[arg(long, help = "Force reconfiguration even if already set up")]
-    pub force: bool,
-    #[command(flatten)]
-    pub config: ConfigArgs,
-}
-
-#[derive(Debug, Args)]
-#[command(name = "status", about = "Show current AI tool configuration")]
+#[command(name = "status", about = "Show Claude and Codex agent bundle status")]
 pub struct AiStatusArgs {
     #[arg(long, help = "Output as JSON")]
     pub json: bool,
@@ -227,8 +215,17 @@ pub struct AiStatusArgs {
 }
 
 #[derive(Debug, Args)]
-#[command(name = "reinstall", about = "Reinstall AI agent files")]
+#[command(
+    name = "reinstall",
+    about = "Repair or reinstall Claude and Codex agent files"
+)]
 pub struct AiReinstallArgs {
+    #[arg(
+        short = 'f',
+        long,
+        help = "Download a fresh bundle even when a verified local generation exists"
+    )]
+    pub force: bool,
     // The pin is persisted and survives binary upgrades, so a bundle that
     // regressed can be held back until it is fixed.
     #[arg(
@@ -368,8 +365,8 @@ pub struct OrchestrateCompileArgs {
     #[arg(long)]
     pub agents_dir: Vec<PathBuf>,
     /// Harness this plan will be executed by. Exactly one — a plan is run
-    /// by a single harness. Defaults to `ai.agentTool` from config, then
-    /// `claude`. (`check` takes many; `compile` takes one. See --help.)
+    /// by a single harness. Defaults to `claude`. (`check` takes many;
+    /// `compile` takes one. See --help.)
     #[arg(long, value_enum)]
     pub target: Vec<crate::orchestrate::target::Target>,
     /// Print a colored wave listing instead of JSON
@@ -634,6 +631,7 @@ mod tests {
         let args = reinstall_args(&["reinstall", "--version", "1.5.9"]);
         assert_eq!(args.version.as_deref(), Some("1.5.9"));
         assert!(!args.unpin);
+        assert!(!args.force);
     }
 
     #[test]
@@ -648,6 +646,13 @@ mod tests {
         let args = reinstall_args(&["reinstall"]);
         assert!(args.version.is_none());
         assert!(!args.unpin);
+        assert!(!args.force);
+    }
+
+    #[test]
+    fn reinstall_args_accept_force_long_and_short() {
+        assert!(reinstall_args(&["reinstall", "--force"]).force);
+        assert!(reinstall_args(&["reinstall", "-f"]).force);
     }
 
     #[test]

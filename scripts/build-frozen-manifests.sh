@@ -5,7 +5,7 @@
 # Usage: scripts/build-frozen-manifests.sh
 #
 # For each harness it writes `src/agents/frozen/<harness>.json`: every file
-# in the frozen root tree (`claude/`, `copilot/`, `opencode/` — see
+# in the frozen root tree (`claude/` — see
 # `assets/FROZEN.md`) with its SHA256, path-relative to the harness root.
 # The binary embeds these with `include_str!`, and
 # `agents::tests::frozen_manifests_match_the_frozen_trees` asserts they
@@ -20,7 +20,7 @@
 
 set -euo pipefail
 
-harnesses=(claude copilot opencode)
+harnesses=(claude)
 
 # Paths are emitted into JSON unescaped, so restrict them to characters that
 # need no escaping. A name outside this set is a failure, not something to

@@ -3,7 +3,6 @@ use colored::Colorize;
 use std::process::Command;
 
 use super::{BackendContext, StatusReport, ThoughtsBackend, common};
-use crate::agents::AgentTool;
 
 /// The Anytype MCP server command the agent tool invokes.
 const ANYTYPE_MCP_COMMAND: &str = "npx";
@@ -11,9 +10,32 @@ const ANYTYPE_MCP_ARGS: &[&str] = &["-y", "@any-org/anytype-mcp"];
 const ANYTYPE_MCP_NAME: &str = "anytype";
 
 /// Default name of the env var holding the Anytype API key when the user
-/// doesn't specify one. Referenced from config defaults, init prompts, and
-/// the Copilot settings snippet to avoid drift.
+/// doesn't specify one. Referenced from config defaults and init prompts.
 pub const DEFAULT_ANYTYPE_TOKEN_ENV: &str = "ANYTYPE_API_KEY";
+
+#[derive(Debug, Clone, Copy)]
+enum BaseCli {
+    Claude,
+    Codex,
+}
+
+impl BaseCli {
+    const ALL: [Self; 2] = [Self::Claude, Self::Codex];
+
+    fn command(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Claude => "Claude Code",
+            Self::Codex => "Codex",
+        }
+    }
+}
 
 pub struct AnytypeBackend;
 
@@ -30,28 +52,22 @@ impl ThoughtsBackend for AnytypeBackend {
 
         common::warn_stale_thoughts_dir(ctx.code_repo, "Anytype content lives in the app");
 
-        let agent = ctx.agent_tool.ok_or_else(|| {
-            anyhow::anyhow!("AI tool not configured. Run 'hyprlayer ai configure' first.")
-        })?;
-
-        if !is_anytype_mcp_registered(agent) {
-            let env_var = any
-                .api_token_env
-                .as_deref()
-                .unwrap_or(DEFAULT_ANYTYPE_TOKEN_ENV);
-            if std::env::var(env_var).is_err() {
-                eprintln!(
-                    "{}",
-                    format!(
-                        "Warning: env var {} is not set. Set it before starting your AI tool. \
-                         Issue an API key in Anytype under Settings → API Keys.",
-                        env_var
-                    )
-                    .yellow()
-                );
-            }
-            register_anytype_mcp(agent, env_var)?;
+        let env_var = any
+            .api_token_env
+            .as_deref()
+            .unwrap_or(DEFAULT_ANYTYPE_TOKEN_ENV);
+        if std::env::var(env_var).is_err() {
+            eprintln!(
+                "{}",
+                format!(
+                    "Warning: env var {} is not set. Set it before starting Claude or Codex. \
+                     Issue an API key in Anytype under Settings → API Keys.",
+                    env_var
+                )
+                .yellow()
+            );
         }
+        reconcile_anytype_mcp(env_var);
 
         Ok(())
     }
@@ -89,48 +105,64 @@ impl ThoughtsBackend for AnytypeBackend {
             lines.push(format!("  API token env: {} ({})", name.cyan(), status));
         }
 
-        lines.push(format!(
-            "  MCP server: {}",
-            mcp_registration_status(ctx.agent_tool)
-                .unwrap_or_else(|| "(unknown)".bright_black().to_string())
-        ));
+        lines.push(format!("  MCP server: {}", mcp_registration_status()));
 
         Ok(StatusReport { lines })
     }
 }
 
-fn register_anytype_mcp(agent: AgentTool, env_var: &str) -> Result<()> {
-    match agent {
-        AgentTool::Claude => run_mcp_add("claude", &["--scope", "user"], "Claude Code", env_var),
-        AgentTool::OpenCode => run_mcp_add("opencode", &[], "OpenCode", env_var),
-        AgentTool::Copilot => {
-            print_copilot_mcp_snippet(env_var);
-            Ok(())
+fn reconcile_anytype_mcp(env_var: &str) {
+    let mut found_cli = false;
+    for cli in BaseCli::ALL {
+        if !cli_is_available(cli) {
+            continue;
         }
+        found_cli = true;
+        if probe_anytype_mcp(cli) == Some(true) {
+            continue;
+        }
+        if let Err(error) = run_mcp_add(cli, env_var) {
+            eprintln!(
+                "warning: could not register Anytype MCP with {}: {error}",
+                cli.label()
+            );
+        }
+    }
+    if !found_cli {
+        eprintln!(
+            "warning: neither Claude Code nor Codex is available on PATH; \
+             install either CLI, then rerun `hyprlayer thoughts init --force` to register Anytype MCP"
+        );
     }
 }
 
-fn run_mcp_add(cli: &str, extra_args: &[&str], label: &str, env_var: &str) -> Result<()> {
+fn mcp_add_args(cli: BaseCli, env_pair: &str) -> Vec<String> {
+    let mut args = vec!["mcp".into(), "add".into()];
+    match cli {
+        BaseCli::Claude => {
+            args.extend(["--scope".into(), "user".into(), ANYTYPE_MCP_NAME.into()]);
+            args.extend(["-e".into(), env_pair.into()]);
+        }
+        BaseCli::Codex => {
+            args.extend(["--env".into(), env_pair.into(), ANYTYPE_MCP_NAME.into()]);
+        }
+    }
+    args.push("--".into());
+    args.push(ANYTYPE_MCP_COMMAND.into());
+    args.extend(ANYTYPE_MCP_ARGS.iter().map(|arg| (*arg).to_string()));
+    args
+}
+
+fn run_mcp_add(cli: BaseCli, env_var: &str) -> Result<()> {
     let env_pair = super::common::resolve_mcp_env_pair(env_var)?;
-    let mut cmd = Command::new(cli);
-    cmd.arg("mcp").arg("add");
-    for a in extra_args {
-        cmd.arg(a);
-    }
-    cmd.arg(ANYTYPE_MCP_NAME)
-        .arg("-e")
-        .arg(&env_pair)
-        .arg("--")
-        .arg(ANYTYPE_MCP_COMMAND);
-    for a in ANYTYPE_MCP_ARGS {
-        cmd.arg(a);
-    }
+    let mut cmd = Command::new(cli.command());
+    cmd.args(mcp_add_args(cli, &env_pair));
 
     let output = cmd.output().map_err(|e| {
         anyhow::anyhow!(
             "Failed to run '{} mcp add'. Is the {} CLI installed on PATH? ({})",
-            cli,
-            label,
+            cli.command(),
+            cli.label(),
             e
         )
     })?;
@@ -140,50 +172,25 @@ fn run_mcp_add(cli: &str, extra_args: &[&str], label: &str, env_var: &str) -> Re
         if stderr.contains("already") {
             return Ok(());
         }
-        return Err(anyhow::anyhow!("{} mcp add failed: {}", cli, stderr.trim()));
+        return Err(anyhow::anyhow!(
+            "{} mcp add failed: {}",
+            cli.command(),
+            stderr.trim()
+        ));
     }
     Ok(())
 }
 
-fn print_copilot_mcp_snippet(env_var: &str) {
-    println!();
-    println!(
-        "{}",
-        "GitHub Copilot: paste this into your VS Code settings.json (under \
-         the \"github.copilot.mcp.servers\" key):"
-            .yellow()
-    );
-    let args_json: Vec<String> = ANYTYPE_MCP_ARGS
-        .iter()
-        .map(|a| format!("\"{}\"", a))
-        .collect();
-    println!(
-        r#"
-  "anytype": {{
-    "command": "{}",
-    "args": [{}],
-    "env": {{ "{}": "${{env:{}}}" }}
-  }}
-"#,
-        ANYTYPE_MCP_COMMAND,
-        args_json.join(", "),
-        env_var,
-        env_var
-    );
-}
-
-/// Probe the agent's CLI for Anytype MCP registration. Returns:
+/// Probe one base CLI for Anytype MCP registration. Returns:
 /// - `Some(true)` if anytype appears in the MCP list
 /// - `Some(false)` if the probe succeeded but anytype is absent
-/// - `None` if we couldn't probe (Copilot; CLI missing; non-zero exit) —
+/// - `None` if we couldn't probe (CLI missing or non-zero exit) —
 ///   callers treat this as "unknown".
-fn probe_anytype_mcp(agent: AgentTool) -> Option<bool> {
-    let cli = match agent {
-        AgentTool::Claude => "claude",
-        AgentTool::OpenCode => "opencode",
-        AgentTool::Copilot => return None,
-    };
-    let output = Command::new(cli).args(["mcp", "list"]).output().ok()?;
+fn probe_anytype_mcp(cli: BaseCli) -> Option<bool> {
+    let output = Command::new(cli.command())
+        .args(["mcp", "list"])
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -191,16 +198,32 @@ fn probe_anytype_mcp(agent: AgentTool) -> Option<bool> {
     Some(stdout.lines().any(|l| l.contains(ANYTYPE_MCP_NAME)))
 }
 
-pub fn is_anytype_mcp_registered(agent: AgentTool) -> bool {
-    probe_anytype_mcp(agent).unwrap_or(false)
+fn cli_is_available(cli: BaseCli) -> bool {
+    Command::new(cli.command())
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success())
 }
 
-fn mcp_registration_status(agent: Option<AgentTool>) -> Option<String> {
-    let agent = agent?;
-    match probe_anytype_mcp(agent)? {
-        true => Some(format!("registered with {agent}").green().to_string()),
-        false => Some(format!("not registered with {agent}").red().to_string()),
-    }
+pub fn is_anytype_mcp_registered() -> bool {
+    BaseCli::ALL
+        .into_iter()
+        .any(|cli| probe_anytype_mcp(cli) == Some(true))
+}
+
+fn mcp_registration_status() -> String {
+    BaseCli::ALL
+        .into_iter()
+        .map(|cli| {
+            let state = match probe_anytype_mcp(cli) {
+                Some(true) => "registered".green().to_string(),
+                Some(false) => "not registered".red().to_string(),
+                None => "unavailable".bright_black().to_string(),
+            };
+            format!("{}: {state}", cli.label())
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 #[cfg(test)]
@@ -275,8 +298,36 @@ mod tests {
     }
 
     #[test]
-    fn mcp_registration_status_skips_copilot() {
-        assert!(mcp_registration_status(Some(AgentTool::Copilot)).is_none());
-        assert!(mcp_registration_status(None).is_none());
+    fn mcp_add_syntax_matches_each_base_cli() {
+        assert_eq!(
+            mcp_add_args(BaseCli::Claude, "ANYTYPE_API_KEY=secret"),
+            [
+                "mcp",
+                "add",
+                "--scope",
+                "user",
+                "anytype",
+                "-e",
+                "ANYTYPE_API_KEY=secret",
+                "--",
+                "npx",
+                "-y",
+                "@any-org/anytype-mcp"
+            ]
+        );
+        assert_eq!(
+            mcp_add_args(BaseCli::Codex, "ANYTYPE_API_KEY=secret"),
+            [
+                "mcp",
+                "add",
+                "--env",
+                "ANYTYPE_API_KEY=secret",
+                "anytype",
+                "--",
+                "npx",
+                "-y",
+                "@any-org/anytype-mcp"
+            ]
+        );
     }
 }

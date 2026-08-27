@@ -9,8 +9,24 @@ permissions:
   contents: write
 
 jobs:
+  verify-agent-assets:
+    name: Verify generated agent assets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Regenerate Codex agents from Claude sources
+        run: cargo test --test codex_agent_assets
+
+      - name: Reject generated asset drift
+        run: git diff --exit-code -- assets/codex/agents
+
   build:
     name: Build ${{ matrix.target }}
+    needs: verify-agent-assets
     runs-on: ${{ matrix.runner }}
     strategy:
       matrix:

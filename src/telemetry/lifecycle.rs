@@ -78,7 +78,7 @@ fn active_thoughts_repo_path(thoughts: &ThoughtsConfig, cwd: Option<&Path>) -> O
 }
 
 /// Reconcile telemetry state at explicit-user-intent entry points
-/// (`thoughts init`, `ai configure`). Bypasses the 24h throttle.
+/// (`thoughts init`, automatic agent provisioning). Bypasses the 24h throttle.
 pub fn apply_side_effects(config: &mut HyprlayerConfig, config_path: &Path) -> Result<()> {
     let _ = auto_enroll_and_enforce(config, config_path, true)?;
     Ok(())

@@ -1,6 +1,6 @@
-//! Per-target agent resolution: the Claude/OpenCode ten-agent gap, checks
-//! 1-5 reported once (not once per target), exit 1 when any single target
-//! errors, and the `--agents-dir` + multi-target guard rail.
+//! Per-platform agent resolution, checks 1-5 reported once (not once per
+//! target), exit 1 when any single target errors, and the `--agents-dir` +
+//! multi-target guard rail.
 //!
 //! Agent directories are built inside `isolated_dirs()` tempdirs so no
 //! test depends on what the developer actually has installed.
@@ -38,34 +38,50 @@ const CARTOGRAPHER_STEP: &str =
     "orchestration:\n  steps:\n    - id: a\n      agent: cartographer\n";
 
 #[test]
-fn a_claude_only_agent_is_an_error_for_opencode() {
-    // `cartographer` resolves for claude, not for opencode. This is the
-    // ten-agent gap: adjudicator, archivist, cartographer, draughtsman,
-    // foreman, herald, inspector, marshal, quartermaster, ship all exist
-    // in assets/claude/agents/ and none exist in assets/opencode/agents/.
+fn bundled_agents_resolve_for_both_native_platforms() {
     let (_guard, xdg) = isolated_dirs();
     let path = write_skill(&xdg, "x.md", CARTOGRAPHER_STEP);
 
     let claude_agents = repo_root().join("assets/claude/agents");
-    let out = run_in(
-        &xdg,
-        &xdg,
-        &[
-            "orchestrate",
-            "check",
-            path.to_str().unwrap(),
-            "--target",
-            "claude",
-            "--agents-dir",
-            claude_agents.to_str().unwrap(),
-        ],
-    );
-    assert!(
-        out.status.success(),
-        "claude target should be clean: {out:?}"
-    );
+    let codex_agents = repo_root().join("assets/codex/agents");
+    for (target, agents) in [("claude", claude_agents), ("codex", codex_agents)] {
+        let out = run_in(
+            &xdg,
+            &xdg,
+            &[
+                "orchestrate",
+                "check",
+                path.to_str().unwrap(),
+                "--target",
+                target,
+                "--agents-dir",
+                agents.to_str().unwrap(),
+            ],
+        );
+        assert!(
+            out.status.success(),
+            "{target} should resolve {}: {out:?}",
+            agents.display()
+        );
+    }
+}
 
-    let opencode_agents = repo_root().join("assets/opencode/agents");
+#[test]
+fn an_unverified_codex_builtin_name_requires_a_custom_agent_file() {
+    let (_guard, xdg) = isolated_dirs();
+    let path = write_skill(
+        &xdg,
+        "x.md",
+        "orchestration:\n  steps:\n    - id: a\n      agent: explorer\n",
+    );
+    let agents = xdg.join("codex-agents");
+    std::fs::create_dir_all(&agents).unwrap();
+    std::fs::write(
+        agents.join("fixture.toml"),
+        "name = \"fixture\"\ndescription = \"fixture\"\n",
+    )
+    .unwrap();
+
     let out = run_in(
         &xdg,
         &xdg,
@@ -74,16 +90,15 @@ fn a_claude_only_agent_is_an_error_for_opencode() {
             "check",
             path.to_str().unwrap(),
             "--target",
-            "opencode",
+            "codex",
             "--agents-dir",
-            opencode_agents.to_str().unwrap(),
+            agents.to_str().unwrap(),
         ],
     );
-    assert_eq!(out.status.code(), Some(1));
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(1), "out: {out:?}");
     assert!(
-        stdout.contains("unknown agent `cartographer`"),
-        "stdout: {stdout}"
+        String::from_utf8_lossy(&out.stdout).contains("unknown agent `explorer`"),
+        "undocumented Codex agent names must not resolve implicitly"
     );
 }
 
@@ -112,7 +127,7 @@ fn checks_one_through_five_are_reported_once_not_once_per_target() {
             "--target",
             "claude",
             "--target",
-            "opencode",
+            "codex",
         ],
     );
     let findings = payload["files"][0]["findings"].as_array().unwrap();
@@ -137,7 +152,13 @@ fn exit_is_one_when_any_single_target_has_an_error() {
     let (_guard, xdg) = isolated_dirs();
     let path = write_skill(&xdg, "x.md", CARTOGRAPHER_STEP);
     let claude_agents = repo_root().join("assets/claude/agents");
-    let opencode_agents = repo_root().join("assets/opencode/agents");
+    let incomplete_codex_agents = xdg.join("incomplete-codex-agents");
+    std::fs::create_dir_all(&incomplete_codex_agents).unwrap();
+    std::fs::write(
+        incomplete_codex_agents.join("fixture.toml"),
+        "name = \"fixture\"\ndescription = \"fixture\"\n",
+    )
+    .unwrap();
 
     // claude alone: clean.
     let out = run_in(
@@ -155,7 +176,7 @@ fn exit_is_one_when_any_single_target_has_an_error() {
     );
     assert!(out.status.success());
 
-    // opencode alone: fails (cartographer doesn't exist there).
+    // codex alone: fails against an intentionally incomplete registry.
     let out = run_in(
         &xdg,
         &xdg,
@@ -164,9 +185,9 @@ fn exit_is_one_when_any_single_target_has_an_error() {
             "check",
             path.to_str().unwrap(),
             "--target",
-            "opencode",
+            "codex",
             "--agents-dir",
-            opencode_agents.to_str().unwrap(),
+            incomplete_codex_agents.to_str().unwrap(),
         ],
     );
     assert_eq!(out.status.code(), Some(1));
@@ -187,20 +208,19 @@ fn exit_is_one_when_one_of_two_targets_in_one_invocation_has_an_error() {
 
     let claude_dest = xdg.join(".claude").join("agents");
     std::fs::create_dir_all(&claude_dest).unwrap();
-    for entry in std::fs::read_dir(repo_root().join("claude/agents"))
+    for entry in std::fs::read_dir(repo_root().join("assets/claude/agents"))
         .unwrap()
         .flatten()
     {
         std::fs::copy(entry.path(), claude_dest.join(entry.file_name())).unwrap();
     }
-    let opencode_dest = xdg.join(".config").join("opencode").join("agents");
-    std::fs::create_dir_all(&opencode_dest).unwrap();
-    for entry in std::fs::read_dir(repo_root().join("opencode/agents"))
-        .unwrap()
-        .flatten()
-    {
-        std::fs::copy(entry.path(), opencode_dest.join(entry.file_name())).unwrap();
-    }
+    let codex_dest = xdg.join(".codex").join("agents");
+    std::fs::create_dir_all(&codex_dest).unwrap();
+    std::fs::write(
+        codex_dest.join("fixture.toml"),
+        "name = \"fixture\"\ndescription = \"fixture\"\n",
+    )
+    .unwrap();
 
     let out = run_in(
         &xdg,
@@ -213,11 +233,11 @@ fn exit_is_one_when_one_of_two_targets_in_one_invocation_has_an_error() {
             "--target",
             "claude",
             "--target",
-            "opencode",
+            "codex",
         ],
     );
-    // One invocation, one exit code: claude resolves `cartographer` and
-    // opencode does not, so the run must fail even though a target passed.
+    // One invocation, one exit code: Claude resolves `cartographer` and the
+    // intentionally incomplete Codex registry does not.
     assert_eq!(out.status.code(), Some(1), "out: {out:?}");
 
     let d: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
@@ -236,15 +256,15 @@ fn exit_is_one_when_one_of_two_targets_in_one_invocation_has_an_error() {
         })
         .collect();
     assert!(ok_by_target.contains(&("claude", true)), "payload: {d}");
-    assert!(ok_by_target.contains(&("opencode", false)), "payload: {d}");
+    assert!(ok_by_target.contains(&("codex", false)), "payload: {d}");
 }
 
 #[test]
 fn no_installed_target_warns_and_skips_check_six() {
     let (_guard, xdg) = isolated_dirs();
     let path = write_skill(&xdg, "x.md", CARTOGRAPHER_STEP);
-    // No --target given, and under an isolated HOME/CWD none of the three
-    // harnesses is installed, so the default target set is empty.
+    // No --target given, and under an isolated HOME/CWD neither native
+    // platform is installed, so the default target set is empty.
     let payload = json_of(
         &xdg,
         &["orchestrate", "check", path.to_str().unwrap(), "--json"],
@@ -280,7 +300,7 @@ fn agents_dir_with_multiple_targets_is_an_error_naming_the_fix() {
             "--target",
             "claude",
             "--target",
-            "opencode",
+            "codex",
             "--agents-dir",
             claude_agents.to_str().unwrap(),
         ],
@@ -294,7 +314,7 @@ fn agents_dir_with_multiple_targets_is_an_error_naming_the_fix() {
 }
 
 #[test]
-fn the_default_target_set_is_claude_only_when_no_other_harness_is_installed() {
+fn the_default_target_set_is_claude_only_when_no_other_platform_is_installed() {
     let (_guard, xdg) = isolated_dirs();
     // Install only Claude's agent directory under the isolated HOME.
     let claude_agents_dir = xdg.join(".claude").join("agents");

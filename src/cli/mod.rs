@@ -15,7 +15,7 @@ pub enum Cli {
         #[command(subcommand)]
         command: ThoughtsCommands,
     },
-    /// Manage AI tool configuration
+    /// Inspect and repair the Claude + Codex agent bundle links
     Ai {
         #[command(subcommand)]
         command: AiCommands,
@@ -56,7 +56,7 @@ impl Cli {
 
     /// Stable dotted name for the dispatched leaf subcommand, used as the
     /// `command` property on `cli_command` events. Must stay
-    /// argument-free (e.g. `ai.configure`, never `ai.configure --force`)
+    /// argument-free (e.g. `ai.reinstall`, never `ai.reinstall --version 1.6.0`)
     /// so PostHog aggregations don't fragment per-flag.
     pub fn subcommand_name(&self) -> &'static str {
         match self {
@@ -74,7 +74,6 @@ impl Cli {
                 },
             },
             Cli::Ai { command } => match command {
-                AiCommands::Configure(_) => "ai.configure",
                 AiCommands::Status(_) => "ai.status",
                 AiCommands::Reinstall(_) => "ai.reinstall",
                 AiCommands::Versions(_) => "ai.versions",
@@ -136,14 +135,28 @@ impl Cli {
 
     pub fn skip_startup_checks(&self) -> bool {
         // `orchestrate check` is designed to run from a `PreToolUse` hook on
-        // every `Agent` spawn — a hot path. Startup checks do a network
-        // release probe, a full `claude/` bundle re-download when master's
-        // SHA has moved, and (on the auto-update branch) print a line to
-        // stdout and exit 0 — which would corrupt `compile`'s stdout, whose
-        // output *is* the plan artifact. Skip them for the whole group.
+        // every `Agent` spawn — a hot path. Startup checks may repair the
+        // shared agent links, perform a release probe, and (on the
+        // auto-update branch) print a line to stdout and exit 0. Any of that
+        // would add latency or corrupt `compile`'s stdout, whose output *is*
+        // the plan artifact. Skip them for the whole group.
         self.is_silent_spool_writer()
             || matches!(self, Cli::SelfUpdate(_))
             || matches!(self, Cli::Orchestrate { .. })
+    }
+
+    /// Explicit bundle lifecycle commands own their network/error policy and
+    /// must not be preceded by the best-effort startup ensure. Every other
+    /// eligible command maintains the Claude + Codex invariant lazily.
+    pub fn allows_agent_provision(&self) -> bool {
+        !matches!(
+            self,
+            Cli::Ai {
+                command: AiCommands::Reinstall(_) | AiCommands::Versions(_)
+            } | Cli::Telemetry {
+                command: TelemetryCommands::Hook(_)
+            }
+        )
     }
 
     /// The `ConfigArgs` of whichever leaf subcommand was selected, or
@@ -166,7 +179,6 @@ impl Cli {
                 },
             }),
             Cli::Ai { command } => Some(match command {
-                AiCommands::Configure(a) => &a.config,
                 AiCommands::Status(a) => &a.config,
                 AiCommands::Reinstall(a) => &a.config,
                 AiCommands::Versions(a) => &a.config,
@@ -206,7 +218,6 @@ impl Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum AiCommands {
-    Configure(AiConfigureArgs),
     Status(AiStatusArgs),
     Reinstall(AiReinstallArgs),
     Versions(AiVersionsArgs),
@@ -288,8 +299,8 @@ mod tests {
     fn subcommand_names_are_stable_dotted_strings() {
         assert_eq!(parsed_name(&["hyprlayer", "ai", "status"]), "ai.status");
         assert_eq!(
-            parsed_name(&["hyprlayer", "ai", "configure"]),
-            "ai.configure"
+            parsed_name(&["hyprlayer", "ai", "reinstall"]),
+            "ai.reinstall"
         );
         assert_eq!(
             parsed_name(&["hyprlayer", "thoughts", "status"]),
@@ -362,5 +373,27 @@ mod tests {
         let cli = Cli::try_parse_from(["hyprlayer", "self-update", "--check"]).unwrap();
         assert!(cli.skip_startup_checks());
         assert!(!cli.skip_dispatch_telemetry());
+    }
+
+    #[test]
+    fn explicit_lifecycle_commands_do_not_preemptively_provision() {
+        for cmd in [
+            "ai reinstall",
+            "ai versions",
+            "telemetry hook install",
+            "telemetry hook uninstall",
+            "telemetry hook status",
+        ] {
+            let mut argv = vec!["hyprlayer"];
+            argv.extend(cmd.split_whitespace());
+            let cli = Cli::try_parse_from(argv).unwrap();
+            assert!(
+                !cli.allows_agent_provision(),
+                "expected `{cmd}` to own its lifecycle side effects"
+            );
+        }
+
+        let status = Cli::try_parse_from(["hyprlayer", "ai", "status"]).unwrap();
+        assert!(status.allows_agent_provision());
     }
 }

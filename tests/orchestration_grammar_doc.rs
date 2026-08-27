@@ -16,6 +16,16 @@ fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+fn runtime_doc() -> String {
+    let path = repo_root()
+        .join("assets")
+        .join("claude")
+        .join("skills")
+        .join("_thoughts")
+        .join("orchestration-runtime.md");
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("failed to read {path:?}: {e}"))
+}
+
 #[test]
 fn generated_region_matches_the_grammar_generator() {
     let doc_path = repo_root()
@@ -24,8 +34,7 @@ fn generated_region_matches_the_grammar_generator() {
         .join("skills")
         .join("_thoughts")
         .join("orchestration-runtime.md");
-    let content = std::fs::read_to_string(&doc_path)
-        .unwrap_or_else(|e| panic!("failed to read {doc_path:?}: {e}"));
+    let content = runtime_doc();
 
     let start = content
         .find(START_MARKER)
@@ -56,4 +65,25 @@ fn generated_region_matches_the_grammar_generator() {
          <!-- generated: ... --> and <!-- /generated --> in\n\
          assets/claude/skills/_thoughts/orchestration-runtime.md"
     );
+}
+
+#[test]
+fn codex_fanout_scratch_contract_is_no_clobber_and_cleanup_safe() {
+    let content = runtime_doc();
+    for required in [
+        "Create it with\n   no-clobber semantics (`mkdir`, never `mkdir -p`)",
+        "Never enter, reuse, or delete an existing candidate",
+        "zero-padded counters (`0001`, `0002`, ...)",
+        "Never use a raw fan-out value",
+        "Record the exact path\n   created successfully",
+        "have a canonical parent\n   equal to canonical `<cwd>`",
+        "have a basename beginning\n   `.hyprlayer-fanout-`",
+        "Never reconstruct its path from a step ID",
+        "leave the directory in place and report its path and the failed\n   check",
+    ] {
+        assert!(
+            content.contains(required),
+            "orchestration runtime lost fan-out scratch safety contract: {required:?}"
+        );
+    }
 }

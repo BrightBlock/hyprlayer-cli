@@ -1,16 +1,13 @@
 # Backend procedure: anytype
 
-Anytype is MCP-backed, but unlike Notion, hyprlayer **does** register the MCP server itself (via `claude mcp add` or `opencode mcp add`, per `src/backends/anytype.rs`). The MCP server is `npx -y @any-org/anytype-mcp`, registered under the name `anytype`. Total budget: ~5–10s.
+Anytype is MCP-backed, but unlike Notion, hyprlayer **does** register the MCP server itself with both available base CLIs (`claude mcp add` and `codex mcp add`, per `src/backends/anytype.rs`). The MCP server is `npx -y @any-org/anytype-mcp`, registered under the name `anytype`. Total budget: ~5–10s.
 
-Inputs from the dispatcher: `AnytypeConfig { spaceId, typeId?, apiTokenEnv? }`, the resolved `user`, the resolved `agent_tool` (`claude`, `opencode`, or `copilot`).
+Inputs from the dispatcher: `AnytypeConfig { spaceId, typeId?, apiTokenEnv? }` and the resolved `user`.
 
 ## 1. MCP server registered
 
-- Probe by running `<cli> mcp list` and looking for the literal name `anytype` in the output. The CLI is:
-  - `agent_tool = claude` → `claude mcp list`
-  - `agent_tool = opencode` → `opencode mcp list`
-  - `agent_tool = copilot` → no `mcp list` command; the registration lives in VS Code `settings.json` under `github.copilot.mcp.servers.anytype`. Read that file and check for the key. ⏭ if the file is unreadable.
-- ❌ if not registered. Remediation: `hyprlayer thoughts init` (for Claude/OpenCode) will re-run the registration; for Copilot, the printed JSON snippet must be pasted into `settings.json`.
+- Run both `claude mcp list` and `codex mcp list` when those CLIs are available, looking for the literal name `anytype` in each output.
+- ❌ if neither available CLI has it registered. Remediation: `hyprlayer thoughts init --force` reconciles both registrations best-effort.
 - Keep the probe result; step 2 needs it.
 
 ## 2. API token env var

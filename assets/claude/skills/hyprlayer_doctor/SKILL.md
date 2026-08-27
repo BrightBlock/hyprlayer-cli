@@ -75,7 +75,7 @@ orchestration:
       resolution-order:
         - ".thoughts.repoMappings[$PWD] is an object with a non-null .profile → .thoughts.profiles[<profile>].backend"
         - "otherwise → .thoughts.backend"
-      produces: [backend-kind, mapped-name, agent-tool]
+      produces: [backend-kind, mapped-name]
       fails-with:
         no-thoughts: "❌ Thoughts not configured (AI may be configured but `hyprlayer thoughts init` was never run)."
         bad-kind:    "❌ with the actual value shown"
@@ -87,8 +87,7 @@ orchestration:
         lowercase per `BackendKind`'s serde rename; anything else is a ❌ that
         prints the value found, because the useful fact is what the file says,
         not merely that it is wrong. `mapped-name` is `repoMappings[$PWD].repo`
-        or its string form, or null when the repo is unmapped. `agent-tool`
-        comes from `.ai.agentTool` and only the anytype procedure needs it.
+        or its string form, or null when the repo is unmapped.
 
     - id: cache-check
       requires: [config-hash]
@@ -148,7 +147,6 @@ orchestration:
         - { value: backend-object, src: "the one matching variant — GitConfig, ObsidianConfig, NotionConfig or AnytypeConfig — never the whole config" }
         - { value: thoughts-user,  src: ".thoughts.user" }
         - { value: mapped-name,    src: "repoMappings[$PWD].repo or its string form; null when unmapped" }
-        - { value: agent-tool,     src: ".ai.agentTool from the resolve-backend step; only the anytype procedure reads it" }
       because: >
         One generic dispatch rather than one guarded step per kind: the routing
         is a filename that `resolve-backend` already produced, so a fifth
@@ -245,9 +243,9 @@ conventions:
       mcp: "npx -y @any-org/anytype-mcp"
       optional-ids: [type_id]
       notes: >
-        Hyprlayer registers that MCP server, so `mcp list` through the resolved
-        agent tool is a real probe here — this is the only procedure that needs
-        `agent-tool`. `type_id` is auto-created on first write. Do not check for
+        Hyprlayer registers that MCP server with both available base CLIs, so
+        `claude mcp list` and `codex mcp list` are the real probes here.
+        `type_id` is auto-created on first write. Do not check for
         a `title` Relation: in Anytype `title` maps to the built-in object
         `name` and is deliberately not created as a separate property, so
         flagging it would fail the exact setups the documented write flow

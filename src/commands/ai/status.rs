@@ -6,37 +6,14 @@ use std::time::{Duration, UNIX_EPOCH};
 use crate::cli::AiStatusArgs;
 use crate::config::HyprlayerConfig;
 
-fn print_not_configured(json: bool) -> Result<()> {
-    if json {
-        println!("{{}}");
-    } else {
-        println!("{}", "No AI tool configured.".yellow());
-        println!(
-            "{}",
-            "Run 'hyprlayer ai configure' to set up AI tools.".bright_black()
-        );
-    }
-    Ok(())
-}
-
 pub fn status(args: AiStatusArgs) -> Result<()> {
     let AiStatusArgs { json, config } = args;
     let config_path = config.path()?;
 
-    let Some(hyprlayer_config) = config.load_if_exists()? else {
-        return print_not_configured(json);
-    };
-
-    let Some(ref ai_config) = hyprlayer_config.ai else {
-        return print_not_configured(json);
-    };
-
-    let Some(ref agent_tool) = ai_config.agent_tool else {
-        return print_not_configured(json);
-    };
+    let hyprlayer_config = config.load_if_exists()?.unwrap_or_default();
 
     if json {
-        let mut value = agent_tool.status_json(ai_config, &hyprlayer_config);
+        let mut value = crate::agents::bundle_set_status_json(&hyprlayer_config);
         if let Some(map) = value.as_object_mut() {
             map.insert(
                 "agentsInstalledSha".to_string(),
@@ -58,7 +35,7 @@ pub fn status(args: AiStatusArgs) -> Result<()> {
         return Ok(());
     }
 
-    agent_tool.print_status(ai_config);
+    crate::agents::print_bundle_set_status(&hyprlayer_config);
     print_bundle_freshness(&hyprlayer_config);
 
     println!();
@@ -70,35 +47,17 @@ pub fn status(args: AiStatusArgs) -> Result<()> {
     Ok(())
 }
 
-/// Render which assets bundle is installed, whether it is pinned, and the
-/// legacy SHA + last-check timestamp, under the per-tool status block.
+/// Render exceptional legacy/retry details below the compact status block.
 ///
-/// The version triple is the human counterpart of `status_json`'s
-/// `assetsVersion` / `pinnedVersion` / `binaryVersion`, and is what makes a
-/// skew visible: a pin held across a binary upgrade shows an assets version
-/// that is deliberately not the binary's own.
-///
-/// The `Pinned:` line is omitted when there is no pin, and the SHA and
-/// last-check lines when there is nothing cached — a pre-1.6.0 install
-/// carries a SHA and no version, a 1.6.0 one the reverse, and neither
-/// should show empty placeholders for the other's state.
+/// A SHA beside a modern version is stale migration bookkeeping, not another
+/// useful version identifier, so it is shown only when the installed version
+/// is genuinely unknown. `last_agent_check` now records a failed setup attempt
+/// for retry backoff, hence "Last attempt" rather than the old "Last check".
 fn print_bundle_freshness(config: &HyprlayerConfig) {
-    println!();
-    println!(
-        "  Assets version: {}",
-        config
-            .agents_installed_version
-            .as_deref()
-            .unwrap_or("unknown")
-            .cyan()
-    );
-    if let Some(pinned) = config.agents_pinned_version.as_deref() {
-        println!("  Pinned: {}", pinned.cyan());
-    }
-    println!("  Binary version: {}", env!("CARGO_PKG_VERSION").cyan());
-
-    if let Some(sha) = config.agents_installed_sha.as_deref() {
-        println!("  Bundle SHA: {}", sha.get(..7).unwrap_or(sha).cyan());
+    if config.agents_installed_version.is_none()
+        && let Some(sha) = config.agents_installed_sha.as_deref()
+    {
+        println!("  Legacy revision: {}", sha.get(..7).unwrap_or(sha).cyan());
     }
 
     let last_check = config.last_agent_check.and_then(|t| {
@@ -108,7 +67,7 @@ fn print_bundle_freshness(config: &HyprlayerConfig) {
     });
     if let Some(ht) = last_check {
         println!(
-            "  Last check: {}",
+            "  Last attempt: {}",
             ht.to_text_en(Accuracy::Rough, Tense::Past).cyan()
         );
     }
@@ -116,15 +75,10 @@ fn print_bundle_freshness(config: &HyprlayerConfig) {
 
 #[cfg(test)]
 mod tests {
-    use crate::agents::AgentTool;
-    use crate::config::{AiConfig, HyprlayerConfig};
+    use crate::config::HyprlayerConfig;
 
     fn config_with(installed: Option<&str>, pinned: Option<&str>) -> HyprlayerConfig {
         HyprlayerConfig {
-            ai: Some(AiConfig {
-                agent_tool: Some(AgentTool::Claude),
-                ..Default::default()
-            }),
             agents_installed_version: installed.map(str::to_string),
             agents_pinned_version: pinned.map(str::to_string),
             ..Default::default()
@@ -134,58 +88,34 @@ mod tests {
     #[test]
     fn status_json_reports_version_fields() {
         let config = config_with(Some("1.5.9"), Some("1.5.9"));
-        let ai = config.ai.clone().unwrap();
+        let value = crate::agents::bundle_set_status_json(&config);
 
-        let value = AgentTool::Claude.status_json(&ai, &config);
-
+        assert_eq!(value["agentTool"], "Claude + Codex");
         assert_eq!(value["assetsVersion"], "1.5.9");
         assert_eq!(value["pinnedVersion"], "1.5.9");
         assert_eq!(value["binaryVersion"], env!("CARGO_PKG_VERSION"));
     }
 
     #[test]
-    fn status_json_reports_version_fields_for_every_harness() {
-        // The OpenCode arm carries extra provider/model keys; the version
-        // triple must be on it too, or the desktop would have to special-
-        // case the harness to learn what is installed.
+    fn status_json_reports_both_platforms() {
         let config = config_with(Some("1.6.0"), None);
-        let ai = config.ai.clone().unwrap();
-
-        for tool in [AgentTool::Claude, AgentTool::Copilot, AgentTool::OpenCode] {
-            let value = tool.status_json(&ai, &config);
-            let object = value.as_object().expect("status json is an object");
-            for key in ["assetsVersion", "pinnedVersion", "binaryVersion"] {
-                assert!(object.contains_key(key), "{tool} status json lacks {key}");
-            }
-            assert_eq!(value["assetsVersion"], "1.6.0");
-            assert_eq!(value["pinnedVersion"], serde_json::Value::Null);
-        }
+        let value = crate::agents::bundle_set_status_json(&config);
+        let platforms = value["platforms"].as_array().unwrap();
+        assert_eq!(platforms.len(), 2);
+        assert_eq!(platforms[0]["id"], "claude");
+        assert_eq!(platforms[1]["id"], "codex");
+        assert_eq!(value["assetsVersion"], "1.6.0");
+        assert_eq!(value["pinnedVersion"], serde_json::Value::Null);
     }
 
     #[test]
     fn status_json_reports_an_unversioned_config_as_null() {
         // A config written before 1.6.0 records a SHA and no version.
         let config = config_with(None, None);
-        let ai = config.ai.clone().unwrap();
-
-        let value = AgentTool::Claude.status_json(&ai, &config);
+        let value = crate::agents::bundle_set_status_json(&config);
 
         assert_eq!(value["assetsVersion"], serde_json::Value::Null);
         assert_eq!(value["pinnedVersion"], serde_json::Value::Null);
         assert_eq!(value["binaryVersion"], env!("CARGO_PKG_VERSION"));
-    }
-
-    #[test]
-    fn status_json_keeps_the_opencode_settings() {
-        let mut config = config_with(Some("1.6.0"), None);
-        let ai = config.ai_mut();
-        ai.agent_tool = Some(AgentTool::OpenCode);
-        ai.opencode_sonnet_model = Some("anthropic/claude-sonnet-5".to_string());
-        let ai = config.ai.clone().unwrap();
-
-        let value = AgentTool::OpenCode.status_json(&ai, &config);
-
-        assert_eq!(value["opencodeSonnetModel"], "anthropic/claude-sonnet-5");
-        assert_eq!(value["assetsVersion"], "1.6.0");
     }
 }

@@ -16,11 +16,9 @@ pub fn check(args: OrchestrateCheckArgs) -> Result<()> {
         target,
     } = args;
 
-    // Default is every installed target, not one: the question a skill
-    // author actually has is "does this block work everywhere it will
-    // run," and since OpenCode silently loads Claude's skills, a
-    // single-target default would answer the less useful question by
-    // omission.
+    // Default is every installed base platform, not one: the question a
+    // skill author actually has is "does this block work everywhere it will
+    // run?" OpenCode selects one of these bases from its model family.
     //
     // Sorted and deduplicated: clap's `Vec<Target>` accepts repeats, and
     // a repeated `--target claude --target claude` would otherwise emit

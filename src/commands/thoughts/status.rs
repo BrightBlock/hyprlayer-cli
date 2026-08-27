@@ -65,8 +65,7 @@ pub fn status(args: StatusArgs) -> Result<()> {
     }
     println!();
 
-    let agent_tool = hyprlayer_config.ai.as_ref().and_then(|a| a.agent_tool);
-    let ctx = BackendContext::new(&current_repo, &effective).with_agent_tool(agent_tool);
+    let ctx = BackendContext::new(&current_repo, &effective);
     let backend = backends::for_kind(effective.backend.kind());
     let report = backend.status(&ctx)?;
     for line in report.lines {

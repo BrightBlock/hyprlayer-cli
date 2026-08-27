@@ -1,11 +1,10 @@
-//! Integration test for `hyprlayer ai reinstall` with no network available.
+//! Integration tests for `hyprlayer ai reinstall` with no network available.
 //!
-//! The install path (both the archive download and its Contents-API
-//! fallback) is genuinely network-bound, so rather than mock it, this
-//! asserts the property that matters for offline CI and for a user with a
-//! dead connection: a fully-offline `ai reinstall` fails cleanly, prints an
-//! actionable message rather than panicking, and leaves the destination
-//! directory untouched (Phase 4's staging guarantee — see
+//! A complete verified local generation must repair all live link farms
+//! without touching GitHub. With no local generation, the release metadata
+//! and asset downloads are genuinely network-bound; that path must fail
+//! cleanly, print an actionable message rather than panicking, and leave the
+//! destination directory untouched (Phase 4's staging guarantee — see
 //! `2026-08-19-agent-bundle-archive-download.md`).
 //!
 //! Linux-only: it runs the binary inside an unprivileged network namespace
@@ -20,6 +19,7 @@
 mod common;
 use common::*;
 
+use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::process::Command;
 
@@ -63,6 +63,64 @@ fn reinstall_with_no_network_fails_cleanly_and_leaves_dest_untouched() {
     );
 }
 
+#[test]
+fn reinstall_with_a_complete_local_generation_succeeds_without_network() {
+    if !unshare_net_available() {
+        eprintln!(
+            "skipping: `unshare --user --net` is not usable in this environment \
+             (restricted user namespaces) — cannot isolate network for this test"
+        );
+        return;
+    }
+
+    let (_dir, xdg) = isolated_dirs();
+    write_reinstall_config(&xdg);
+    write_local_generation(&xdg);
+
+    let out = run_without_network(&xdg, &["ai", "reinstall"]);
+    assert!(
+        out.status.success(),
+        "reinstall should repair from the local store: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("Downloading"),
+        "a local repair must not claim to download: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(xdg.join(".claude/skills/code_review").is_symlink());
+    assert!(xdg.join(".agents/skills/code_review").is_symlink());
+    assert!(xdg.join(".codex/skills/code_review").is_symlink());
+    assert!(xdg.join(".codex/agents/codebase-locator.toml").is_symlink());
+}
+
+#[test]
+fn forced_reinstall_bypasses_a_complete_local_generation() {
+    if !unshare_net_available() {
+        eprintln!(
+            "skipping: `unshare --user --net` is not usable in this environment \
+             (restricted user namespaces) — cannot isolate network for this test"
+        );
+        return;
+    }
+
+    let (_dir, xdg) = isolated_dirs();
+    write_reinstall_config(&xdg);
+    write_local_generation(&xdg);
+
+    let out = run_without_network(&xdg, &["ai", "reinstall", "-f"]);
+    assert!(
+        !out.status.success(),
+        "forced reinstall should attempt the unavailable network"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("Downloading"),
+        "forced reinstall should bypass the local store: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(!xdg.join(".claude").exists());
+}
+
 fn unshare_net_available() -> bool {
     Command::new("unshare")
         .args(["--user", "--net", "--map-root-user", "--", "true"])
@@ -89,6 +147,55 @@ fn write_reinstall_config(xdg: &Path) {
             },
         }))
         .unwrap(),
+    )
+    .unwrap();
+}
+
+fn write_local_generation(xdg: &Path) {
+    let version = env!("CARGO_PKG_VERSION");
+    let generation = xdg.join("hyprlayer/agents").join(version);
+    write_bundle(
+        &generation.join("claude"),
+        "claude",
+        version,
+        &[
+            ("agents/codebase-locator.md", b"locator\n"),
+            ("skills/code_review/SKILL.md", b"review\n"),
+        ],
+    );
+    write_bundle(
+        &generation.join("codex"),
+        "codex",
+        version,
+        &[(
+            "agents/codebase-locator.toml",
+            b"name = \"codebase-locator\"\n",
+        )],
+    );
+}
+
+fn write_bundle(root: &Path, harness: &str, version: &str, files: &[(&str, &[u8])]) {
+    let manifest_files: Vec<_> = files
+        .iter()
+        .map(|(relative, bytes)| {
+            let path = root.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bytes).unwrap();
+            serde_json::json!({
+                "path": relative,
+                "sha256": hex::encode(Sha256::digest(bytes)),
+            })
+        })
+        .collect();
+    let manifest = serde_json::json!({
+        "version": version,
+        "harness": harness,
+        "min_cli_version": "1.6.0",
+        "files": manifest_files,
+    });
+    std::fs::write(
+        root.join("manifest.json"),
+        serde_json::to_string_pretty(&manifest).unwrap(),
     )
     .unwrap();
 }
