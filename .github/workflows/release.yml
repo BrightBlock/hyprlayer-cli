@@ -124,6 +124,15 @@ jobs:
     if: ${{ !contains(github.ref_name, '-') }}
     runs-on: windows-latest
     steps:
+      # `winget-releaser@v2` predates komac's own `sync-fork` step, so nothing
+      # advances the fork's master. komac branches from upstream's current SHA,
+      # which a stale fork does not have, and the push fails with "Ref cannot
+      # be created" (v1.6.2 hit this).
+      - name: Sync winget-pkgs fork with upstream
+        env:
+          GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: gh api -X POST repos/${{ github.repository_owner }}/winget-pkgs/merge-upstream -f branch=master
+
       - name: Publish to Windows Package Manager
         uses: vedantmgoyal9/winget-releaser@v2
         with:
