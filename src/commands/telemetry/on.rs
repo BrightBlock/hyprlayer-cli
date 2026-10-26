@@ -11,7 +11,7 @@ pub fn on(args: TelemetryOnArgs) -> Result<()> {
     lifecycle::enroll(&mut cfg, &config_path)?;
 
     // Claude is always provisioned, so restore its Stop hook on the
-    // off → on round trip without consulting a selected harness.
+    // off → on round trip, unless `telemetry hook uninstall` opted out.
     install_claude_hook_if_applicable(&cfg);
     Ok(())
 }

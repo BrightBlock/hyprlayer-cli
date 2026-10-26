@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::path::Path;
 
 use crate::cli::TelemetryOffArgs;
 use crate::commands::telemetry::hook;
@@ -6,6 +7,11 @@ use crate::config::{HyprlayerConfig, TelemetryMode};
 use crate::telemetry::generate_device_salt;
 
 pub fn off(args: TelemetryOffArgs) -> Result<()> {
+    off_with_settings(args, hook::settings_path().ok().as_deref())
+}
+
+/// `settings` is injectable so unit tests never touch the real `~/.claude/settings.json`.
+fn off_with_settings(args: TelemetryOffArgs, settings: Option<&Path>) -> Result<()> {
     let config_path = args.config.path()?;
     let mut cfg = if config_path.exists() {
         HyprlayerConfig::load(&config_path)?
@@ -23,8 +29,8 @@ pub fn off(args: TelemetryOffArgs) -> Result<()> {
 
     // Best-effort: remove the Stop hook so opted-out users don't pay
     // the per-turn process spawn that would no-op on `is_recording()`.
-    if let Ok(path) = hook::settings_path() {
-        let _ = hook::uninstall_at(&path);
+    if let Some(path) = settings {
+        let _ = hook::uninstall_at(path);
     }
     Ok(())
 }
@@ -62,7 +68,7 @@ mod tests {
                 config_file: Some(path.to_string_lossy().into_owned()),
             },
         };
-        let err = off(args).expect_err("expected locked refusal");
+        let err = off_with_settings(args, None).expect_err("expected locked refusal");
         assert!(
             err.downcast_ref::<LockedError>().is_some(),
             "expected LockedError"
@@ -92,7 +98,8 @@ mod tests {
                 config_file: Some(path.to_string_lossy().into_owned()),
             },
         };
-        off(args).expect("off must succeed on missing config");
+        let settings = dir.path().join("settings.json");
+        off_with_settings(args, Some(&settings)).expect("off must succeed on missing config");
 
         let reloaded = HyprlayerConfig::load(&path).expect("config must now exist");
         assert_eq!(reloaded.telemetry.mode, TelemetryMode::Off);
@@ -114,7 +121,7 @@ mod tests {
                 config_file: Some(path.to_string_lossy().into_owned()),
             },
         };
-        let err = off(args).expect_err("expected locked refusal");
+        let err = off_with_settings(args, None).expect_err("expected locked refusal");
         assert!(err.downcast_ref::<LockedError>().is_some());
         let message = err.to_string();
         assert!(!message.contains("by `"), "{message}");

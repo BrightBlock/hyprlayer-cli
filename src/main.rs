@@ -58,6 +58,7 @@ fn main() -> Result<()> {
             config_path.as_deref(),
             cli.allows_background_flush(),
             cli.allows_agent_provision(),
+            cli.allows_hook_repair(),
         );
     }
 

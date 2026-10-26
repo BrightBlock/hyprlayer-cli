@@ -65,8 +65,8 @@ fn spool_install_event(config: &HyprlayerConfig, sha: Option<&str>) {
 
 /// Decide whether the Claude Stop hook should be present. Claude is always
 /// one of the two supported base platforms, so only telemetry policy matters.
-fn should_install_hook(config: &HyprlayerConfig) -> bool {
-    config.telemetry.is_recording()
+pub(crate) fn should_install_hook(config: &HyprlayerConfig) -> bool {
+    config.telemetry.is_recording() && !config.telemetry.hook_opt_out
 }
 
 /// With telemetry enabled, write the Stop-hook entry to

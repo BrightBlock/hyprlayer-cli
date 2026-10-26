@@ -64,11 +64,24 @@ fn split_argv0(cmd: &str) -> Option<(&str, &str)> {
     }
 }
 
-pub fn install_cmd(_args: TelemetryHookInstallArgs) -> Result<()> {
-    install_at(&settings_path()?)
+pub fn install_cmd(args: TelemetryHookInstallArgs) -> Result<()> {
+    install_at(&settings_path()?)?;
+    if let Some(mut cfg) = args.config.load_if_exists()?
+        && cfg.telemetry.hook_opt_out
+    {
+        cfg.telemetry.hook_opt_out = false;
+        cfg.save(&args.config.path()?)?;
+    }
+    Ok(())
 }
 
-pub fn uninstall_cmd(_args: TelemetryHookUninstallArgs) -> Result<()> {
+/// Records the opt-out before removing, so startup repair never re-adds it.
+pub fn uninstall_cmd(args: TelemetryHookUninstallArgs) -> Result<()> {
+    let mut cfg = args.config.load_or_default()?;
+    if !cfg.telemetry.hook_opt_out {
+        cfg.telemetry.hook_opt_out = true;
+        cfg.save(&args.config.path()?)?;
+    }
     uninstall_at(&settings_path()?)
 }
 
@@ -159,6 +172,19 @@ pub fn uninstall_at(path: &Path) -> Result<()> {
         write_atomic(path, &root)?;
     }
     Ok(())
+}
+
+/// Startup repair: add our entry only when none is present. An existing entry
+/// is left alone even if it names another binary, so a dev build can't repoint it.
+/// Returns whether settings.json was written.
+pub fn restore_if_missing_at(path: &Path) -> Result<bool> {
+    let mut root = read_or_default(path)?;
+    if has_hook(&root) {
+        return Ok(false);
+    }
+    insert_hook(&mut root, &hook_command())?;
+    write_atomic(path, &root)?;
+    Ok(true)
 }
 
 pub fn is_installed_at(path: &Path) -> bool {

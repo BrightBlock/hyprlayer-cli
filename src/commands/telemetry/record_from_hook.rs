@@ -1,11 +1,14 @@
 //! Privacy invariant: only typed fields (`usage` integers, the `model`
-//! identifier, ISO timestamps, `<command-name>` markers) are read from the
-//! transcript. Pinned by `transcript_content_never_leaks_to_spool`.
+//! identifier, ISO timestamps, `<command-name>` markers, the Skill tool's
+//! `input.skill`, tool_result `tool_use_id`/`is_error`) are read from the
+//! transcript. Pinned by
+//! `transcript_content_never_leaks_to_spool`.
 //!
 //! Exit-code invariant: always `Ok(())`. Stop hook treats exit 2 as
 //! blocking and surfaces stderr's first line on any other non-zero exit.
 
 use anyhow::Result;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, Read};
 use std::path::PathBuf;
 
@@ -31,6 +34,10 @@ pub fn record_from_hook(args: TelemetryRecordFromHookArgs) -> Result<()> {
     let Some(payload) = parse_hook_payload(&stdin_buf) else {
         return Ok(());
     };
+    // A re-fire after another Stop hook blocked: this turn was already counted.
+    if payload.stop_hook_active {
+        return Ok(());
+    }
     let Ok(Some(cfg)) = config.load_if_exists() else {
         return Ok(());
     };
@@ -46,28 +53,28 @@ pub fn record_from_hook(args: TelemetryRecordFromHookArgs) -> Result<()> {
     let Ok(file) = std::fs::File::open(&payload.transcript_path) else {
         return Ok(());
     };
-    let Some(summary) = summarize_turn(std::io::BufReader::new(file)) else {
-        return Ok(());
-    };
 
     let session_id = (!payload.session_id.is_empty()).then_some(payload.session_id);
-    let mut event = Event::skill_run(
-        &summary.skill,
-        session_id,
-        summary.duration_ms,
-        Outcome::Success,
-        None,
-        &cfg,
-    );
-    event.input_tokens = summary.input_tokens;
-    event.output_tokens = summary.output_tokens;
-    event.cache_read_tokens = summary.cache_read_tokens;
-    event.cache_creation_tokens = summary.cache_creation_tokens;
-    event.model = summary.model;
-    if let Some(ts) = summary.started_at {
-        event.event_timestamp = ts;
+    for summary in summarize_turn(std::io::BufReader::new(file)) {
+        let mut event = Event::skill_run(
+            &summary.skill,
+            session_id.clone(),
+            summary.duration_ms,
+            Outcome::Success,
+            None,
+            &cfg,
+        );
+        event.input_tokens = summary.input_tokens;
+        event.output_tokens = summary.output_tokens;
+        event.cache_read_tokens = summary.cache_read_tokens;
+        event.cache_creation_tokens = summary.cache_creation_tokens;
+        event.model = summary.model;
+        event.extra = serde_json::json!({ "trigger": summary.trigger.as_str() });
+        if let Some(ts) = summary.started_at {
+            event.event_timestamp = ts;
+        }
+        let _ = spool::append(&event);
     }
-    let _ = spool::append(&event);
     Ok(())
 }
 
@@ -75,6 +82,7 @@ pub fn record_from_hook(args: TelemetryRecordFromHookArgs) -> Result<()> {
 pub(crate) struct HookPayload {
     pub session_id: String,
     pub transcript_path: PathBuf,
+    pub stop_hook_active: bool,
 }
 
 pub(crate) fn parse_hook_payload(s: &str) -> Option<HookPayload> {
@@ -88,15 +96,38 @@ pub(crate) fn parse_hook_payload(s: &str) -> Option<HookPayload> {
         .and_then(|x| x.as_str())
         .unwrap_or("")
         .to_string();
+    let stop_hook_active = v
+        .get("stop_hook_active")
+        .and_then(|x| x.as_bool())
+        .unwrap_or(false);
     Some(HookPayload {
         session_id,
         transcript_path: PathBuf::from(transcript_path),
+        stop_hook_active,
     })
+}
+
+/// How the skill started: a typed slash command or the model's Skill tool.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum Trigger {
+    #[default]
+    Slash,
+    SkillTool,
+}
+
+impl Trigger {
+    fn as_str(self) -> &'static str {
+        match self {
+            Trigger::Slash => "slash",
+            Trigger::SkillTool => "skill_tool",
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone)]
 pub(crate) struct TurnSummary {
     pub skill: String,
+    pub trigger: Trigger,
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
     pub cache_read_tokens: Option<u64>,
@@ -111,19 +142,38 @@ pub(crate) struct TurnSummary {
     /// PostHog `event_timestamp` so dashboards bucket events by when
     /// the turn started rather than when the hook fired.
     pub started_at: Option<String>,
+    first_ms: Option<i64>,
+    last_ms: Option<i64>,
 }
 
-/// Returns `Some` only when the **most recent real-user message** carries
-/// a `<command-name>` marker. A real-user message excludes Claude Code's
-/// `isMeta: true` SKILL-expansion records and tool-result messages.
-/// This means a `/commit` invocation followed by chat turns produces a
-/// single skill_run event on the skill's own Stop, not a duplicate event
-/// per follow-up turn.
-pub(crate) fn summarize_turn<R: BufRead>(reader: R) -> Option<TurnSummary> {
-    let mut active: Option<TurnSummary> = None;
-    let mut first_ts: Option<String> = None;
-    let mut last_ms: Option<i64> = None;
-    let mut first_ms: Option<i64> = None;
+/// One API response. Claude Code writes each content block as its own
+/// line, repeating the response's `usage`, so usage is kept per message.
+#[derive(Debug, Default)]
+struct Message {
+    usage: Option<serde_json::Value>,
+    model: Option<String>,
+    first_ts: Option<String>,
+    first_ms: Option<i64>,
+    last_ms: Option<i64>,
+    /// `(skill, tool_use id)` for each Skill tool_use in this response.
+    skills: Vec<(String, Option<String>)>,
+}
+
+/// One summary per skill started in the turn that just ended (since the
+/// **most recent real-user message**): the `<command-name>` marker, if
+/// any, then each Skill tool_use in order. A real-user message excludes
+/// Claude Code's `isMeta: true` SKILL-expansion records and tool-result
+/// messages, so follow-up turns re-emit nothing.
+///
+/// Tokens split by position: the marker skill owns the turn up to the
+/// first Skill tool_use, and each Skill tool_use owns its invoking
+/// message up to the next one. Pre-skill work in an unmarked turn is not
+/// attributed, matching non-skill turns.
+pub(crate) fn summarize_turn<R: BufRead>(reader: R) -> Vec<TurnSummary> {
+    let mut marker: Option<String> = None;
+    let mut messages: Vec<Message> = Vec::new();
+    let mut by_id: HashMap<String, usize> = HashMap::new();
+    let mut failed_tool_uses: HashSet<String> = HashSet::new();
 
     for line in reader.lines() {
         let Ok(line) = line else { continue };
@@ -136,57 +186,153 @@ pub(crate) fn summarize_turn<R: BufRead>(reader: R) -> Option<TurnSummary> {
         };
         match v.get("type").and_then(|x| x.as_str()) {
             Some("user") => {
+                // `<task-notification>` and interrupt notices also land here,
+                // so they start a new turn too.
                 if !is_real_user_message(&v) {
+                    failed_tool_uses.extend(failed_tool_result_ids(&v));
                     continue;
                 }
-                // Real user message: a new turn boundary. Reset state.
-                // If this user message has a marker, start a new active
-                // summary; if not, leave active as None so the trailing
-                // assistant work isn't attributed to a stale skill.
-                first_ts = None;
-                first_ms = None;
-                last_ms = None;
-                active = extract_command_name(&v).map(|name| TurnSummary {
-                    skill: name,
-                    ..Default::default()
-                });
+                marker = extract_command_name(&v);
+                messages.clear();
+                by_id.clear();
+                failed_tool_uses.clear();
             }
             Some("assistant") => {
-                let Some(s) = active.as_mut() else { continue };
-                accumulate_usage(&v, s);
-                // `message.model` is the model that produced this turn and
-                // reflects per-skill overrides (a sonnet-pinned skill records
-                // `claude-sonnet-*` even inside an opus session). Skip Claude
-                // Code's `<synthetic>` sentinel — and any `<…>` placeholder for
-                // locally-generated messages — plus the empty string, so we keep
-                // the last *real* model rather than a trailing synthetic/blank one.
-                if let Some(model) = v.pointer("/message/model").and_then(|m| m.as_str())
-                    && !model.is_empty()
-                    && !model.starts_with('<')
-                {
-                    s.model = Some(model.to_string());
-                }
-                if let Some(ts_str) = v.get("timestamp").and_then(|x| x.as_str())
-                    && let Some(ms) = parse_ts_ms(ts_str)
-                {
-                    if first_ms.is_none() {
-                        first_ms = Some(ms);
-                        first_ts = Some(ts_str.to_string());
+                let id = v.pointer("/message/id").and_then(|x| x.as_str());
+                let idx = match id.and_then(|id| by_id.get(id)) {
+                    Some(&i) => i,
+                    None => {
+                        messages.push(Message::default());
+                        if let Some(id) = id {
+                            by_id.insert(id.to_string(), messages.len() - 1);
+                        }
+                        messages.len() - 1
                     }
-                    last_ms = Some(ms);
-                }
+                };
+                record_line(&v, &mut messages[idx]);
             }
             _ => {}
         }
     }
 
-    active.map(|mut s| {
-        if let (Some(a), Some(b)) = (first_ms, last_ms) {
+    let mut out = Vec::new();
+    let mut current = marker.map(|skill| TurnSummary {
+        skill,
+        ..Default::default()
+    });
+    for msg in &messages {
+        // An unknown skill or a denied call never ran; its tokens stay with
+        // whoever owned the turn before it.
+        let started = msg
+            .skills
+            .iter()
+            .filter(|(_, id)| id.as_ref().is_none_or(|id| !failed_tool_uses.contains(id)));
+        for (skill, _) in started {
+            out.extend(current.take());
+            current = Some(TurnSummary {
+                skill: skill.clone(),
+                trigger: Trigger::SkillTool,
+                ..Default::default()
+            });
+        }
+        if let Some(s) = current.as_mut() {
+            accumulate(msg, s);
+        }
+    }
+    out.extend(current);
+    for s in &mut out {
+        if let (Some(a), Some(b)) = (s.first_ms, s.last_ms) {
             s.duration_ms = u64::try_from(b.saturating_sub(a)).ok();
         }
-        s.started_at = first_ts;
-        s
-    })
+    }
+    out
+}
+
+fn record_line(v: &serde_json::Value, msg: &mut Message) {
+    if let Some(usage) = v.pointer("/message/usage") {
+        msg.usage = Some(usage.clone());
+    }
+    // `message.model` is the model that produced this turn and
+    // reflects per-skill overrides (a sonnet-pinned skill records
+    // `claude-sonnet-*` even inside an opus session). Skip Claude
+    // Code's `<synthetic>` sentinel — and any `<…>` placeholder for
+    // locally-generated messages — plus the empty string, so we keep
+    // the last *real* model rather than a trailing synthetic/blank one.
+    if let Some(model) = v.pointer("/message/model").and_then(|m| m.as_str())
+        && !model.is_empty()
+        && !model.starts_with('<')
+    {
+        msg.model = Some(model.to_string());
+    }
+    if let Some(ts_str) = v.get("timestamp").and_then(|x| x.as_str())
+        && let Some(ms) = parse_ts_ms(ts_str)
+    {
+        if msg.first_ms.is_none() {
+            msg.first_ms = Some(ms);
+            msg.first_ts = Some(ts_str.to_string());
+        }
+        msg.last_ms = Some(ms);
+    }
+    if let Some(items) = v.pointer("/message/content").and_then(|c| c.as_array()) {
+        msg.skills
+            .extend(items.iter().filter_map(skill_tool_use_name));
+    }
+}
+
+/// `tool_use_id`s of `is_error: true` tool results. Result content is never read.
+fn failed_tool_result_ids(v: &serde_json::Value) -> Vec<String> {
+    let Some(items) = v.pointer("/message/content").and_then(|c| c.as_array()) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter(|item| {
+            item.get("type").and_then(|x| x.as_str()) == Some("tool_result")
+                && item.get("is_error").and_then(|x| x.as_bool()) == Some(true)
+        })
+        .filter_map(|item| item.get("tool_use_id")?.as_str().map(str::to_string))
+        .collect()
+}
+
+/// `input.skill` of a Skill tool_use. `input.args` is user text and is never read.
+fn skill_tool_use_name(item: &serde_json::Value) -> Option<(String, Option<String>)> {
+    if item.get("type").and_then(|x| x.as_str()) != Some("tool_use")
+        || item.get("name").and_then(|x| x.as_str()) != Some("Skill")
+    {
+        return None;
+    }
+    let raw = item.pointer("/input/skill")?.as_str()?.trim();
+    let name = raw.strip_prefix('/').unwrap_or(raw);
+    if name.is_empty() || !name.chars().all(is_skill_name_char) {
+        return None;
+    }
+    let id = item.get("id").and_then(|x| x.as_str()).map(str::to_string);
+    Some((name.to_string(), id))
+}
+
+fn accumulate(msg: &Message, s: &mut TurnSummary) {
+    if let Some(usage) = &msg.usage {
+        add_to(&mut s.input_tokens, usage.get("input_tokens"));
+        add_to(&mut s.output_tokens, usage.get("output_tokens"));
+        add_to(
+            &mut s.cache_read_tokens,
+            usage.get("cache_read_input_tokens"),
+        );
+        add_to(
+            &mut s.cache_creation_tokens,
+            usage.get("cache_creation_input_tokens"),
+        );
+    }
+    if msg.model.is_some() {
+        s.model.clone_from(&msg.model);
+    }
+    if s.first_ms.is_none() && msg.first_ms.is_some() {
+        s.first_ms = msg.first_ms;
+        s.started_at.clone_from(&msg.first_ts);
+    }
+    if msg.last_ms.is_some() {
+        s.last_ms = msg.last_ms;
+    }
 }
 
 /// True if `v` is a fresh user prompt (typed text or slash command),
@@ -207,22 +353,6 @@ fn is_real_user_message(v: &serde_json::Value) -> bool {
             .any(|item| item.get("type").and_then(|x| x.as_str()) == Some("tool_result")),
         _ => false,
     }
-}
-
-fn accumulate_usage(v: &serde_json::Value, s: &mut TurnSummary) {
-    let Some(usage) = v.pointer("/message/usage") else {
-        return;
-    };
-    add_to(&mut s.input_tokens, usage.get("input_tokens"));
-    add_to(&mut s.output_tokens, usage.get("output_tokens"));
-    add_to(
-        &mut s.cache_read_tokens,
-        usage.get("cache_read_input_tokens"),
-    );
-    add_to(
-        &mut s.cache_creation_tokens,
-        usage.get("cache_creation_input_tokens"),
-    );
 }
 
 fn add_to(slot: &mut Option<u64>, val: Option<&serde_json::Value>) {
@@ -285,7 +415,9 @@ mod tests {
     use std::io::Cursor;
 
     fn summarize(jsonl: &str) -> Option<TurnSummary> {
-        summarize_turn(Cursor::new(jsonl))
+        let mut all = summarize_turn(Cursor::new(jsonl));
+        assert!(all.len() <= 1, "{all:?}");
+        all.pop()
     }
 
     #[test]
