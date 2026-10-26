@@ -215,6 +215,7 @@ pub fn run_startup_checks(
     config_path: Option<&std::path::Path>,
     allow_background_flush: bool,
     allow_agent_provision: bool,
+    allow_hook_repair: bool,
 ) {
     let resolved = config_path
         .map(std::path::Path::to_path_buf)
@@ -242,6 +243,9 @@ pub fn run_startup_checks(
     // notification. It runs even when release checks are disabled and can
     // bootstrap a machine with no prior agent installation or config file.
     let agents_changed = allow_agent_provision && ensure_bundle_set_in(&mut cfg, now);
+    if allow_hook_repair {
+        restore_missing_hook(&cfg);
+    }
 
     if cfg.disable_update_check {
         if agents_changed {
@@ -464,6 +468,23 @@ fn ensure_bundle_set_in(cfg: &mut config::HyprlayerConfig, now: i64) -> bool {
     }
     crate::commands::ai::install_claude_hook_if_applicable(cfg);
     true
+}
+
+/// Re-add a Stop hook that something removed from settings.json since the
+/// last bundle refresh. One local read; silent unless it actually writes.
+fn restore_missing_hook(cfg: &config::HyprlayerConfig) {
+    if !crate::commands::ai::should_install_hook(cfg) {
+        return;
+    }
+    let Ok(path) = crate::commands::telemetry::hook::settings_path() else {
+        return;
+    };
+    if let Ok(true) = crate::commands::telemetry::hook::restore_if_missing_at(&path) {
+        eprintln!(
+            "Restored the hyprlayer Stop hook in {} (skill telemetry).",
+            path.display()
+        );
+    }
 }
 
 fn agent_setup_is_backed_off(last_agent_check: Option<i64>, now: i64) -> bool {

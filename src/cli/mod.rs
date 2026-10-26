@@ -159,6 +159,20 @@ impl Cli {
         )
     }
 
+    /// Commands that set the Stop hook's state themselves skip the startup repair.
+    pub fn allows_hook_repair(&self) -> bool {
+        !matches!(
+            self,
+            Cli::Ai {
+                command: AiCommands::Reinstall(_)
+            } | Cli::Telemetry {
+                command: TelemetryCommands::On(_)
+                    | TelemetryCommands::Off(_)
+                    | TelemetryCommands::Hook(_)
+            }
+        )
+    }
+
     /// The `ConfigArgs` of whichever leaf subcommand was selected, or
     /// `None` for subcommands that don't read config (e.g. `codex stream`,
     /// a stdin/stdout filter). Used by startup checks to honor

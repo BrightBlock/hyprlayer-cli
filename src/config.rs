@@ -363,6 +363,9 @@ pub struct TelemetryConfig {
     /// Unix-time anchor for the all-backends discovery walk's 24h throttle.
     #[serde(default)]
     pub last_enrollment_check: u64,
+    /// Set by `telemetry hook uninstall` so hyprlayer stops re-adding the Stop hook.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hook_opt_out: bool,
 }
 
 impl TelemetryConfig {
@@ -1374,6 +1377,7 @@ mod tests {
             last_flush: 1700000000,
             last_config_refresh: 1700000001,
             last_enrollment_check: 1700000002,
+            hook_opt_out: false,
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let back: TelemetryConfig = serde_json::from_str(&json).unwrap();

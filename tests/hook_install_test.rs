@@ -199,3 +199,192 @@ fn installed_settings_file_has_0600_perms() {
     let mode = std::fs::metadata(&path).unwrap().permissions().mode();
     assert_eq!(mode & 0o777, 0o600, "got {mode:o}");
 }
+
+/// Config whose bundle refresh is backed off, so the startup repair is the
+/// only path that can write the hook.
+fn write_backed_off_config(home: &Path, mode: &str) -> PathBuf {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let path = home.join("hook-config.json");
+    let cfg = serde_json::json!({
+        "version": 4,
+        "lastAgentCheck": now,
+        "disableUpdateCheck": true,
+        "telemetry": {
+            "mode": mode,
+            "installationId": "11111111-2222-3333-4444-555555555555",
+            "deviceSalt": "deadbeefdeadbeefdeadbeefdeadbeef",
+            "apiKeySource": "default",
+            "lastFlush": 0,
+            "lastConfigRefresh": 0,
+            "lastEnrollmentCheck": now,
+        }
+    });
+    std::fs::write(&path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
+    path
+}
+
+/// Drop our Stop entry the way a settings rewrite would, keeping the user's.
+fn delete_hyprlayer_entry(settings: &Path) {
+    let mut root = read_json(settings);
+    let stop = root
+        .pointer_mut("/hooks/Stop")
+        .and_then(|v| v.as_array_mut())
+        .unwrap();
+    stop.retain(|g| {
+        !g.pointer("/hooks/0/command")
+            .and_then(|v| v.as_str())
+            .is_some_and(is_hyprlayer_hook)
+    });
+    std::fs::write(settings, serde_json::to_string_pretty(&root).unwrap()).unwrap();
+    assert_eq!(
+        count_hyprlayer_hooks(&stop_commands(&read_json(settings))),
+        0
+    );
+}
+
+#[test]
+fn startup_restores_a_deleted_hook_only_while_recording() {
+    let (_dir, home) = isolated_dirs();
+    let settings = settings_path(&home);
+    std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    std::fs::write(
+        &settings,
+        r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"user-thing"}]}],"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"lint"}]}]},"model":"sonnet"}"#,
+    )
+    .unwrap();
+    let recording = write_backed_off_config(&home, "anonymous");
+    let rec = recording.to_str().unwrap();
+    assert!(
+        run(
+            &home,
+            &["telemetry", "hook", "install", "--config-file", rec]
+        )
+        .status
+        .success()
+    );
+    delete_hyprlayer_entry(&settings);
+
+    let out = run(&home, &["telemetry", "status", "--config-file", rec]);
+    assert!(out.status.success(), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        stderr.lines().count(),
+        1,
+        "expected one stderr line: {stderr}"
+    );
+    assert!(
+        stderr.contains("Restored the hyprlayer Stop hook"),
+        "{stderr}"
+    );
+    let root = read_json(&settings);
+    let cmds = stop_commands(&root);
+    assert_eq!(count_hyprlayer_hooks(&cmds), 1, "{cmds:?}");
+    assert!(cmds.contains(&"user-thing".to_string()));
+    assert!(root.pointer("/hooks/PreToolUse").is_some());
+    assert_eq!(root.get("model").and_then(|v| v.as_str()), Some("sonnet"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&settings).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "got {mode:o}");
+    }
+
+    // Present: nothing written, nothing printed.
+    let before = std::fs::read(&settings).unwrap();
+    let out = run(&home, &["telemetry", "status", "--config-file", rec]);
+    assert!(out.stderr.is_empty(), "{out:?}");
+    assert_eq!(std::fs::read(&settings).unwrap(), before);
+
+    // Telemetry off: stays deleted.
+    delete_hyprlayer_entry(&settings);
+    let off = write_backed_off_config(&home, "off");
+    let out = run(
+        &home,
+        &[
+            "telemetry",
+            "status",
+            "--config-file",
+            off.to_str().unwrap(),
+        ],
+    );
+    assert!(out.status.success() && out.stderr.is_empty(), "{out:?}");
+    assert_eq!(
+        count_hyprlayer_hooks(&stop_commands(&read_json(&settings))),
+        0
+    );
+
+    // Deliberate uninstall while recording: stays uninstalled until `hook install`.
+    let recording = write_backed_off_config(&home, "anonymous");
+    let rec = recording.to_str().unwrap();
+    assert!(
+        run(
+            &home,
+            &["telemetry", "hook", "install", "--config-file", rec]
+        )
+        .status
+        .success()
+    );
+    assert!(
+        run(
+            &home,
+            &["telemetry", "hook", "uninstall", "--config-file", rec]
+        )
+        .status
+        .success()
+    );
+    assert_eq!(
+        read_json(&recording).pointer("/telemetry/hookOptOut"),
+        Some(&serde_json::json!(true))
+    );
+    let out = run(&home, &["telemetry", "status", "--config-file", rec]);
+    assert!(out.status.success() && out.stderr.is_empty(), "{out:?}");
+    assert_eq!(
+        count_hyprlayer_hooks(&stop_commands(&read_json(&settings))),
+        0
+    );
+    assert!(
+        run(
+            &home,
+            &["telemetry", "hook", "install", "--config-file", rec]
+        )
+        .status
+        .success()
+    );
+    assert!(
+        read_json(&recording)
+            .pointer("/telemetry/hookOptOut")
+            .is_none()
+    );
+    assert_eq!(
+        count_hyprlayer_hooks(&stop_commands(&read_json(&settings))),
+        1
+    );
+}
+
+#[test]
+fn startup_repair_leaves_a_wrongly_typed_hooks_value_alone() {
+    let (_dir, home) = isolated_dirs();
+    let settings = settings_path(&home);
+    std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    for body in [
+        r#"{"hooks": "i am a string"}"#,
+        r#"{"hooks": {"Stop": {"a": 1}}}"#,
+    ] {
+        std::fs::write(&settings, body).unwrap();
+        let cfg = write_backed_off_config(&home, "anonymous");
+        let out = run(
+            &home,
+            &[
+                "telemetry",
+                "status",
+                "--config-file",
+                cfg.to_str().unwrap(),
+            ],
+        );
+        assert!(out.status.success() && out.stderr.is_empty(), "{out:?}");
+        assert_eq!(std::fs::read_to_string(&settings).unwrap(), body);
+    }
+}
