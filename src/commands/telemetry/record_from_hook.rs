@@ -1,13 +1,14 @@
 //! Privacy invariant: only typed fields (`usage` integers, the `model`
 //! identifier, ISO timestamps, `<command-name>` markers, the Skill tool's
-//! `input.skill`) are read from the transcript. Pinned by
+//! `input.skill`, tool_result `tool_use_id`/`is_error`) are read from the
+//! transcript. Pinned by
 //! `transcript_content_never_leaks_to_spool`.
 //!
 //! Exit-code invariant: always `Ok(())`. Stop hook treats exit 2 as
 //! blocking and surfaces stderr's first line on any other non-zero exit.
 
 use anyhow::Result;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, Read};
 use std::path::PathBuf;
 
@@ -154,7 +155,8 @@ struct Message {
     first_ts: Option<String>,
     first_ms: Option<i64>,
     last_ms: Option<i64>,
-    skills: Vec<String>,
+    /// `(skill, tool_use id)` for each Skill tool_use in this response.
+    skills: Vec<(String, Option<String>)>,
 }
 
 /// One summary per skill started in the turn that just ended (since the
@@ -171,6 +173,7 @@ pub(crate) fn summarize_turn<R: BufRead>(reader: R) -> Vec<TurnSummary> {
     let mut marker: Option<String> = None;
     let mut messages: Vec<Message> = Vec::new();
     let mut by_id: HashMap<String, usize> = HashMap::new();
+    let mut failed_tool_uses: HashSet<String> = HashSet::new();
 
     for line in reader.lines() {
         let Ok(line) = line else { continue };
@@ -186,11 +189,13 @@ pub(crate) fn summarize_turn<R: BufRead>(reader: R) -> Vec<TurnSummary> {
                 // `<task-notification>` and interrupt notices also land here,
                 // so they start a new turn too.
                 if !is_real_user_message(&v) {
+                    failed_tool_uses.extend(failed_tool_result_ids(&v));
                     continue;
                 }
                 marker = extract_command_name(&v);
                 messages.clear();
                 by_id.clear();
+                failed_tool_uses.clear();
             }
             Some("assistant") => {
                 let id = v.pointer("/message/id").and_then(|x| x.as_str());
@@ -216,7 +221,13 @@ pub(crate) fn summarize_turn<R: BufRead>(reader: R) -> Vec<TurnSummary> {
         ..Default::default()
     });
     for msg in &messages {
-        for skill in &msg.skills {
+        // An unknown skill or a denied call never ran; its tokens stay with
+        // whoever owned the turn before it.
+        let started = msg
+            .skills
+            .iter()
+            .filter(|(_, id)| id.as_ref().is_none_or(|id| !failed_tool_uses.contains(id)));
+        for (skill, _) in started {
             out.extend(current.take());
             current = Some(TurnSummary {
                 skill: skill.clone(),
@@ -268,8 +279,23 @@ fn record_line(v: &serde_json::Value, msg: &mut Message) {
     }
 }
 
+/// `tool_use_id`s of `is_error: true` tool results. Result content is never read.
+fn failed_tool_result_ids(v: &serde_json::Value) -> Vec<String> {
+    let Some(items) = v.pointer("/message/content").and_then(|c| c.as_array()) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter(|item| {
+            item.get("type").and_then(|x| x.as_str()) == Some("tool_result")
+                && item.get("is_error").and_then(|x| x.as_bool()) == Some(true)
+        })
+        .filter_map(|item| item.get("tool_use_id")?.as_str().map(str::to_string))
+        .collect()
+}
+
 /// `input.skill` of a Skill tool_use. `input.args` is user text and is never read.
-fn skill_tool_use_name(item: &serde_json::Value) -> Option<String> {
+fn skill_tool_use_name(item: &serde_json::Value) -> Option<(String, Option<String>)> {
     if item.get("type").and_then(|x| x.as_str()) != Some("tool_use")
         || item.get("name").and_then(|x| x.as_str()) != Some("Skill")
     {
@@ -277,7 +303,11 @@ fn skill_tool_use_name(item: &serde_json::Value) -> Option<String> {
     }
     let raw = item.pointer("/input/skill")?.as_str()?.trim();
     let name = raw.strip_prefix('/').unwrap_or(raw);
-    (!name.is_empty() && name.chars().all(is_skill_name_char)).then(|| name.to_string())
+    if name.is_empty() || !name.chars().all(is_skill_name_char) {
+        return None;
+    }
+    let id = item.get("id").and_then(|x| x.as_str()).map(str::to_string);
+    Some((name.to_string(), id))
 }
 
 fn accumulate(msg: &Message, s: &mut TurnSummary) {

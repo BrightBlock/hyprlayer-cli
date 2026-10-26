@@ -143,6 +143,9 @@ fn transcript_content_never_leaks_to_spool() {
         "SKILL_BODY_CANARY",
         "FOLLOWUP_CANARY",
         "roster",
+        // Skill calls that errored (denied, unknown) emit nothing.
+        "research_codebase",
+        "orchestration-runtime",
     ] {
         assert!(
             !spool_text.contains(needle),
@@ -203,11 +206,12 @@ fn skill_runs_from_real_shaped_transcripts() {
         (
             "ab_ship_calls_create_plan",
             vec![
+                // Owns the unknown-skill call that never started.
                 (
                     "ab-ship",
                     "slash",
-                    [2, 20, 200, 2],
-                    1_000,
+                    [3, 30, 300, 3],
+                    2_500,
                     "2026-10-20T15:00:01.000Z",
                 ),
                 (
