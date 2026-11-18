@@ -28,7 +28,7 @@ Follow `~/.claude/skills/_thoughts/templates/validation-report.md` when the call
 - **Summary.** One paragraph: what was validated, and the bottom line.
 - **Phase results.** Per phase: `complete` / `partial` / `not done`, with the evidence (`file:line`, or "no implementation found for X").
 - **Automated verification.** A table of command → pass/fail → notes. Paste failing output verbatim.
-- **Manual verification outstanding.** Every manual item still unconfirmed, quoted from the plan, with clear steps for the human. An agent tick is confirmed only if its `<!-- verified: ... -->` evidence holds: the path exists, or the value is concrete. A `<!-- confirmed: user -->` tick is a human's. A tick with neither is outstanding. Report each one you checked. Never mark one done yourself.
+- **Manual verification outstanding.** Every manual item still unconfirmed, quoted from the plan, with clear steps for the human. An agent tick is confirmed only if its `<!-- verified: ... -->` evidence holds: open the file or read the value and confirm it shows this item's expected result. A missing file, an artifact of something else, or a bare "ok" does not hold. A `<!-- confirmed: user -->` tick is a human's. A tick with neither is outstanding. Report each one you checked. Never mark one done yourself.
 - **Deviations.** Where the implementation differs from the plan, and whether the difference is defensible, harmless, or a problem.
 - **Gaps and risks.** What the plan asked for that no one built; what the diff broke that the plan didn't anticipate.
 

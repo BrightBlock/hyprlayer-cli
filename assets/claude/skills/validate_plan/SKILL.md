@@ -279,8 +279,9 @@ wired but never read — and none of that shows up as a red check.
 right and in admitting when you could not. Fail closed: a count you could not resolve is
 not zero. `manual-outstanding` is the sharp edge — a `- [x]` beside a manual item means
 a human confirmed it or an agent left evidence, and nothing else does. Evidence is the
-`<!-- verified: ... -->` comment on the line: a path the inspector finds on disk, or a
-concrete value read off the surface. A missing path or a bare "ok" is no evidence. A
+`<!-- verified: ... -->` comment on the line: a file the inspector opens, or a value read
+off the surface, that shows this item's expected result. A missing file, an artifact of
+something else, or a bare "ok" is no evidence. A
 `<!-- confirmed: user -->` comment records a human's confirmation. A tick with neither
 counts only if a human confirmed it in this conversation, and an open `(human)` item is
 always outstanding. Neither the inspector nor you may check one off.

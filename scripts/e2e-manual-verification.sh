@@ -116,6 +116,13 @@ ticked() { line "$1" | grep -q '^- \[x\]'; }
 open() { line "$1" | grep -q '^- \[ \]'; }
 has() { line "$1" | grep -qF -- "$2"; }
 status() { sed -n 's/^status: *//p' "$PLAN" | head -1; }
+# evidence_shows <item> <expected>: the verified comment's value, or the file it names, holds <expected>
+evidence_shows() {
+  local ev; ev=$(line "$1" | sed -n 's/.*<!-- verified: *\(.*[^ ]\) *-->.*/\1/p')
+  [ -n "$ev" ] || return 1
+  case "$ev" in *"$2"*) return 0 ;; esac
+  local p=${ev%% *}; [ -s "$p" ] && grep -qF -- "$2" "$p"
+}
 
 run_claude() { # <name> <model|""> <prompt> [extra args...]
   local name=$1 model=$2 prompt=$3; shift 3
@@ -148,8 +155,7 @@ SESSION=$(jq -r 'select(.type=="system" and .subtype=="init") | .session_id' "$O
 
 check "A: runnable manual item ticked" "ticked '$SHOUT'"
 check "A: ticked item carries verified evidence" "has '$SHOUT' '<!-- verified:'"
-check "A: evidence is the value read or a path that exists" \
-  "has '$SHOUT' 'HELLO, BOB' || { p=\$(line '$SHOUT' | sed -n 's/.*verified: *\([^ ]*\).*/\1/p'); [ -e \"\$p\" ]; }"
+check "A: evidence shows HELLO, BOB" "evidence_shows '$SHOUT' 'HELLO, BOB'"
 check "A: (human) item left open" "open '$TONE'"
 check "A: failing-tool item left open" "open '$TERM80'"
 check "A: failing-tool item records why" "has '$TERM80' '<!-- unverified:'"
