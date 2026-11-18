@@ -12,7 +12,7 @@ The caller gives you a plan (path or inline body) and the repo it targets. Read 
 
 **Phantoms.** Files, functions, types, columns, config keys, or commands the plan names that do not exist. Grep for every one. This is the single most common way a plan wastes a day.
 
-**Unverifiable criteria.** "Feature works correctly", "code is clean", "performance is acceptable" — with no command and no observable. Every automated item must be a runnable command that exists in this repo; check the Makefile / `package.json` / `Cargo.toml`. Every manual item must name what a human looks at and what they should see.
+**Unverifiable criteria.** "Feature works correctly", "code is clean", "performance is acceptable" — with no command and no observable. Every automated item must be a runnable command that exists in this repo; check the Makefile / `package.json` / `Cargo.toml`. Every manual item must name how it is exercised and what should be seen, or carry `(human): <reason>` with a reason an agent truly cannot get past.
 
 **Phase order that cannot hold.** Walk the phases in sequence and ask, for each: does the tree compile at the end of this phase? Do the tests pass? Is it shippable on its own? A phase that depends on a later phase's change is a defect, not a detail.
 

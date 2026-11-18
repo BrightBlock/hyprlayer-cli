@@ -286,7 +286,7 @@ conventions:
       prefer: [cargo check, cargo test, cargo clippy, cargo fmt --check]
       also:   [make test, npm run lint, files-that-should-exist, compilation, type-checking]
     manual:
-      needs:  human-testing
+      needs:  the real running surface; `(human)` only per create_plan's `success-criteria.manual.human`
       covers: [ui-ux, performance-under-real-conditions, hard-to-automate-edge-cases, user-acceptance]
     measurable: every criterion names what to run or what to look at
 

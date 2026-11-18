@@ -34,11 +34,11 @@ Every phase ends with two lists, never merged:
 - [ ] Formatting clean: `cargo fmt --all -- --check`
 
 #### Manual Verification:
-- [ ] The new panel renders correctly at narrow window widths
-- [ ] Cancelling mid-write leaves no partial row in the store
+- [ ] The new panel renders correctly at narrow window widths — via the app automation bridge, screenshot at 480px
+- [ ] Cancelling mid-write leaves no partial row in the store — via a script that kills the write and queries the store
 ```
 
-Rules: an automated item is a command a machine can run and a human can read the exit code of — prefer the repo's real gate commands (`cargo` for Rust workspaces) over invented ones. A manual item is one a person must look at. "Verify it works" is not a criterion. "Code is clean" is not a criterion.
+Rules: an automated item is a command a machine can run and a human can read the exit code of — prefer the repo's real gate commands (`cargo` for Rust workspaces) over invented ones. A manual item is checked on the real running surface rather than by a command, and names how it is exercised. Mark one an agent truly cannot exercise `(human): <reason>`: physical hardware, subjective judgment, a third-party credential, or an irreversible or outward-facing action. "Verify it works" is not a criterion. "Code is clean" is not a criterion.
 
 ## What to return
 

@@ -129,7 +129,9 @@ orchestration:
       because: >
         The other half of delegation-call: a handful of lines, context you already
         hold, or code the user is iterating on with you right now. Exactly one of
-        `implement-inline` and `delegate-phase` runs for any given phase.
+        `implement-inline` and `delegate-phase` runs for any given phase. One phase
+        per pass, even when several are small: its `run-manual` finishes before the
+        next phase's code is written.
 
     - id: review-report
       requires: [delegate-phase]
@@ -204,8 +206,8 @@ orchestration:
       updates: [plan-checkboxes, todos]
       reject: matches(item, "manual")
       because: >
-        Automated items only, edited into the plan file itself. Manual-testing
-        items wait for `check-off-manual`. It requires `fix-failures` rather than
+        Automated items only, edited into the plan file itself. Manual items
+        go to `run-manual`. It requires `fix-failures` rather than
         `verify-phase` because the order in the plan is run the checks, fix what
         failed, *then* check the boxes: required against `verify-phase` alone, this
         step would land in the same wave as `fix-failures` and mark a phase done
@@ -215,8 +217,24 @@ orchestration:
         out investigating that phase's failure. Both are unguarded, so both really
         do run and really do order this step.
 
-    - id: pause-for-manual
+    - id: run-manual
       requires: [check-off]
+      inline: true
+      apply: [checkbox-edit]
+      updates: [plan-checkboxes, todos]
+      reject: matches(item, "\(human\)")
+      judgment: >
+        How do you exercise this item on the real surface, and does what you saw
+        prove it? See "Running a manual item" below.
+      because: >
+        Every manual item not marked `(human)`, run the way the item names, after
+        the phase's automated checks are green. Tick one only with evidence
+        appended per `manual-evidence`; one you tried and could not exercise stays
+        unticked with its reason. On a consecutive run this happens per phase,
+        before the next phase starts.
+
+    - id: pause-for-manual
+      requires: [run-manual]
       when: not matches(request, "all phases|every phase|all remaining phases|consecutively|straight through|phases \d+ *(-|to|through) *\d+")
       when-examples:
         match:    ["implement phase 2 of the plan", "implement thoughts/plans/eng-1478.md"]
@@ -225,19 +243,20 @@ orchestration:
       produces: phase-complete-notice
       because: >
         Automated verification passing is not the phase being done. Emit the
-        `phase-complete-notice` format below and stop. Absent an instruction to
+        `phase-complete-notice` format below, listing only `(human)` items and
+        those `run-manual` could not exercise, and stop. Absent an instruction to
         run several phases, assume you are doing one; on a consecutive run the
         pause comes once, after the last phase, not after each.
 
     - id: check-off-manual
-      requires: [check-off, pause-for-manual]
+      requires: [run-manual, pause-for-manual]
       inline: true
       updates: [plan-checkboxes]
       because: >
-        Manual-testing items get checked off only once the user confirms the
-        testing is done. Their barrier is the user's reply, which is why this is a
-        step of its own rather than part of `check-off`. It requires `check-off`
-        as well as the pause, so that skipping the pause on a consecutive run
+        The items `run-manual` left open get checked off, with the `confirmed`
+        comment, only once the user confirms the testing is done. Their barrier is the user's reply, which is
+        why this is a step of its own rather than part of `run-manual`. It requires
+        `run-manual` as well as the pause, so that skipping the pause on a consecutive run
         moves this step rather than freeing it.
 
     - id: hand-off-status
@@ -278,7 +297,12 @@ conventions:
     tool: Edit
     target: the plan file itself
     mark: "- [x]"
-    manual-items: not until the user confirms
+    manual-items: agent ticks carry `manual-evidence.verified`; `(human)` and unverified items wait for the user, then carry `confirmed`
+
+  manual-evidence:
+    verified:   "- [x] <item> <!-- verified: <artifact path, or the value read> -->"
+    unverified: "- [ ] <item> <!-- unverified: <one-line reason> -->"
+    confirmed:  "- [x] <item> <!-- confirmed: user, <YYYY-MM-DD> -->"   # only after the user's reply
 
   mismatch-report:
     trigger: the plan cannot be followed as written
@@ -298,8 +322,12 @@ conventions:
       Automated verification passed:
       - [List automated checks that passed]
 
-      Please perform the manual verification steps listed in the plan:
-      - [List manual verification items from the plan]
+      Manual verification I ran:
+      - [Each item run-manual ticked, with its evidence]
+
+      Please perform these manual steps:
+      - [Each `(human)` item, with its reason]
+      - [Each item I could not exercise, with why]
 
       Let me know when manual testing is complete so I can proceed to Phase [N+1].
 ```
@@ -337,6 +365,12 @@ green and the failure surfaces later, inside code you did not write.
 that changes behavior, contract, or scope: work out *why* the plan cannot be followed,
 then present it and ask. Improvise a redesign instead and you have shipped an
 unreviewed plan; the plan was reviewed, your workaround was not.
+
+**Running a manual item.** Use the surface the item names: the project's verify skill,
+an app automation bridge, a container, a script. Evidence is what you read off that
+surface, a screenshot path or the value shown, never "looks right". A tick without it is
+a claim `validate_plan` will not count. When the surface won't come up, leave the item
+open with the reason rather than substituting a unit test for it.
 
 **Reaching for a sub-agent when stuck.** A `cartographer` for genuinely unfamiliar
 territory, a narrow `codebase-*` agent for one targeted question. First make sure you

@@ -57,12 +57,12 @@ For `git`/`obsidian` backends, prepend YAML frontmatter with every required sche
 - [ ] Integration tests pass: `make test-integration`
 
 #### Manual Verification:
-- [ ] Feature works as expected when tested via UI
-- [ ] Performance is acceptable under load
-- [ ] Edge case handling verified manually
-- [ ] No regressions in related features
+- [ ] Feature works as expected in the UI — via [verify skill / app automation bridge]
+- [ ] Performance is acceptable under load — via [script or container that applies the load]
+- [ ] Edge case handling verified — via [how it is exercised]
+- [ ] [Check an agent cannot exercise] (human): [hardware, subjective judgment, third-party credential, or irreversible action]
 
-**Implementation Note**: After completing this phase and all automated verification passes, pause here for manual confirmation from the human that the manual testing was successful before proceeding to the next phase.
+**Implementation Note**: After all automated verification passes, run each manual item not marked `(human)` and record its evidence, then pause for the human to confirm the `(human)` items and any that could not be run before proceeding to the next phase.
 
 ---
 
@@ -106,6 +106,6 @@ For `git`/`obsidian` backends, prepend YAML frontmatter with every required sche
 Always split criteria into two categories:
 
 1. **Automated Verification** (runnable by execution agents): commands like `make test`, `cargo test`, `npm run lint`; file existence; compilation/type checking. Prefer `cargo` commands for Rust projects (`cargo check`, `cargo test`, `cargo clippy`, `cargo fmt --check`).
-2. **Manual Verification** (requires human testing): UI/UX, performance under real load, edge cases that are hard to automate, user acceptance.
+2. **Manual Verification** (verified on the real running surface, not by a command): UI/UX, performance under real load, edge cases that are hard to automate, user acceptance. Each item names how it is exercised. Mark one an agent truly cannot exercise `(human): <reason>`.
 
 Do NOT leave open questions in the final plan. Every decision must be made before finalizing.

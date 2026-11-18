@@ -105,7 +105,7 @@ orchestration:
         - { value: report-template,   src: "_thoughts/templates/validation-report.md" }
         - { value: phase-group,       src: "the phase split you chose in inventory" }
         - { value: key-functionality, src: "the behaviour list inventory produced" }
-      ask: [phase-results, automated-results, manual-candidates, deviations, gaps-and-risks, verdict]
+      ask: [phase-results, automated-results, manual-candidates, manual-evidence-checks, deviations, gaps-and-risks, verdict]
       reject: not exists(plan-ref) or not exists(diff-range)
       judgment: >
         Do you delegate this audit at all, and as one inspector or one per
@@ -150,8 +150,9 @@ orchestration:
       produces: manual-outstanding
       because: >
         Every manual verification item still unconfirmed, quoted from the
-        plan, with steps clear enough for a human to follow. Neither you nor
-        the inspector may confirm one on a human's behalf, and an unconfirmed
+        plan, with steps clear enough for a human to follow. Confirmed means a
+        human confirmed it or an agent tick carries evidence the inspector
+        re-checked; neither you nor the inspector ticks one, and an unconfirmed
         item blocks promotion — so this list is a gate input, not a
         courtesy section. The inspector's `manual-candidates` is named apart
         from it deliberately: `manual-outstanding` is the leaf the `promote`
@@ -180,7 +181,7 @@ orchestration:
       counts:
         phases-not-complete: plan phases either unchecked or not backed by the diff in the verified report
         failed-checks:       automated verification commands from any phase that did not pass
-        manual-outstanding:  manual items still unconfirmed — see "Resolving the promotion gate" below
+        manual-outstanding:  unticked manual items, ticks with no evidence and no human confirmation, and open `(human)` items — see "Resolving the promotion gate" below
       judgment: >
         Are all three counts in `gate:` zero — and did you resolve each one, as
         opposed to failing to find it? See "Resolving the promotion gate" below.
@@ -277,9 +278,13 @@ wired but never read — and none of that shows up as a red check.
 **Resolving the promotion gate.** Three counts, no taste; the taste is in getting them
 right and in admitting when you could not. Fail closed: a count you could not resolve is
 not zero. `manual-outstanding` is the sharp edge — a `- [x]` beside a manual item means
-a human said they ran it, and nothing else does. Neither the inspector nor you may check
-one off; if nobody in this conversation confirmed it, it is outstanding. Promote on an
-unperformed manual item and the plan reads `implemented` while its user-facing half has
+a human confirmed it or an agent left evidence, and nothing else does. Evidence is the
+`<!-- verified: ... -->` comment on the line: a path the inspector finds on disk, or a
+concrete value read off the surface. A missing path or a bare "ok" is no evidence. A
+`<!-- confirmed: user -->` comment records a human's confirmation. A tick with neither
+counts only if a human confirmed it in this conversation, and an open `(human)` item is
+always outstanding. Neither the inspector nor you may check one off.
+Promote on an unperformed manual item and the plan reads `implemented` while its user-facing half has
 never been tried, and the next run trusts that status instead of re-checking. Blocking
 costs something real: this is the only skill that writes `active -> implemented`, so a
 blocked plan stays `active` until someone re-runs this skill. That is intended —
