@@ -355,8 +355,12 @@ conventions:
       prefer: cargo                # cargo check, cargo test, cargo clippy, cargo fmt --check
       covers: [commands, files-that-must-exist, compilation, type-checking, test-suites]
     manual:
-      definition: requires a human at a keyboard
+      definition: verified on the real running surface rather than by a command
+      names-how: the project's verify skill, an app automation bridge, a container, or a script
       covers: [ui-ux, performance-under-real-conditions, hard-to-automate-edge-cases, user-acceptance]
+      human:
+        mark: "(human): <reason>"  # right after the item text; implement_plan skips these
+        only-for: [physical-hardware-or-unreachable-device, subjective-judgment, third-party-account-or-credential, irreversible-or-outward-facing-action]
     format: |
       ### Success Criteria:
 
@@ -367,10 +371,10 @@ conventions:
       - [ ] API endpoint returns 200: `curl localhost:8080/api/new-endpoint`
 
       #### Manual Verification:
-      - [ ] New feature appears correctly in the UI
-      - [ ] Performance is acceptable with 1000+ items
-      - [ ] Error messages are user-friendly
-      - [ ] Feature works correctly on mobile devices
+      - [ ] New feature appears correctly in the UI — via the app automation bridge, screenshot of the new panel
+      - [ ] Performance is acceptable with 1000+ items — via a script that seeds 1000 rows and times the list render
+      - [ ] Error messages are user-friendly (human): copy tone is a judgment call
+      - [ ] Feature works correctly on mobile devices (human): needs a physical device the agent can't reach
 
   plan-shape:
     changes: incremental-and-testable
