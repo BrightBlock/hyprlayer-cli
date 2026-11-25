@@ -5,7 +5,7 @@ PackageVersion: 1.4.3
 PackageLocale: en-US
 Publisher: BrightBlock
 PackageName: Hyprlayer
-License: MIT
+License: AGPL-3.0-only
 ShortDescription: CLI for managing thoughts for AI coding agents
 PackageUrl: https://github.com/BrightBlock/hyprlayer-cli
 PublisherUrl: https://github.com/BrightBlock

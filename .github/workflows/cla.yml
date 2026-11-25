@@ -39,7 +39,7 @@ jobs:
           # storage branch differs.
           branch: 'cla-signatures'
           # Accounts exempt from signing (bots and maintainers).
-          allowlist: 'jtsiros,dependabot[bot],github-actions[bot],*[bot]'
+          allowlist: 'jtsiros,bitshiftxr,dependabot[bot],github-actions[bot],*[bot]'
           custom-pr-sign-comment: 'I have read the CLA Document and I hereby sign the CLA'
           custom-notsigned-prcomment: >
             Thank you for your contribution to **Hyprlayer**! Before we can merge,
