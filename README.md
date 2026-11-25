@@ -2,7 +2,7 @@
 
 AI-assisted spec-driven development.
 
-**[Documentation](https://brightblock.ai/hyprlayer/)**
+**[Documentation](https://brightblock.ai/hyprlayer/)** · **[Discord](https://discord.gg/QFyX2FVkZM)**
 
 Hyprlayer provides a structured workflow where AI agents research your codebase, build implementation plans, execute them phase-by-phase, and validate the results -- all grounded in shared team knowledge through a persistent thoughts directory.
 
