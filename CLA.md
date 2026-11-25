@@ -91,7 +91,7 @@ Contributions outside of the Project.
 
 BrightBlock Labs agrees to make the Material, including Your Contributions, available
 to the public under the Project's open source license (currently the
-[MIT License](LICENSE)). Because You have assigned and licensed the rights above,
+[GNU Affero General Public License v3.0](LICENSE)). Because You have assigned and licensed the rights above,
 BrightBlock Labs may also license the Material, including Your Contributions, under
 other terms — including proprietary or commercial licenses — consistent with
 those rights.

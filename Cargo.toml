@@ -3,6 +3,7 @@ name = "hyprlayer"
 
 version = "1.6.4"
 edition = "2024"
+license = "AGPL-3.0-only"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
